@@ -192,4 +192,20 @@ final class UserPoints {
         sb.append("</Document></kml>\n");
         return sb.toString();
     }
+
+    /** GPX 1.1: путевые точки (для навигаторов и AlpineQuest). */
+    static String toGpx(List<Point> pts) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+          .append("<gpx version=\"1.1\" creator=\"LBS KML\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n");
+        for (Point p : pts) {
+            sb.append(String.format(Locale.US, "<wpt lat=\"%.7f\" lon=\"%.7f\">", p.lat, p.lon))
+              .append("<name>").append(esc(p.name)).append("</name>")
+              .append("<desc>").append(esc((p.note == null || p.note.isEmpty() ? "" : p.note + "; ")
+                      + "СК-42: " + Sk42.format(p.lat, p.lon))).append("</desc>")
+              .append("</wpt>\n");
+        }
+        sb.append("</gpx>\n");
+        return sb.toString();
+    }
 }

@@ -190,7 +190,7 @@
                     android:layout_height="match_parent"
                     android:gravity="center_vertical"
                     android:paddingStart="4dp"
-                    android:text="Поиск · направления"
+                    android:text="Поиск · координаты · направления"
                     android:textColor="@color/hud_text2"
                     android:textSize="15sp" />
 
@@ -199,7 +199,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
                     android:background="@android:color/transparent"
-                    android:hint="Город, посёлок, село…"
+                    android:hint="Город, село или координаты"
                     android:imeOptions="actionSearch"
                     android:inputType="textCapWords"
                     android:paddingStart="4dp"
@@ -330,12 +330,28 @@
             android:elevation="6dp"
             android:focusable="true">
 
-            <ImageView
-                android:id="@+id/compassNeedle"
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:layout_gravity="center"
-                android:src="@drawable/ic_compass" />
+            <FrameLayout
+                android:id="@+id/compassRose"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center">
+
+                <ImageView
+                    android:id="@+id/compassNeedle"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:src="@drawable/ic_compass" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="top|center_horizontal"
+                    android:fontFamily="sans-serif-black"
+                    android:includeFontPadding="false"
+                    android:text="С"
+                    android:textColor="#FFFF3B30"
+                    android:textSize="9sp" />
+            </FrameLayout>
         </FrameLayout>
 
         <TextView
@@ -851,7 +867,7 @@
                     android:id="@+id/tilePoints"
                     style="@style/SheetTile">
                     <ImageView android:layout_width="26dp" android:layout_height="26dp" android:src="@drawable/ic_share" android:tint="@color/hud_text" />
-                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:gravity="center" android:text="Экспорт точек" android:textColor="@color/hud_text" android:textSize="12sp" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:gravity="center" android:text="Экспорт" android:textColor="@color/hud_text" android:textSize="12sp" />
                 </LinearLayout>
                 <LinearLayout
                     android:id="@+id/tileInfo"

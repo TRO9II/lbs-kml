@@ -200,6 +200,10 @@ final class LbsCore {
     }
 
     static Uri saveToDownloads(Context c, String name, byte[] bytes) throws Exception {
+        return saveToDownloads(c, name, bytes, KML_MIME);
+    }
+
+    static Uri saveToDownloads(Context c, String name, byte[] bytes, String mime) throws Exception {
         ContentResolver cr = c.getContentResolver();
         Uri coll = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
         Uri uri = null;
@@ -210,7 +214,7 @@ final class LbsCore {
         if (uri == null) {
             ContentValues cv = new ContentValues();
             cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-            cv.put(MediaStore.MediaColumns.MIME_TYPE, KML_MIME);
+            cv.put(MediaStore.MediaColumns.MIME_TYPE, mime);
             cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
             uri = cr.insert(coll, cv);
             if (uri == null) throw new Exception("нет доступа к папке «Загрузки»");

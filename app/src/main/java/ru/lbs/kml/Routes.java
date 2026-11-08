@@ -177,4 +177,35 @@ final class Routes {
         sb.append("</Document></kml>\n");
         return sb.toString();
     }
+
+    /** Все маршруты одним KML. */
+    static String toKmlAll(List<Route> routes) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+          .append("<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document><name>Маршруты</name>\n");
+        for (Route r : routes) {
+            String one = toKml(r);
+            int a = one.indexOf("<Placemark>"), b = one.lastIndexOf("</Document>");
+            sb.append("<Folder><name>").append(esc(r.name)).append("</name>\n").append(one, a, b).append("</Folder>\n");
+        }
+        sb.append("</Document></kml>\n");
+        return sb.toString();
+    }
+
+    /** GPX 1.1: маршруты с контрольными точками КТ1, КТ2… */
+    static String toGpx(List<Route> routes) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+          .append("<gpx version=\"1.1\" creator=\"LBS KML\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n");
+        for (Route r : routes) {
+            sb.append("<rte><name>").append(esc(r.name)).append("</name>\n");
+            for (int i = 0; i < r.pts.size(); i++) {
+                double[] p = r.pts.get(i);
+                sb.append(String.format(Locale.US, "<rtept lat=\"%.7f\" lon=\"%.7f\"><name>КТ%d</name></rtept>\n", p[0], p[1], i + 1));
+            }
+            sb.append("</rte>\n");
+        }
+        sb.append("</gpx>\n");
+        return sb.toString();
+    }
 }

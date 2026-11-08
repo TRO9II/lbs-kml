@@ -330,7 +330,7 @@ public class MapActivity extends Activity {
             float o = mv.getMapOrientation();
             if (o != last) {
                 last = o;
-                findViewById(R.id.compassNeedle).setRotation(o);
+                findViewById(R.id.compassRose).setRotation(o);
             }
         }
     }
@@ -458,9 +458,9 @@ public class MapActivity extends Activity {
 
     // ================= Подложка =================
 
-    private static final int STYLE_SCHEME = 0, STYLE_SAT = 1, STYLE_TOPO = 2;
-    private static final String[] STYLE_NAMES = {"Схема", "Спутник (Esri)", "Топокарта (Esri)"};
-    private static final String[] STYLE_SHORT = {"Схема", "Esri Спутник", "Esri Топо"};
+    private static final int STYLE_SCHEME = 0, STYLE_SAT = 1, STYLE_TOPO = 2, STYLE_RELIEF = 3;
+    private static final String[] STYLE_NAMES = {"Схема", "Спутник (Esri)", "Топокарта (Esri)", "Рельеф (OpenTopoMap)"};
+    private static final String[] STYLE_SHORT = {"Схема", "Esri Спутник", "Esri Топо", "Рельеф"};
     private static final String ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
 
     /** Тайлы Esri: порядок в адресе z/y/x. */
@@ -484,15 +484,43 @@ public class MapActivity extends Activity {
             "https://b.basemaps.cartocdn.com/rastertiles/voyager_nolabels/",
             "https://c.basemaps.cartocdn.com/rastertiles/voyager_nolabels/"});
 
-    private TilesOverlay esriLabels;
+    /** Рельеф с горизонталями и отметками высот. */
+    private static final OnlineTileSourceBase RELIEF = new XYTileSource("OpenTopoMap",
+            0, 17, 256, ".png", new String[]{
+            "https://a.tile.opentopomap.org/", "https://b.tile.opentopomap.org/", "https://c.tile.opentopomap.org/"},
+            "© OpenTopoMap",
+            new org.osmdroid.tileprovider.tilesource.TileSourcePolicy(2,
+                    org.osmdroid.tileprovider.tilesource.TileSourcePolicy.FLAG_NO_BULK
+                            | org.osmdroid.tileprovider.tilesource.TileSourcePolicy.FLAG_USER_AGENT_MEANINGFUL));
+    private static final OnlineTileSourceBase HILLSHADE = new EsriSource("EsriHillshade", "Elevation/World_Hillshade", ".jpg");
+
+    private TilesOverlay esriLabels, hillshade;
     private int currentStyle = STYLE_SAT;
+
+    /** Отмывка рельефа поверх любой подложки (полупрозрачная). */
+    private void applyHillshade() {
+        if (hillshade != null) {
+            map.getOverlays().remove(hillshade);
+            hillshade.onDetach(map);
+            hillshade = null;
+        }
+        if (!prefs.getBoolean("hillshade", false) || currentStyle == STYLE_RELIEF) return;
+        MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), HILLSHADE);
+        hillshade = new TilesOverlay(prov, getApplicationContext());
+        hillshade.setLoadingBackgroundColor(Color.TRANSPARENT);
+        hillshade.setLoadingLineColor(Color.TRANSPARENT);
+        android.graphics.ColorMatrix cm = new android.graphics.ColorMatrix();
+        cm.setScale(1f, 1f, 1f, 0.42f);
+        hillshade.setColorFilter(new android.graphics.ColorMatrixColorFilter(cm));
+        map.getOverlays().add(2, hillshade);
+    }
 
     private boolean labelsOn() {
         return prefs.getBoolean("labelsRu", true);
     }
 
     private void applyStyle(int style) {
-        if (style < 0 || style > 2) style = STYLE_SAT;
+        if (style < 0 || style > 3) style = STYLE_SAT;
         currentStyle = style;
         prefs.edit().putInt("mapStyle", style).apply();
         TextView attr = findViewById(R.id.attribution);
@@ -509,6 +537,9 @@ public class MapActivity extends Activity {
         } else if (style == STYLE_TOPO) {
             map.setTileSource(TOPO);
             attr.setText("Esri, HERE, Garmin, USGS, © OpenStreetMap");
+        } else if (style == STYLE_RELIEF) {
+            map.setTileSource(RELIEF);
+            attr.setText("© OpenTopoMap (CC-BY-SA), © OpenStreetMap, SRTM");
         } else {
             map.setTileSource(SAT);
             if (!ru) {
@@ -520,6 +551,7 @@ public class MapActivity extends Activity {
             }
             attr.setText("Esri, Maxar, Earthstar Geographics");
         }
+        applyHillshade();
         placesOverlay.setEnabled(ru);
         updateCoords();
         map.invalidate();
@@ -753,10 +785,10 @@ public class MapActivity extends Activity {
         LinearLayout seg = new LinearLayout(this);
         seg.setOrientation(LinearLayout.HORIZONTAL);
         final List<TextView> btns = new ArrayList<>();
-        final String[] names = {"Спутник", "Топо", "Схема"};
-        final int[] idx = {STYLE_SAT, STYLE_TOPO, STYLE_SCHEME};
-        final int[] icons = {R.drawable.ic_layers, R.drawable.ic_lbs, R.drawable.ic_grid};
-        for (int i = 0; i < 3; i++) {
+        final String[] names = {"Спутник", "Рельеф", "Топо", "Схема"};
+        final int[] idx = {STYLE_SAT, STYLE_RELIEF, STYLE_TOPO, STYLE_SCHEME};
+        final int[] icons = {R.drawable.ic_layers, R.drawable.ic_mountain, R.drawable.ic_lbs, R.drawable.ic_grid};
+        for (int i = 0; i < 4; i++) {
             TextView t = new TextView(this);
             t.setText(names[i]);
             t.setTextSize(13.5f);
@@ -768,7 +800,7 @@ public class MapActivity extends Activity {
             t.setCompoundDrawablePadding((int) dp(4));
             t.setPadding(0, (int) dp(12), 0, (int) dp(10));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-            if (i < 2) lp.setMarginEnd((int) dp(8));
+            if (i < 3) lp.setMarginEnd((int) dp(6));
             final int st = idx[i];
             t.setOnClickListener(v -> {
                 applyStyle(st);
@@ -779,6 +811,19 @@ public class MapActivity extends Activity {
             styleSegHud(t, st == currentStyle);
         }
         sheetContent.addView(seg);
+
+        hSection("ВЫСОТЫ");
+        hToggle("Отмывка рельефа", "Тени холмов и балок поверх подложки", prefs.getBoolean("hillshade", false), on -> {
+            prefs.edit().putBoolean("hillshade", on).apply();
+            applyHillshade();
+            map.invalidate();
+        });
+        TextView hint = new TextView(this);
+        hint.setText("Подложка «Рельеф» — горизонтали и отметки высот. Высота центра карты показана в плашке координат.");
+        hint.setTextColor(getColor(R.color.hud_text2));
+        hint.setTextSize(12);
+        hint.setPadding((int) dp(12), (int) dp(2), (int) dp(12), 0);
+        sheetContent.addView(hint);
 
         hSection("НА КАРТЕ");
         hToggle("Подписи на русском", "Названия населённых пунктов", labelsOn(), on -> {
@@ -817,32 +862,110 @@ public class MapActivity extends Activity {
             ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
         } catch (Exception ignored) {
         }
-        new AlertDialog.Builder(this)
-                .setTitle("ЛБС KML  v" + ver)
-                .setMessage("Карта линии фронта: сетка СК-42, свои точки, линейка и маршруты, офлайн-карты.\n\n"
-                        + "Подложки: Esri, CARTO, OpenStreetMap. Населённые пункты: OpenStreetMap.")
-                .setPositiveButton("OK", null)
-                .show();
+        sheet("О приложении");
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.mipmap.ic_launcher);
+        head.addView(logo, new LinearLayout.LayoutParams((int) dp(64), (int) dp(64)));
+        LinearLayout tt = new LinearLayout(this);
+        tt.setOrientation(LinearLayout.VERTICAL);
+        tt.setPadding((int) dp(14), 0, 0, 0);
+        TextView n = new TextView(this);
+        n.setText("ЛБС KML");
+        n.setTextSize(22);
+        n.setTextColor(getColor(R.color.hud_text));
+        n.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+        TextView v = new TextView(this);
+        v.setText("Версия " + ver);
+        v.setTextColor(getColor(R.color.hud_text2));
+        v.setTextSize(13);
+        tt.addView(n);
+        tt.addView(v);
+        head.addView(tt);
+        sheetContent.addView(head);
+
+        hSection("ВОЗМОЖНОСТИ");
+        int tx = getColor(R.color.hud_text);
+        hRow(hIcon(R.drawable.ic_lbs, 0xFFFF5A4E, 22), "Линия фронта", "Обновление, изменения, серая зона, файл KML", null, null);
+        hRow(hIcon(R.drawable.ic_grid, tx, 22), "Сетка СК-42", "Гаусс-Крюгер, круг-компас, координаты X/Y", null, null);
+        hRow(hIcon(R.drawable.ic_mountain, tx, 22), "Высоты и рельеф", "Высота точки, горизонтали, отмывка", null, null);
+        hRow(hIcon(R.drawable.ic_place, tx, 22), "Точки", "Цвета, значки, цель, экспорт KML/GPX", null, null);
+        hRow(hIcon(R.drawable.ic_route, tx, 22), "Линейка и маршруты", "Азимуты, дир. углы, таблица участков", null, null);
+        hRow(hIcon(R.drawable.ic_download, tx, 22), "Офлайн-карты", "Скачивание районов, работа без сети", null, null);
+
+        hSection("ИСТОЧНИКИ ДАННЫХ");
+        TextView src = new TextView(this);
+        src.setText("Подложки: Esri, OpenTopoMap, CARTO, OpenStreetMap.\nНаселённые пункты: OpenStreetMap.\n"
+                + "Высоты: Terrain Tiles (SRTM), точность ±5–10 м.");
+        src.setTextColor(getColor(R.color.hud_text2));
+        src.setTextSize(12.5f);
+        src.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
+        sheetContent.addView(src);
     }
 
     // ================= Информация о карте =================
 
     private void showInfo() {
-        final String head = "ЛБС: " + (lbsDate.isEmpty() ? "не загружена" : lbsDate) + "\n";
-        final String legend = "\n━  ЛБС — красная линия\n"
-                + "━  Изменения — жёлтая (новое), серая (прежнее)\n"
-                + "▮  Серая зона — статус неизвестен\n"
-                + "\nПоворот карты — двумя пальцами, компас — вернуть на север."
-                + "\nДолгое нажатие на карте — новая точка.";
-        final AlertDialog dlg = new AlertDialog.Builder(this)
-                .setTitle("О карте")
-                .setMessage(head + (currentStyle == STYLE_SAT ? "Спутник: загружаю дату снимка…\n" : "") + legend)
-                .setPositiveButton("OK", null)
-                .show();
-        if (currentStyle != STYLE_SAT) return;
-        queryImageryDate(text -> {
-            if (dlg.isShowing()) dlg.setMessage(head + text + "\n" + legend);
-        });
+        sheet("О карте");
+        LinearLayout c1 = hCard();
+        addKV(c1, "Линия фронта", lbsDate.isEmpty() ? "не загружена" : "снимок " + lbsDate);
+        addKV(c1, "Подложка", STYLE_NAMES[currentStyle]);
+        final TextView sat = addKV(c1, "Спутник в центре", currentStyle == STYLE_SAT ? "загружаю…" : "включите подложку «Спутник»");
+        GeoPoint c = (GeoPoint) map.getMapCenter();
+        final TextView el = addKV(c1, "Высота центра", "…");
+        sheetContent.addView(c1);
+        Elevation.get(this, c.getLatitude(), c.getLongitude(), h -> el.setText(Elevation.fmt(h)));
+        if (currentStyle == STYLE_SAT) queryImageryDate(t -> sat.setText(t.replace("Спутник (центр карты): ", "").replace("Спутник: ", "")));
+
+        hSection("ЛЕГЕНДА");
+        legendRow(0xFFE61414, false, "ЛБС", "линия фронта");
+        legendRow(0xFFFFD200, false, "Изменения", "новое положение линии");
+        legendRow(0xFF8C8C8C, false, "Прежнее положение", "до последнего снимка");
+        legendRow(0x8C464646, true, "Серая зона", "статус неизвестен");
+        legendRow(0xFF00E5FF, false, "Маршруты", "свои, цвет задаётся");
+
+        hSection("ПОДСКАЗКИ");
+        TextView tips = new TextView(this);
+        tips.setText("• Нажатие на прицел в центре — новая точка\n• Долгое нажатие — точка в этом месте\n"
+                + "• Двумя пальцами — поворот карты\n• Компас: север вверх ↔ по компасу телефона\n"
+                + "• В поиске можно вводить координаты: 48.28, 37.17 или X 5351605 Y 7364745");
+        tips.setTextColor(getColor(R.color.hud_text2));
+        tips.setTextSize(13);
+        tips.setLineSpacing(dp(3), 1f);
+        tips.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
+        sheetContent.addView(tips);
+    }
+
+    private TextView addKV(LinearLayout card, String k, String v) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, (int) dp(4), 0, (int) dp(4));
+        TextView kt = new TextView(this);
+        kt.setText(k);
+        kt.setTextColor(getColor(R.color.hud_text2));
+        kt.setTextSize(13);
+        TextView vt = new TextView(this);
+        vt.setText(v);
+        vt.setTextColor(getColor(R.color.hud_text));
+        vt.setTextSize(13);
+        vt.setGravity(android.view.Gravity.END);
+        row.addView(kt, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(vt, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f));
+        card.addView(row);
+        return vt;
+    }
+
+    private void legendRow(int color, boolean area, String title, String sub) {
+        View sw = new View(this);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(area ? 4 : 2));
+        g.setColor(color);
+        if (area) g.setStroke((int) dp(1), 0xFF505050);
+        sw.setBackground(g);
+        sw.setLayoutParams(new LinearLayout.LayoutParams((int) dp(26), (int) dp(area ? 16 : 5)));
+        hRow(sw, title, sub, null, null);
     }
 
     private interface TextCallback {
@@ -1002,10 +1125,19 @@ public class MapActivity extends Activity {
             }
             return;
         }
+        CoordParse.Result cr = CoordParse.parse(q);
+        if (cr != null) {
+            addHeader("КООРДИНАТЫ · " + cr.kind.toUpperCase(Locale.ROOT));
+            final double clat = cr.lat, clon = cr.lon;
+            addResultRow(String.format(Locale.US, "Перейти: %.6f, %.6f", clat, clon),
+                    "СК-42: " + Sk42.format(clat, clon), v -> goTo(clat, clon, "Координаты",
+                            String.format(Locale.US, "%.6f, %.6f", clat, clon), 15.0));
+        }
         if (places == null) {
             addResultRow("Загружаю список…", "", null);
             return;
         }
+        if (cr != null) addHeader("НАСЕЛЁННЫЕ ПУНКТЫ");
         for (int i : places.search(q, 30)) {
             final int idx = i;
             addResultRow(places.name[i], places.subtitle(i), v -> showPlace(idx));
@@ -1136,15 +1268,37 @@ public class MapActivity extends Activity {
 
     private static final double[] BARS = {10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000};
 
+    private double centerElev = Double.NaN, targetElev = Double.NaN;
+    private final android.os.Handler elevHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private String coordWgsText = "";
+
+    private final Runnable elevTask = () -> {
+        GeoPoint c = (GeoPoint) map.getMapCenter();
+        Elevation.get(this, c.getLatitude(), c.getLongitude(), h -> {
+            centerElev = h;
+            showCoordLine();
+            GeoPoint c2 = (GeoPoint) map.getMapCenter();
+            updateTargetCard(c2.getLatitude(), c2.getLongitude());
+        });
+    };
+
+    private void showCoordLine() {
+        ((TextView) findViewById(R.id.coordWgs)).setText(coordWgsText
+                + (Double.isNaN(centerElev) ? "" : "   ↑ " + Math.round(centerElev) + " м"));
+    }
+
     private void updateCoords() {
         if (reticleOverlay == null || map == null) return;
+        elevHandler.removeCallbacks(elevTask);
+        elevHandler.postDelayed(elevTask, 250);
         GeoPoint c = (GeoPoint) map.getMapCenter();
         double lat = c.getLatitude(), lon = c.getLongitude();
         if (findViewById(R.id.coordCard).getVisibility() == View.VISIBLE) {
             double[] r = Sk42.fromWgs(lat, lon);
             ((TextView) findViewById(R.id.coordSk)).setText("X " + Math.round(r[0]) + "   Y " + Math.round(r[1]));
-            ((TextView) findViewById(R.id.coordWgs)).setText(String.format(Locale.US, "%.5f° %s  %.5f° %s",
-                    Math.abs(lat), lat >= 0 ? "N" : "S", Math.abs(lon), lon >= 0 ? "E" : "W"));
+            coordWgsText = String.format(Locale.US, "%.5f° %s  %.5f° %s",
+                    Math.abs(lat), lat >= 0 ? "N" : "S", Math.abs(lon), lon >= 0 ? "E" : "W");
+            showCoordLine();
         }
         if (gridOn()) {
             Projection pj = map.getProjection();
@@ -1176,6 +1330,8 @@ public class MapActivity extends Activity {
         prefs.edit().putString("targetLat", Double.toString(lat)).putString("targetLon", Double.toString(lon))
                 .putString("targetName", name).apply();
         reticleOverlay.setTarget(lat, lon);
+        targetElev = Double.NaN;
+        Elevation.get(this, lat, lon, h -> { targetElev = h; updateCoords(); });
         updateCoords();
         map.invalidate();
         Toast.makeText(this, "Цель: " + name, Toast.LENGTH_SHORT).show();
@@ -1191,8 +1347,9 @@ public class MapActivity extends Activity {
     private void restoreTarget() {
         if (!hasTarget()) return;
         try {
-            reticleOverlay.setTarget(Double.parseDouble(prefs.getString("targetLat", "0")),
-                    Double.parseDouble(prefs.getString("targetLon", "0")));
+            double tl = Double.parseDouble(prefs.getString("targetLat", "0")), tn = Double.parseDouble(prefs.getString("targetLon", "0"));
+            reticleOverlay.setTarget(tl, tn);
+            Elevation.get(this, tl, tn, h -> { targetElev = h; updateCoords(); });
         } catch (NumberFormatException e) {
             clearTarget();
         }
@@ -1214,8 +1371,13 @@ public class MapActivity extends Activity {
         }
         double[] inv = Geo.inverse(lat, lon, tLat, tLon);
         card.setVisibility(View.VISIBLE);
+        String dh = "";
+        if (!Double.isNaN(centerElev) && !Double.isNaN(targetElev)) {
+            long d = Math.round(targetElev - centerElev);
+            dh = "   " + (d >= 0 ? "↑+" : "↓") + d + " м";
+        }
         ((TextView) findViewById(R.id.targetMain)).setText(
-                "→ " + Geo.dist(inv[0]) + "   " + String.format(Locale.US, "%.1f°", inv[1]));
+                "→ " + Geo.dist(inv[0]) + "   " + String.format(Locale.US, "%.1f°", inv[1]) + dh);
         ((TextView) findViewById(R.id.targetSub)).setText(
                 prefs.getString("targetName", "") + " · д.у. " + Geo.mils(Geo.gridBearing(lat, lon, tLat, tLon)));
     }
@@ -1331,9 +1493,15 @@ public class MapActivity extends Activity {
         wgs.setText(String.format(Locale.US, "%.6f, %.6f  ·  зона %d", lat, lon, (int) r[2]));
         wgs.setTextSize(12.5f);
         wgs.setTextColor(0xFF64B5F6);
+        final TextView el = new TextView(this);
+        el.setText("Высота: …");
+        el.setTextSize(12.5f);
+        el.setTextColor(getColor(R.color.hud_text2));
         card.addView(cap);
         card.addView(sk);
         card.addView(wgs);
+        card.addView(el);
+        Elevation.get(this, lat, lon, h -> el.setText("Высота: " + Elevation.fmt(h) + "  (±5–10 м)"));
         card.setOnClickListener(v -> copy(coordsText(lat, lon), "Координаты скопированы"));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -1528,6 +1696,41 @@ public class MapActivity extends Activity {
         }
     }
 
+    private void showExport() {
+        sheet("Экспорт");
+        int tx = getColor(R.color.hud_text);
+        hSection("МОИ ТОЧКИ · " + userPoints.size());
+        hRow(hIcon(R.drawable.ic_share, tx, 22), "Точки в KML", "AlpineQuest, Google Earth", null, v -> { closeSheet(); exportPoints(); });
+        hRow(hIcon(R.drawable.ic_gpx, tx, 22), "Точки в GPX", "Навигаторы, OsmAnd, Locus", null, v -> {
+            closeSheet();
+            if (userPoints.isEmpty()) { Toast.makeText(this, "Нет точек", Toast.LENGTH_SHORT).show(); return; }
+            saveAndShare("Tochki_" + new SimpleDateFormat("dd_MM_yyyy", Locale.US).format(new Date()) + ".gpx",
+                    UserPoints.toGpx(userPoints), "Отправить точки", "application/gpx+xml");
+        });
+        hSection("МАРШРУТЫ · " + routes.size());
+        hRow(hIcon(R.drawable.ic_route, tx, 22), "Все маршруты в KML", "Линии и контрольные точки", null, v -> {
+            closeSheet();
+            if (routes.isEmpty()) { Toast.makeText(this, "Нет маршрутов", Toast.LENGTH_SHORT).show(); return; }
+            saveAndShare("Marshruty_" + new SimpleDateFormat("dd_MM_yyyy", Locale.US).format(new Date()) + ".kml",
+                    Routes.toKmlAll(routes), "Отправить маршруты");
+        });
+        hRow(hIcon(R.drawable.ic_gpx, tx, 22), "Все маршруты в GPX", "Для навигаторов", null, v -> {
+            closeSheet();
+            if (routes.isEmpty()) { Toast.makeText(this, "Нет маршрутов", Toast.LENGTH_SHORT).show(); return; }
+            saveAndShare("Marshruty_" + new SimpleDateFormat("dd_MM_yyyy", Locale.US).format(new Date()) + ".gpx",
+                    Routes.toGpx(routes), "Отправить маршруты", "application/gpx+xml");
+        });
+        hSection("ЛИНИЯ ФРОНТА");
+        hRow(hIcon(R.drawable.ic_lbs, 0xFFFF5A4E, 22), "Файл ЛБС (KML)", lbsDate.isEmpty() ? "не загружена" : "снимок " + lbsDate,
+                null, v -> { closeSheet(); openLbsFile(true); });
+        TextView note = new TextView(this);
+        note.setText("Файлы сохраняются в папку «Загрузки» и сразу открывается окно «Отправить».");
+        note.setTextColor(getColor(R.color.hud_text2));
+        note.setTextSize(12);
+        note.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        sheetContent.addView(note);
+    }
+
     private void exportPoints() {
         if (userPoints.isEmpty()) {
             Toast.makeText(this, "Нет точек для экспорта", Toast.LENGTH_SHORT).show();
@@ -1538,13 +1741,18 @@ public class MapActivity extends Activity {
     }
 
     private void saveAndShare(String name, String kml, String title) {
+        saveAndShare(name, kml, title, LbsCore.KML_MIME);
+    }
+
+    private void saveAndShare(String name, String kml, String title, String mime) {
         new Thread(() -> {
             try {
-                Uri uri = LbsCore.saveToDownloads(getApplicationContext(), name, kml.getBytes(StandardCharsets.UTF_8));
+                Uri uri = LbsCore.saveToDownloads(getApplicationContext(), name, kml.getBytes(StandardCharsets.UTF_8),
+                        mime.equals(LbsCore.KML_MIME) ? mime : "application/octet-stream");
                 runOnUiThread(() -> {
                     Toast.makeText(this, name + " сохранён в «Загрузки»", Toast.LENGTH_LONG).show();
                     Intent i = new Intent(Intent.ACTION_SEND);
-                    i.setType(LbsCore.KML_MIME);
+                    i.setType(mime);
                     i.putExtra(Intent.EXTRA_STREAM, uri);
                     i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     startActivity(Intent.createChooser(i, title));
@@ -1862,7 +2070,7 @@ public class MapActivity extends Activity {
         findViewById(R.id.tileLayers).setOnClickListener(v -> { openMenu(false); showLayers(); });
         findViewById(R.id.tileOffline).setOnClickListener(v -> { openMenu(false); chooseDownload(); });
         findViewById(R.id.tileRoutes).setOnClickListener(v -> { openMenu(false); showRoutes(); });
-        findViewById(R.id.tilePoints).setOnClickListener(v -> { openMenu(false); exportPoints(); });
+        findViewById(R.id.tilePoints).setOnClickListener(v -> { openMenu(false); showExport(); });
         findViewById(R.id.tileInfo).setOnClickListener(v -> { openMenu(false); showInfo(); });
         findViewById(R.id.tileAbout).setOnClickListener(v -> { openMenu(false); showAbout(); });
 
@@ -2091,42 +2299,60 @@ public class MapActivity extends Activity {
             Toast.makeText(this, "Загрузка уже идёт", Toast.LENGTH_SHORT).show();
             return;
         }
+        sheet("Офлайн-карты");
+        LinearLayout info = hCard();
+        addKV(info, "Сохранено на телефоне", mb(tileDb().length()));
+        addKV(info, "Подложка", STYLE_NAMES[currentStyle]);
+        addKV(info, "Область", "то, что видно на экране");
+        sheetContent.addView(info);
+
         final CacheManager cm;
         try {
             cm = new CacheManager(map);
         } catch (Exception e) {
-            new AlertDialog.Builder(this)
-                    .setTitle("Нельзя скачать эту карту")
-                    .setMessage("Правила OpenStreetMap запрещают массовое скачивание схемы с их подписями. "
-                            + "Включите русские подписи или выберите спутник / топокарту.")
-                    .setPositiveButton("Понятно", null)
-                    .show();
+            TextView t = new TextView(this);
+            t.setText("Правила этого источника запрещают массовое скачивание. Для офлайна выберите «Спутник» или «Топо» "
+                    + "(или «Схему» с русскими подписями). Просмотренные места «Рельефа» всё равно сохраняются.");
+            t.setTextColor(0xFFFF8A80);
+            t.setTextSize(13);
+            t.setPadding((int) dp(4), (int) dp(12), (int) dp(4), 0);
+            sheetContent.addView(t);
             return;
         }
         final BoundingBox bb = map.getBoundingBox();
         final int zMin = 8;
+        int maxZ = (int) map.getTileProvider().getTileSource().getMaximumZoomLevel();
         final int[] zMaxes = {15, 16, 17, 18};
-        final String[] items = new String[zMaxes.length];
-        final int[] counts = new int[zMaxes.length];
+        final String[] detail = {"обзор, дороги", "сёла, посадки", "улицы, дворы", "максимум, дома"};
+        hSection("СКАЧАТЬ ВИДИМУЮ ОБЛАСТЬ");
         for (int i = 0; i < zMaxes.length; i++) {
-            counts[i] = cm.possibleTilesInArea(bb, zMin, zMaxes[i]);
-            String detail = zMaxes[i] <= 15 ? "обзор" : zMaxes[i] == 16 ? "сёла" : zMaxes[i] == 17 ? "улицы" : "максимум, дома";
-            items[i] = "До уровня " + zMaxes[i] + " (" + detail + ") — " + mb((double) counts[i] * tileBytes())
-                    + (counts[i] > MAX_TILES ? " · слишком много, приблизьте" : "");
+            final int z = Math.min(zMaxes[i], maxZ);
+            if (i > 0 && z == Math.min(zMaxes[i - 1], maxZ)) continue;
+            final int cnt = cm.possibleTilesInArea(bb, zMin, z);
+            boolean tooBig = cnt > MAX_TILES;
+            TextView size = new TextView(this);
+            size.setText(tooBig ? "много" : mb((double) cnt * tileBytes()));
+            size.setTextColor(tooBig ? 0xFFFF8A80 : getColor(R.color.hud_text));
+            size.setTextSize(13.5f);
+            size.setPadding((int) dp(8), 0, (int) dp(8), 0);
+            hRow(hIcon(R.drawable.ic_download, tooBig ? getColor(R.color.hud_text2) : getColor(R.color.hud_accent), 22),
+                    "До уровня " + z, detail[i] + (tooBig ? " · приблизьте карту" : ""), size, v -> {
+                        if (tooBig) {
+                            Toast.makeText(this, "Слишком большая область — приблизьте карту или выберите уровень ниже",
+                                    Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        closeSheet();
+                        startDownload(cm, bb, zMin, z, cnt);
+                    });
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Скачать видимую область")
-                .setItems(items, (dlg, which) -> {
-                    if (counts[which] > MAX_TILES) {
-                        Toast.makeText(this, "Слишком большая область — приблизьте карту или выберите уровень ниже",
-                                Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    startDownload(cm, bb, zMin, zMaxes[which], counts[which]);
-                })
-                .setNeutralButton("Очистить (" + mb(tileDb().length()) + ")", (dlg, w) -> confirmClear())
-                .setNegativeButton("Отмена", null)
-                .show();
+        TextView note = new TextView(this);
+        note.setText("Скачанное открывается мгновенно и работает без интернета. Большие районы лучше качать частями.");
+        note.setTextColor(getColor(R.color.hud_text2));
+        note.setTextSize(12);
+        note.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        sheetContent.addView(note);
+        hChipRow(hChip("Очистить сохранённые карты", R.drawable.ic_delete, false, v -> { closeSheet(); confirmClear(); }));
     }
 
     private void startDownload(CacheManager cm, BoundingBox bb, int zMin, int zMax, int total) {
