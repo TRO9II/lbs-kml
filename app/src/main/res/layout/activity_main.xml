@@ -29,6 +29,13 @@
         android:text="Нажмите «Обновить ЛБС»"
         android:textSize="16sp" />
 
+    <CheckBox
+        android:id="@+id/autoCheck"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Проверять новую ЛБС автоматически (каждые 12 ч) и присылать уведомление" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
