@@ -9,6 +9,22 @@ import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.WindowInsets;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.osmdroid.tileprovider.tilesource.XYTileSource;
+import org.osmdroid.views.overlay.Marker;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -79,6 +95,9 @@ public class MapActivity extends Activity {
         findViewById(R.id.btnZoomIn).setOnClickListener(v -> map.getController().zoomIn());
         findViewById(R.id.btnZoomOut).setOnClickListener(v -> map.getController().zoomOut());
         findViewById(R.id.btnLayers).setOnClickListener(v -> chooseStyle());
+        findViewById(R.id.btnLabels).setOnClickListener(v -> toggleLabels());
+        styleLabelsButton();
+        setupSearch();
 
         KmlBuilder.Parsed data;
         try {
@@ -93,6 +112,7 @@ public class MapActivity extends Activity {
         }
         ((TextView) findViewById(R.id.mapDate)).setText("Снимок DeepState: " + data.date.replace(" o ", ", "));
         addOverlays(data);
+        loadPlaces();
         applyStyle(LbsCore.prefs(this).getInt("mapStyle", STYLE_SAT));
         buildChips();
 
@@ -103,7 +123,7 @@ public class MapActivity extends Activity {
     // ---------- Подложка ----------
 
     private static final int STYLE_SCHEME = 0, STYLE_SAT = 1, STYLE_TOPO = 2;
-    private static final String[] STYLE_NAMES = {"Схема (OpenStreetMap)", "Спутник (Esri)", "Топокарта (Esri)"};
+    private static final String[] STYLE_NAMES = {"Схема", "Спутник (Esri)", "Топокарта (Esri)"};
     private static final String ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
 
     /** Тайлы Esri: порядок в адресе z/y/x. */
@@ -124,8 +144,17 @@ public class MapActivity extends Activity {
 
     private TilesOverlay labels;
 
+    private static final OnlineTileSourceBase CARTO_NOLABELS = new XYTileSource("CartoVoyagerNoLabels",
+            0, 19, 256, ".png", new String[]{
+            "https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/",
+            "https://b.basemaps.cartocdn.com/rastertiles/voyager_nolabels/",
+            "https://c.basemaps.cartocdn.com/rastertiles/voyager_nolabels/"});
+
+    private int currentStyle = STYLE_SAT;
+
     private void applyStyle(int style) {
         if (style < 0 || style > 2) style = STYLE_SAT;
+        currentStyle = style;
         LbsCore.prefs(this).edit().putInt("mapStyle", style).apply();
         TextView attr = findViewById(R.id.attribution);
         if (labels != null) {
@@ -133,23 +162,242 @@ public class MapActivity extends Activity {
             labels.onDetach(map);
             labels = null;
         }
+        boolean ru = labelsOn();
         if (style == STYLE_SCHEME) {
-            map.setTileSource(TileSourceFactory.MAPNIK);
-            attr.setText("© участники OpenStreetMap");
+            // с русскими подписями — схема без своих подписей, чтобы не дублировать
+            map.setTileSource(ru ? CARTO_NOLABELS : TileSourceFactory.MAPNIK);
+            attr.setText(ru ? "© OpenStreetMap, © CARTO" : "© участники OpenStreetMap");
         } else if (style == STYLE_TOPO) {
             map.setTileSource(TOPO);
             attr.setText("Esri, HERE, Garmin, USGS, © OpenStreetMap");
         } else {
             map.setTileSource(SAT);
-            // подписи городов и границы поверх спутника, под линиями
-            MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), LABELS);
-            labels = new TilesOverlay(prov, getApplicationContext());
-            labels.setLoadingBackgroundColor(Color.TRANSPARENT);
-            labels.setLoadingLineColor(Color.TRANSPARENT);
-            map.getOverlays().add(0, labels);
+            if (!ru) {
+                // английские подписи Esri, если русские выключены
+                MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), LABELS);
+                labels = new TilesOverlay(prov, getApplicationContext());
+                labels.setLoadingBackgroundColor(Color.TRANSPARENT);
+                labels.setLoadingLineColor(Color.TRANSPARENT);
+                map.getOverlays().add(0, labels);
+            }
             attr.setText("Esri, Maxar, Earthstar Geographics");
         }
+        if (placesOverlay != null) placesOverlay.setEnabled(ru);
         map.invalidate();
+    }
+
+    // ---------- Русские подписи ----------
+
+    private PlacesOverlay placesOverlay;
+    private Places places;
+
+    private boolean labelsOn() {
+        return LbsCore.prefs(this).getBoolean("labelsRu", true);
+    }
+
+    private void toggleLabels() {
+        boolean on = !labelsOn();
+        LbsCore.prefs(this).edit().putBoolean("labelsRu", on).apply();
+        applyStyle(currentStyle);
+        styleLabelsButton();
+        Toast.makeText(this, on ? "Подписи на русском включены" : "Подписи на русском выключены",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    private void styleLabelsButton() {
+        TextView b = findViewById(R.id.btnLabels);
+        b.setTextColor(labelsOn() ? getColor(R.color.accent) : getColor(R.color.text2));
+    }
+
+    private void loadPlaces() {
+        placesOverlay = new PlacesOverlay(getResources().getDisplayMetrics().density);
+        placesOverlay.setEnabled(labelsOn());
+        map.getOverlays().add(placesOverlay);
+        new Thread(() -> {
+            try {
+                Places p = Places.get(getApplicationContext());
+                runOnUiThread(() -> {
+                    places = p;
+                    placesOverlay.setPlaces(p);
+                    map.invalidate();
+                    if (searchBox != null && searchBox.getText().length() > 0) runLocalSearch();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this, "Список населённых пунктов не загрузился",
+                        Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    // ---------- Поиск ----------
+
+    private EditText searchBox;
+    private LinearLayout results;
+    private View resultsScroll;
+    private Marker found;
+    private Thread onlineSearch;
+
+    private void setupSearch() {
+        searchBox = findViewById(R.id.searchBox);
+        results = findViewById(R.id.results);
+        resultsScroll = findViewById(R.id.resultsScroll);
+        findViewById(R.id.btnSearch).setOnClickListener(v -> openSearch(true));
+        findViewById(R.id.btnSearchClose).setOnClickListener(v -> openSearch(false));
+        searchBox.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(Editable s) { runLocalSearch(); }
+        });
+        searchBox.setOnEditorActionListener((v, actionId, ev) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                String q = searchBox.getText().toString().trim();
+                if (places != null && !places.search(q, 1).isEmpty()) {
+                    showPlace(places.search(q, 1).get(0));
+                } else if (!q.isEmpty()) {
+                    searchOnline(q);
+                }
+                return true;
+            }
+            return false;
+        });
+    }
+
+    private void openSearch(boolean open) {
+        findViewById(R.id.titleRow).setVisibility(open ? View.GONE : View.VISIBLE);
+        findViewById(R.id.searchRow).setVisibility(open ? View.VISIBLE : View.GONE);
+        InputMethodManager imm = getSystemService(InputMethodManager.class);
+        if (open) {
+            searchBox.requestFocus();
+            if (imm != null) imm.showSoftInput(searchBox, InputMethodManager.SHOW_IMPLICIT);
+        } else {
+            searchBox.setText("");
+            showResults(false);
+            if (imm != null) imm.hideSoftInputFromWindow(searchBox.getWindowToken(), 0);
+        }
+    }
+
+    private void showResults(boolean show) {
+        resultsScroll.setVisibility(show ? View.VISIBLE : View.GONE);
+        findViewById(R.id.chipsScroll).setVisibility(show ? View.GONE : View.VISIBLE);
+    }
+
+    private void runLocalSearch() {
+        String q = searchBox.getText().toString().trim();
+        results.removeAllViews();
+        if (q.isEmpty()) { showResults(false); return; }
+        showResults(true);
+        if (places == null) {
+            addResultRow("Загружаю список…", "", null);
+            return;
+        }
+        List<Integer> hits = places.search(q, 30);
+        for (int i : hits) {
+            final int idx = i;
+            addResultRow(places.name[i], places.subtitle(i), v -> showPlace(idx));
+        }
+        final String query = q;
+        addResultRow("🌐 Искать «" + q + "» в интернете", "OpenStreetMap Nominatim", v -> searchOnline(query));
+    }
+
+    private void addResultRow(String title, String sub, View.OnClickListener click) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        int ph = (int) dp(16), pv = (int) dp(10);
+        row.setPadding(ph, pv, ph, pv);
+        if (click != null) {
+            row.setBackgroundResource(resolveSelectable());
+            row.setOnClickListener(click);
+        }
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextColor(getColor(R.color.text));
+        t.setTextSize(16);
+        row.addView(t);
+        if (!sub.isEmpty()) {
+            TextView st = new TextView(this);
+            st.setText(sub);
+            st.setTextColor(getColor(R.color.text2));
+            st.setTextSize(13);
+            row.addView(st);
+        }
+        results.addView(row);
+    }
+
+    private int resolveSelectable() {
+        TypedValue tv = new TypedValue();
+        getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
+        return tv.resourceId;
+    }
+
+    private void showPlace(int i) {
+        goTo(places.lat[i], places.lon[i], places.name[i], places.subtitle(i), places.rank[i] <= 1 ? 12.5 : 14.0);
+    }
+
+    private void goTo(double lat, double lon, String title, String sub, double zoom) {
+        openSearch(false);
+        GeoPoint g = new GeoPoint(lat, lon);
+        if (found != null) map.getOverlays().remove(found);
+        found = new Marker(map);
+        found.setPosition(g);
+        found.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM);
+        found.setTitle(title);
+        found.setSnippet(sub);
+        map.getOverlays().add(found);
+        map.getController().animateTo(g, zoom, 900L);
+        map.invalidate();
+    }
+
+    /** Поиск в интернете через Nominatim (OpenStreetMap), названия на русском. */
+    private void searchOnline(String q) {
+        if (onlineSearch != null && onlineSearch.isAlive()) return;
+        results.removeAllViews();
+        showResults(true);
+        addResultRow("Ищу в интернете…", "", null);
+        onlineSearch = new Thread(() -> {
+            List<String[]> out = new ArrayList<>();
+            String err = null;
+            try {
+                URL url = new URL("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=15"
+                        + "&accept-language=ru&countrycodes=ua,ru&q=" + URLEncoder.encode(q, "UTF-8"));
+                HttpURLConnection con = (HttpURLConnection) url.openConnection();
+                con.setRequestProperty("User-Agent", getPackageName() + " (https://github.com/TRO9II/lbs-kml)");
+                con.setConnectTimeout(15000);
+                con.setReadTimeout(20000);
+                try (InputStream in = con.getInputStream()) {
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int k;
+                    while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+                    JSONArray arr = new JSONArray(bo.toString("UTF-8"));
+                    for (int j = 0; j < arr.length(); j++) {
+                        JSONObject o = arr.getJSONObject(j);
+                        String disp = o.optString("display_name");
+                        int comma = disp.indexOf(',');
+                        out.add(new String[]{comma > 0 ? disp.substring(0, comma) : disp,
+                                comma > 0 ? disp.substring(comma + 1).trim() : "",
+                                o.optString("lat"), o.optString("lon")});
+                    }
+                }
+            } catch (Exception e) {
+                err = "Нет связи с сервером поиска";
+            }
+            final String error = err;
+            runOnUiThread(() -> {
+                if (isFinishing()) return;
+                results.removeAllViews();
+                if (error != null) addResultRow(error, "Проверьте интернет", null);
+                else if (out.isEmpty()) addResultRow("Ничего не найдено", "", null);
+                for (String[] r : out) {
+                    addResultRow(r[0], r[1], v -> {
+                        try {
+                            goTo(Double.parseDouble(r[2]), Double.parseDouble(r[3]), r[0], r[1], 13.0);
+                        } catch (NumberFormatException ignored) {
+                        }
+                    });
+                }
+            });
+        });
+        onlineSearch.start();
     }
 
     private void chooseStyle() {
@@ -266,6 +514,15 @@ public class MapActivity extends Activity {
             return insets;
         });
         root.requestApplyInsets();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (findViewById(R.id.searchRow).getVisibility() == View.VISIBLE) {
+            openSearch(false);
+            return;
+        }
+        super.onBackPressed();
     }
 
     @Override

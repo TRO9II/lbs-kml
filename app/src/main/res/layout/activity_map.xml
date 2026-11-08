@@ -21,12 +21,13 @@
         android:paddingBottom="10dp">
 
         <LinearLayout
+            android:id="@+id/titleRow"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="4dp"
-            android:paddingEnd="16dp">
+            android:paddingEnd="4dp">
 
             <TextView
                 android:id="@+id/btnBack"
@@ -47,9 +48,76 @@
                 android:text="Карта ЛБС"
                 android:textColor="@color/text"
                 android:textSize="20sp" />
+
+            <TextView
+                android:id="@+id/btnSearch"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Поиск"
+                android:gravity="center"
+                android:text="🔍"
+                android:textSize="20sp" />
         </LinearLayout>
 
+        <!-- Строка поиска -->
+        <LinearLayout
+            android:id="@+id/searchRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginEnd="12dp"
+            android:layout_marginBottom="6dp"
+            android:background="@drawable/bg_search"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/searchBox"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:hint="Город, посёлок, село…"
+                android:imeOptions="actionSearch"
+                android:inputType="textCapWords"
+                android:paddingStart="16dp"
+                android:paddingEnd="8dp"
+                android:singleLine="true"
+                android:textColor="@color/text"
+                android:textColorHint="@color/text2"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/btnSearchClose"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Закрыть поиск"
+                android:gravity="center"
+                android:text="✕"
+                android:textColor="@color/text2"
+                android:textSize="18sp" />
+        </LinearLayout>
+
+        <!-- Результаты поиска -->
+        <ScrollView
+            android:id="@+id/resultsScroll"
+            android:layout_width="match_parent"
+            android:layout_height="320dp"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/results"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </ScrollView>
+
         <HorizontalScrollView
+            android:id="@+id/chipsScroll"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:clipToPadding="false"
@@ -136,6 +204,15 @@
         android:layout_marginEnd="12dp"
         android:gravity="center_horizontal"
         android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/btnLabels"
+            style="@style/MapBtn"
+            android:layout_marginBottom="10dp"
+            android:contentDescription="Подписи на русском"
+            android:fontFamily="sans-serif-medium"
+            android:text="Аа"
+            android:textSize="17sp" />
 
         <TextView
             android:id="@+id/btnLayers"
