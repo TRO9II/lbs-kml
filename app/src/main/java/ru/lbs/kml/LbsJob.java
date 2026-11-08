@@ -130,7 +130,7 @@ public class LbsJob extends JobService {
         Notification n = new Notification.Builder(this, LbsCore.CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_dialog_map)
                 .setContentTitle("Новая ЛБС: " + r.date)
-                .setContentText(r.name + " сохранён в «Загрузки» (линий: " + r.lines + ")")
+                .setContentText(LbsCore.changesText(r.changes) + " · " + r.name)
                 .setContentIntent(piApp)
                 .addAction(new Notification.Action.Builder(
                         Icon.createWithResource("android", android.R.drawable.ic_menu_view),

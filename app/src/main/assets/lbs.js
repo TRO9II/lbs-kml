@@ -60,7 +60,12 @@
     });
   });
   if (!lines.length) return 'ERR Линия фронта не найдена';
-  return 'DATE ' + d.datetime + '|' + d.id + '\n' + lines.map(function (l) {
-    return l.map(function (p) { return p[0].toFixed(7) + ',' + p[1].toFixed(7); }).join(' ');
-  }).join('\n');
+  var out = lines.map(function (l) {
+    return 'L ' + l.map(function (p) { return p[0].toFixed(7) + ',' + p[1].toFixed(7); }).join(' ');
+  });
+  gray.forEach(function (f) {
+    var r = f.geometry.coordinates[0];
+    if (r && r.length >= 4) out.push('G ' + r.map(function (p) { return p[0].toFixed(6) + ',' + p[1].toFixed(6); }).join(' '));
+  });
+  return 'DATE ' + d.datetime + '|' + d.id + '\n' + out.join('\n');
 })();

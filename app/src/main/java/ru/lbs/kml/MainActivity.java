@@ -39,7 +39,7 @@ public class MainActivity extends Activity {
     private View stateRow;
     private ProgressBar progress;
     private Button btnUpdate, btnOpen, btnShare;
-    private Switch autoCheck;
+    private Switch autoCheck, optDiff, optGray;
     private String script;
     private boolean running;
     private int tries;
@@ -61,6 +61,12 @@ public class MainActivity extends Activity {
         btnOpen = findViewById(R.id.btnOpen);
         btnShare = findViewById(R.id.btnShare);
         autoCheck = findViewById(R.id.autoCheck);
+        optDiff = findViewById(R.id.optDiff);
+        optGray = findViewById(R.id.optGray);
+        optDiff.setChecked(LbsCore.optDiff(this));
+        optGray.setChecked(LbsCore.optGray(this));
+        optDiff.setOnCheckedChangeListener((b, on) -> optionChanged("optDiff", on));
+        optGray.setOnCheckedChangeListener((b, on) -> optionChanged("optGray", on));
         try {
             String ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
             ((TextView) findViewById(R.id.version)).setText("v" + ver);
@@ -99,6 +105,11 @@ public class MainActivity extends Activity {
         btnUpdate.setOnClickListener(v -> startUpdate());
         btnOpen.setOnClickListener(v -> openFile());
         btnShare.setOnClickListener(v -> shareFile());
+    }
+
+    private void optionChanged(String key, boolean on) {
+        LbsCore.prefs(this).edit().putBoolean(key, on).apply();
+        Toast.makeText(this, "Применится при следующем «Обновить ЛБС»", Toast.LENGTH_SHORT).show();
     }
 
     @Override
@@ -148,6 +159,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder(p.getString("lastName", ""));
         int lines = p.getInt("lastLines", 0);
         if (lines > 0) sb.append(" · ").append(linesWord(lines));
+        if (p.contains("lastChanges")) sb.append("\n").append(LbsCore.changesText(p.getInt("lastChanges", -1)));
         long checked = p.getLong("lastCheck", 0);
         if (checked > 0) sb.append("\nПроверено ").append(DateFormat.format("dd.MM в HH:mm", checked));
         tvInfo.setText(sb);

@@ -18,10 +18,15 @@ import android.provider.MediaStore;
 import org.json.JSONTokener;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Calendar;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -41,6 +46,7 @@ final class LbsCore {
     static class Result {
         String name, date, id;
         int lines;
+        int changes = -1;
         Uri uri;
     }
 
@@ -69,46 +75,80 @@ final class LbsCore {
         }
     }
 
+    static boolean optGray(Context c) { return prefs(c).getBoolean("optGray", true); }
+    static boolean optDiff(Context c) { return prefs(c).getBoolean("optDiff", true); }
+
     static Result buildAndSave(Context c, String data) throws Exception {
-        String[] rows = data.split("\n");
-        String head = rows[0].substring(5); // после "DATE "
-        String date = head, id = "";
-        int bar = head.lastIndexOf('|');
-        if (bar >= 0) {
-            date = head.substring(0, bar).trim();
-            id = head.substring(bar + 1).trim();
-        }
+        KmlBuilder.Parsed p = KmlBuilder.parse(data);
+        if (p.lines.isEmpty()) throw new Exception("пустая линия фронта");
 
-        StringBuilder sb = new StringBuilder(rows.length * 2000);
-        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-          .append("<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document><Folder><name>Новая категория</name><open>1</open>")
-          .append("<Style><ListStyle><listItemType>check</listItemType><bgColor>00ffffff</bgColor></ListStyle></Style>")
-          .append("<Folder><name>Lines</name><open>1</open>\n");
-        int count = 0;
-        for (int i = 1; i < rows.length; i++) {
-            String line = rows[i].trim();
-            if (line.isEmpty()) continue;
-            sb.append("<Placemark><name>Front line</name><description></description><Style><LineStyle><color>FF0000FF</color><width>4</width></LineStyle></Style><LineString><extrude>1</extrude><coordinates>");
-            String[] pts = line.split(" ");
-            for (int j = 0; j < pts.length; j++) {
-                if (j > 0) sb.append(' ');
-                sb.append(pts[j]).append(",0");
-            }
-            sb.append("</coordinates></LineString></Placemark>\n");
-            count++;
+        List<double[][]> base = updateHistory(c, p);
+        List<double[][]> added = Collections.emptyList(), removed = Collections.emptyList();
+        int changes = -1; // -1 = не с чем сравнивать
+        if (base != null) {
+            added = KmlBuilder.diff(p.lines, base, KmlBuilder.DIFF_KM);
+            removed = KmlBuilder.diff(base, p.lines, KmlBuilder.DIFF_KM);
+            changes = added.size() + removed.size();
         }
-        sb.append("</Folder></Folder></Document></kml>\n");
+        boolean diff = optDiff(c);
+        String kml = KmlBuilder.build(p.lines,
+                optGray(c) ? p.gray : null,
+                diff ? added : null,
+                diff ? removed : null,
+                p.date);
 
-        String name = fileName(date);
-        Uri uri = saveToDownloads(c, name, sb.toString().getBytes(StandardCharsets.UTF_8));
+        String name = fileName(p.date);
+        Uri uri = saveToDownloads(c, name, kml.getBytes(StandardCharsets.UTF_8));
 
         Result r = new Result();
         r.name = name;
-        r.date = date;
-        r.id = id;
-        r.lines = count;
+        r.date = p.date;
+        r.id = p.id;
+        r.lines = p.lines.size();
+        r.changes = changes;
         r.uri = uri;
         return r;
+    }
+
+    /**
+     * Хранит текущий и предыдущий снимок линии во внутренней памяти.
+     * Возвращает линии предыдущего снимка (или null, если его ещё нет).
+     */
+    private static synchronized List<double[][]> updateHistory(Context c, KmlBuilder.Parsed p) throws Exception {
+        File cur = new File(c.getFilesDir(), "cur.txt");
+        File base = new File(c.getFilesDir(), "base.txt");
+        String curId = cur.exists() ? firstLine(cur) : null;
+        if (curId != null && !curId.equals(p.id)) {
+            if (base.exists() && !base.delete()) throw new Exception("не удалось обновить историю");
+            if (!cur.renameTo(base)) throw new Exception("не удалось обновить историю");
+        }
+        writeText(cur, p.id + "\n" + KmlBuilder.serializeLines(p.lines));
+        if (!base.exists()) return null;
+        String text = readText(base);
+        int nl = text.indexOf('\n');
+        return KmlBuilder.parse(nl >= 0 ? text.substring(nl + 1) : "").lines;
+    }
+
+    private static String firstLine(File f) throws Exception {
+        String t = readText(f);
+        int nl = t.indexOf('\n');
+        return (nl >= 0 ? t.substring(0, nl) : t).trim();
+    }
+
+    private static String readText(File f) throws Exception {
+        try (InputStream in = new FileInputStream(f)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            return out.toString("UTF-8");
+        }
+    }
+
+    private static void writeText(File f, String s) throws Exception {
+        try (OutputStream os = new FileOutputStream(f)) {
+            os.write(s.getBytes(StandardCharsets.UTF_8));
+        }
     }
 
     /** Запоминает результат. Возвращает true, если снимок новый (id отличается от прошлого). */
@@ -122,6 +162,7 @@ final class LbsCore {
                 .putString("lastName", r.name)
                 .putString("lastDate", r.date)
                 .putInt("lastLines", r.lines)
+                .putInt("lastChanges", r.changes)
                 .putLong("lastCheck", System.currentTimeMillis())
                 .apply();
         return isNew;
@@ -201,5 +242,15 @@ final class LbsCore {
                 NotificationManager.IMPORTANCE_DEFAULT);
         ch.setDescription("Уведомления о новом снимке DeepStateMap");
         nm.createNotificationChannel(ch);
+    }
+
+    /** Текст про изменения для экрана и уведомления. */
+    static String changesText(int changes) {
+        if (changes < 0) return "Изменения появятся со следующим снимком";
+        if (changes == 0) return "Линия не изменилась";
+        int m10 = changes % 10, m100 = changes % 100;
+        String w = (m10 == 1 && m100 != 11) ? "участок" :
+                (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) ? "участка" : "участков";
+        return "Изменилось: " + changes + " " + w;
     }
 }
