@@ -54,6 +54,11 @@ public class MainActivity extends Activity {
         btnOpen = findViewById(R.id.btnOpen);
         btnShare = findViewById(R.id.btnShare);
         autoCheck = findViewById(R.id.autoCheck);
+        try {
+            String ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            ((TextView) findViewById(R.id.title)).setText("ЛБС KML  v" + ver);
+        } catch (Exception ignored) {
+        }
 
         try {
             script = LbsCore.readAsset(this, "lbs.js");

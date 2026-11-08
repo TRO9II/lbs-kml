@@ -178,12 +178,20 @@ final class LbsCore {
             return;
         }
         if (js.getPendingJob(JOB_ID) != null) return;
-        JobInfo ji = new JobInfo.Builder(JOB_ID, new ComponentName(c, LbsJob.class))
+        try {
+            js.schedule(job(c, true));
+        } catch (SecurityException e) {
+            // нет разрешения на условие «есть сеть» — планируем без него
+            js.schedule(job(c, false));
+        }
+    }
+
+    private static JobInfo job(Context c, boolean needNetwork) {
+        JobInfo.Builder b = new JobInfo.Builder(JOB_ID, new ComponentName(c, LbsJob.class))
                 .setPeriodic(PERIOD_MS, FLEX_MS)
-                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                .setPersisted(true)
-                .build();
-        js.schedule(ji);
+                .setPersisted(true);
+        if (needNetwork) b.setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY);
+        return b.build();
     }
 
     static void ensureChannel(Context c) {
