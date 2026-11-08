@@ -9,11 +9,14 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.view.View;
+import android.view.WindowInsets;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -52,6 +55,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        applySystemBarInsets(findViewById(R.id.root));
 
         web = findViewById(R.id.web);
         status = findViewById(R.id.status);
@@ -92,6 +96,25 @@ public class MainActivity extends Activity {
         btnUpdate.setOnClickListener(v -> startUpdate());
         btnOpen.setOnClickListener(v -> openFile());
         btnShare.setOnClickListener(v -> shareFile());
+    }
+
+    /** Android 15+: контент рисуется под системными панелями — добавляем отступы. */
+    private void applySystemBarInsets(View root) {
+        final int pad = root.getPaddingTop();
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int l, t, r, b;
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets in = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                l = in.left; t = in.top; r = in.right; b = in.bottom;
+            } else {
+                l = insets.getSystemWindowInsetLeft(); t = insets.getSystemWindowInsetTop();
+                r = insets.getSystemWindowInsetRight(); b = insets.getSystemWindowInsetBottom();
+            }
+            v.setPadding(pad + l, pad + t, pad + r, pad + b);
+            return insets;
+        });
+        root.requestApplyInsets();
     }
 
     private void startUpdate() {
