@@ -608,7 +608,7 @@
                 android:id="@+id/dockRoute"
                 style="@style/DockItem">
                 <ImageView style="@style/DockIcon" android:src="@drawable/ic_route" android:contentDescription="Маршрут" />
-                <TextView style="@style/DockLabel" android:text="Маршрут" />
+                <TextView style="@style/DockLabel" android:text="Маршруты" />
             </LinearLayout>
             <LinearLayout
                 android:id="@+id/dockPoints"

@@ -108,6 +108,14 @@ public class PlacesOverlay extends Overlay {
     }
 
     @Override
+    private android.graphics.RectF exclude;
+    private final Point sp = new Point();
+
+    /** Область экрана с кнопками — подписи туда не заходят (переносятся влево или не рисуются). */
+    void setExclude(android.graphics.RectF r) {
+        exclude = r;
+    }
+
     public void draw(Canvas c, MapView mv, boolean shadow) {
         if (shadow || places == null) return;
         double z = mv.getZoomLevelDouble();
@@ -148,7 +156,18 @@ public class PlacesOverlay extends Overlay {
             if (orient != 0f) c.rotate(-orient, pt.x, pt.y); // подпись всегда ровно
             c.drawCircle(pt.x, pt.y, dotR + 1.1f * density, halo);
             c.drawCircle(pt.x, pt.y, dotR, dot);
-            float tx = pt.x + dotR + 4 * density, ty = pt.y + size * 0.35f;
+            float tw = fill.measureText(p.name[k]);
+            if (orient != 0f) pj.rotateAndScalePoint(pt.x, pt.y, sp); else sp.set(pt.x, pt.y);
+            boolean left = false;
+            if (exclude != null) {
+                if (exclude.contains(sp.x, sp.y)) { c.restore(); continue; }
+                float rx0 = sp.x + dotR + 4 * density;
+                boolean hitR = android.graphics.RectF.intersects(exclude, new android.graphics.RectF(rx0, sp.y - size, rx0 + tw, sp.y + size * 0.4f));
+                left = hitR || rx0 + tw > mv.getWidth();
+            } else {
+                left = sp.x + dotR + 4 * density + tw > mv.getWidth();
+            }
+            float tx = left ? pt.x - dotR - 4 * density - tw : pt.x + dotR + 4 * density, ty = pt.y + size * 0.35f;
             c.drawText(p.name[k], tx, ty, halo);
             c.drawText(p.name[k], tx, ty, fill);
             c.restore();

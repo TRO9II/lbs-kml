@@ -168,6 +168,8 @@ public class MapActivity extends Activity {
         gridOverlay = new GridOverlay(d);
         map.getOverlays().add(gridOverlay);
         placesOverlay = new PlacesOverlay(d);
+        findViewById(R.id.rightCol).addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or2, ob) ->
+                placesOverlay.setExclude(new android.graphics.RectF(l - dp(6), t - dp(6), r + dp(6), b + dp(6))));
         map.getOverlays().add(placesOverlay);
         pathOverlay = new PathOverlay(d);
         map.getOverlays().add(pathOverlay);
@@ -1989,6 +1991,40 @@ public class MapActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         ntl.topMargin = (int) dp(8);
         sheetContent.addView(note, ntl);
+
+        coordsCard(lat, lon);
+
+        actionRow(
+                vAction(R.drawable.ic_nav, "Вести", true, v -> {
+                    String nm = name.getText().toString().trim();
+                    closeSheet();
+                    startNav(Collections.singletonList(new double[]{lat, lon}), 0, nm.isEmpty() ? "Точка" : nm);
+                }),
+                vAction(R.drawable.ic_flag, "Навести", false, v -> {
+                    String nm = name.getText().toString().trim();
+                    closeSheet();
+                    setTarget(lat, lon, nm.isEmpty() ? "Точка" : nm);
+                }),
+                vAction(R.drawable.ic_ruler, "Линейка", false, v -> {
+                    closeSheet();
+                    startTool(TOOL_RULER, null);
+                    toolAdd(lat, lon);
+                }),
+                vAction(R.drawable.ic_share, "Текстом", false, v -> {
+                    String nm = name.getText().toString().trim();
+                    sharePointText(nm.isEmpty() ? "Точка" : nm, lat, lon);
+                }),
+                vAction(R.drawable.ic_qr, "QR-код", false, v -> {
+                    UserPoints.Point q = new UserPoints.Point();
+                    String nm = name.getText().toString().trim();
+                    q.name = nm.isEmpty() ? "Точка" : nm;
+                    q.note = existing != null ? existing.note : "";
+                    q.color = chosen[0];
+                    q.icon = icon[0];
+                    q.lat = lat;
+                    q.lon = lon;
+                    showQr(QrCodec.encodePoint(q), q.name);
+                }));
         final File draftFile = voiceFile(null);
         draftFile.delete();
         final File[] vfile = {existing != null ? voiceFile(existing.id) : draftFile};
@@ -1998,7 +2034,6 @@ public class MapActivity extends Activity {
         vrl.topMargin = (int) dp(8);
         sheetContent.addView(voiceRow, vrl);
         fillVoiceRow(voiceRow, vfile, note);
-
         hSection("ЦВЕТ");
         final List<View> swatches = new ArrayList<>();
         LinearLayout colRow = null;
@@ -2059,40 +2094,6 @@ public class MapActivity extends Activity {
             styleIconHud(t, ic.equals(icon[0]));
         }
 
-        coordsCard(lat, lon);
-
-        hChipRow(
-                hChip("Вести", R.drawable.ic_nav, true, v -> {
-                    String nm = name.getText().toString().trim();
-                    closeSheet();
-                    startNav(Collections.singletonList(new double[]{lat, lon}), 0, nm.isEmpty() ? "Точка" : nm);
-                }),
-                hChip("Навести", R.drawable.ic_flag, false, v -> {
-                    String nm = name.getText().toString().trim();
-                    closeSheet();
-                    setTarget(lat, lon, nm.isEmpty() ? "Точка" : nm);
-                }),
-                hChip("Линейка", R.drawable.ic_ruler, false, v -> {
-                    closeSheet();
-                    startTool(TOOL_RULER, null);
-                    toolAdd(lat, lon);
-                }));
-        hChipRow(
-                hChip("Поделиться", R.drawable.ic_share, false, v -> {
-                    String nm = name.getText().toString().trim();
-                    sharePointText(nm.isEmpty() ? "Точка" : nm, lat, lon);
-                }),
-                hChip("QR-код", R.drawable.ic_qr, false, v -> {
-                    UserPoints.Point q = new UserPoints.Point();
-                    String nm = name.getText().toString().trim();
-                    q.name = nm.isEmpty() ? "Точка" : nm;
-                    q.note = existing != null ? existing.note : "";
-                    q.color = chosen[0];
-                    q.icon = icon[0];
-                    q.lat = lat;
-                    q.lon = lon;
-                    showQr(QrCodec.encodePoint(q), q.name);
-                }));
         if (existing != null) {
             hChipRow(hChip("Удалить точку", R.drawable.ic_delete, false, v -> new AlertDialog.Builder(this)
                     .setTitle("Удалить «" + existing.name + "»?")
@@ -2194,6 +2195,27 @@ public class MapActivity extends Activity {
         };
     }
 
+    /** Кнопка-действие: значок над подписью (для ряда из 4–5 действий). */
+    private View vAction(int icon, String label, boolean accent, View.OnClickListener click) {
+        LinearLayout t = new LinearLayout(this);
+        t.setOrientation(LinearLayout.VERTICAL);
+        t.setGravity(android.view.Gravity.CENTER);
+        t.setBackgroundResource(accent ? R.drawable.bg_accent_btn : R.drawable.bg_sheet_chip);
+        ImageView iv = hIcon(icon, accent ? Color.WHITE : getColor(R.color.hud_text), 20);
+        t.addView(iv);
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setTextSize(11.5f);
+        tv.setSingleLine(true);
+        tv.setTextColor(accent ? Color.WHITE : getColor(R.color.hud_text));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) dp(3);
+        t.addView(tv, lp);
+        t.setTag("tall");
+        t.setOnClickListener(click);
+        return t;
+    }
+
     /** Ряд действий: кнопки делят ширину, квадратная иконка — справа. null пропускается. */
     private void actionRow(View... items) {
         LinearLayout row = new LinearLayout(this);
@@ -2202,10 +2224,10 @@ public class MapActivity extends Activity {
         for (View v : items) if (v != null) vs.add(v);
         for (int i = 0; i < vs.size(); i++) {
             View v = vs.get(i);
-            boolean square = "square".equals(v.getTag());
+            boolean square = "square".equals(v.getTag()), tall = "tall".equals(v.getTag());
             LinearLayout.LayoutParams lp = square ? new LinearLayout.LayoutParams((int) dp(46), (int) dp(44))
-                    : new LinearLayout.LayoutParams(0, (int) dp(44), 1);
-            if (i < vs.size() - 1) lp.setMarginEnd((int) dp(8));
+                    : new LinearLayout.LayoutParams(0, (int) dp(tall ? 58 : 44), 1);
+            if (i < vs.size() - 1) lp.setMarginEnd((int) dp(tall ? 6 : 8));
             row.addView(v, lp);
         }
         LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
