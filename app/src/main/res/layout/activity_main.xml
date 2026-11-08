@@ -27,6 +27,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
         android:text="Нажмите «Обновить ЛБС»"
+        android:textIsSelectable="true"
         android:textSize="16sp" />
 
     <CheckBox

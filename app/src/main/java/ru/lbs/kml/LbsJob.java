@@ -31,6 +31,15 @@ public class LbsJob extends JobService {
 
     @Override
     public boolean onStartJob(JobParameters p) {
+        try {
+            return start(p);
+        } catch (Throwable e) {
+            cleanup();
+            return false;
+        }
+    }
+
+    private boolean start(JobParameters p) {
         params = p;
         done = false;
         tries = 0;
@@ -62,7 +71,11 @@ public class LbsJob extends JobService {
 
     private void extract() {
         if (done || web == null) return;
-        web.evaluateJavascript(script, this::onResult);
+        try {
+            web.evaluateJavascript(script, this::onResult);
+        } catch (Throwable e) {
+            finish(true);
+        }
     }
 
     private void onResult(String raw) {
@@ -81,9 +94,14 @@ public class LbsJob extends JobService {
         new Thread(() -> {
             try {
                 LbsCore.Result r = LbsCore.buildAndSave(getApplicationContext(), data);
-                if (LbsCore.remember(getApplicationContext(), r)) notifyNew(r);
+                if (LbsCore.remember(getApplicationContext(), r)) {
+                    try {
+                        notifyNew(r);
+                    } catch (Throwable ignored) {
+                    }
+                }
                 handler.post(() -> finish(false));
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 handler.post(() -> finish(true));
             }
         }).start();
@@ -115,7 +133,7 @@ public class LbsJob extends JobService {
                 .setContentText(r.name + " сохранён в «Загрузки» (линий: " + r.lines + ")")
                 .setContentIntent(piApp)
                 .addAction(new Notification.Action.Builder(
-                        Icon.createWithResource(this, android.R.drawable.ic_menu_view),
+                        Icon.createWithResource("android", android.R.drawable.ic_menu_view),
                         "Открыть", piView).build())
                 .setAutoCancel(true)
                 .build();

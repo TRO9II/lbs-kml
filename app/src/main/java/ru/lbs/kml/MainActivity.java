@@ -2,6 +2,9 @@ package ru.lbs.kml;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -21,6 +24,9 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
 
 public class MainActivity extends Activity {
 
@@ -71,11 +77,9 @@ public class MainActivity extends Activity {
 
         boolean auto = LbsCore.autoEnabled(this);
         autoCheck.setChecked(auto);
-        LbsCore.schedule(this, auto);
-        if (auto) askNotificationPermission();
+        safeSchedule(auto);
         autoCheck.setOnCheckedChangeListener((b, on) -> {
-            LbsCore.schedule(this, on);
-            if (on) askNotificationPermission();
+            safeSchedule(on);
             Toast.makeText(this, on ? "Автопроверка включена" : "Автопроверка выключена",
                     Toast.LENGTH_SHORT).show();
         });
@@ -85,9 +89,48 @@ public class MainActivity extends Activity {
         btnShare.setOnClickListener(v -> shareFile());
     }
 
+    private void safeSchedule(boolean on) {
+        try {
+            LbsCore.schedule(this, on);
+            if (on) askNotificationPermission();
+        } catch (Throwable e) {
+            showError("Автопроверка не включилась", e);
+        }
+    }
+
+    /** Если в прошлый раз приложение упало — показываем текст ошибки. */
+    private boolean showSavedCrash() {
+        SharedPreferences p = LbsCore.prefs(this);
+        String crash = p.getString("crash", null);
+        if (crash == null) return false;
+        p.edit().remove("crash").apply();
+        String text = "Приложение упало в прошлый раз. Пришлите этот текст:\n\n" + crash;
+        status.setText(text);
+        new AlertDialog.Builder(this)
+                .setTitle("Ошибка в прошлый раз")
+                .setMessage(text)
+                .setPositiveButton("Скопировать", (d, w) -> copy(crash))
+                .setNegativeButton("Закрыть", null)
+                .show();
+        return true;
+    }
+
+    private void showError(String title, Throwable e) {
+        StringWriter sw = new StringWriter();
+        e.printStackTrace(new PrintWriter(sw));
+        status.setText(title + ":\n" + sw);
+    }
+
+    private void copy(String text) {
+        ClipboardManager cm = getSystemService(ClipboardManager.class);
+        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("crash", text));
+        Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show();
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        if (showSavedCrash()) return;
         if (!running) showLastFromPrefs();
     }
 
