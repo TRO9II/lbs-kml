@@ -714,7 +714,23 @@ public class MapActivity extends Activity {
 
     private LinearLayout sheetContent, sheetFooter;
 
+    private int insetTop;
+
+    /** Панель на весь экран (чат) или по содержимому (остальные). */
+    private void setSheetFull(boolean full) {
+        View panel = findViewById(R.id.genPanel), sc = findViewById(R.id.genScroll);
+        android.widget.FrameLayout.LayoutParams pl = (android.widget.FrameLayout.LayoutParams) panel.getLayoutParams();
+        pl.height = full ? android.widget.FrameLayout.LayoutParams.MATCH_PARENT : android.widget.FrameLayout.LayoutParams.WRAP_CONTENT;
+        pl.topMargin = full ? insetTop + (int) dp(6) : 0;
+        panel.setLayoutParams(pl);
+        LinearLayout.LayoutParams sl = (LinearLayout.LayoutParams) sc.getLayoutParams();
+        sl.height = full ? 0 : LinearLayout.LayoutParams.WRAP_CONTENT;
+        sl.weight = full ? 1 : 0;
+        sc.setLayoutParams(sl);
+    }
+
     private void sheet(String title) {
+        setSheetFull(false);
         View host = findViewById(R.id.genSheet), panel = findViewById(R.id.genPanel), scrim = findViewById(R.id.genScrim);
         ((TextView) findViewById(R.id.genTitle)).setText(title);
         sheetContent = findViewById(R.id.genContent);
@@ -1718,7 +1734,7 @@ public class MapActivity extends Activity {
         if (Double.isNaN(hNow)) elevHandler.postDelayed(elevTask, 120);
         if (findViewById(R.id.coordCard).getVisibility() == View.VISIBLE) {
             double[] r = Sk42.fromWgs(lat, lon);
-            ((TextView) findViewById(R.id.coordSk)).setText("X\u00A0" + Math.round(r[0]) + "\u2002\u2002Y\u00A0" + Math.round(r[1]));
+            ((TextView) findViewById(R.id.coordSk)).setText("X " + Math.round(r[0]) + "   Y " + Math.round(r[1]));
             coordWgsText = String.format(Locale.US, "%.5f° %s  %.5f° %s",
                     Math.abs(lat), lat >= 0 ? "N" : "S", Math.abs(lon), lon >= 0 ? "E" : "W");
             showCoordLine();
@@ -3326,6 +3342,7 @@ public class MapActivity extends Activity {
             View mp = findViewById(R.id.menuPanel);
             mp.setPadding(mp.getPaddingLeft(), mp.getPaddingTop(), mp.getPaddingRight(), (int) dp(16) + b);
             int ime = Build.VERSION.SDK_INT >= 30 ? insets.getInsets(WindowInsets.Type.ime()).bottom : 0;
+            insetTop = t;
             View gp = findViewById(R.id.genPanel);
             gp.setPadding(gp.getPaddingLeft(), gp.getPaddingTop(), gp.getPaddingRight(), (int) dp(14) + Math.max(b, ime));
             return insets;
@@ -4194,6 +4211,11 @@ public class MapActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int req, String[] perms, int[] grants) {
         super.onRequestPermissionsResult(req, perms, grants);
+        if (req == REQ_CAMPERM) {
+            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) takePhoto();
+            else Toast.makeText(this, "Без доступа к камере сфотографировать не получится — можно выбрать фото из галереи", Toast.LENGTH_LONG).show();
+            return;
+        }
         if (req == REQ_MIC) {
             Toast.makeText(this, checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
                     ? "Микрофон разрешён — нажмите «Записать голос» ещё раз" : "Без микрофона голосовые заметки не записать", Toast.LENGTH_LONG).show();
@@ -5892,6 +5914,7 @@ public class MapActivity extends Activity {
         chat.purgeExpired();
         readMarks.clear();
         sheet(chat.groupName());
+        setSheetFull(true);
         chatOpen = true;
         chat.markRead();
         chatUnread = 0;
@@ -5902,7 +5925,8 @@ public class MapActivity extends Activity {
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         chatStatus = new TextView(this);
-        chatStatus.setText("○ подключаюсь…");
+        chatStatus.setText(chat.lastOk() ? "● " + chat.lastStatus() : "○ " + chat.lastStatus());
+        chatStatus.setTextColor(chat.lastOk() ? 0xFF66BB6A : 0xFFFFB74D);
         chatStatus.setTextSize(12);
         chatStatus.setTextColor(getColor(R.color.hud_text2));
         head.addView(chatStatus, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -5931,7 +5955,7 @@ public class MapActivity extends Activity {
         chatList = new LinearLayout(this);
         chatList.setOrientation(LinearLayout.VERTICAL);
         chatList.setPadding(0, (int) dp(8), 0, (int) dp(4));
-        chatList.setMinimumHeight((int) (getResources().getDisplayMetrics().heightPixels * 0.45f));
+        chatList.setMinimumHeight(0);
         sheetContent.addView(chatList);
         List<ChatClient.Msg> hist = chat.history();
         if (hist.isEmpty()) {
@@ -6732,7 +6756,7 @@ public class MapActivity extends Activity {
     private android.media.MediaRecorder chatRec;
     private File chatRecFile;
     private long chatRecStart;
-    private static final int REQ_CAM = 35, REQ_GAL = 36;
+    private static final int REQ_CAM = 35, REQ_GAL = 36, REQ_CAMPERM = 24;
     private Uri camUri;
 
     private void chatVoiceStart() {
@@ -6816,6 +6840,10 @@ public class MapActivity extends Activity {
     }
 
     private void takePhoto() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMPERM);
+            return;
+        }
         try {
             android.content.ContentValues cv = new android.content.ContentValues();
             cv.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "rubezh_" + System.currentTimeMillis() + ".jpg");

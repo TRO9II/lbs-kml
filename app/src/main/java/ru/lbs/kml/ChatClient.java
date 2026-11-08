@@ -420,6 +420,19 @@ final class ChatClient {
 
     void setListener(Listener l) { addListener(l); }
 
+    private volatile String lastStatus = "подключаюсь…";
+    private volatile boolean lastOk;
+
+    String lastStatus() { return lastStatus; }
+
+    boolean lastOk() { return lastOk; }
+
+    private void status(String st, boolean ok) {
+        lastStatus = st;
+        lastOk = ok;
+        each(l -> l.onStatus(st, ok));
+    }
+
     private void each(Consumer<Listener> f) {
         ui.post(() -> { for (Listener l : listeners) f.accept(l); });
     }
@@ -1209,14 +1222,14 @@ final class ChatClient {
                     }
                     if (!wasOk) {
                         wasOk = true;
-                        each(l -> l.onStatus(pending() ? "ждём подтверждения" : "на связи", true));
+                        status(pending() ? "ждём подтверждения" : "на связи", true);
                     }
                     backoff = 2;
                 } catch (Exception e) {
                     if (!running) break;
                     wasOk = false;
                     final String msg = e.getMessage();
-                    each(l -> l.onStatus("нет связи с сервером" + (msg == null ? "" : " (" + msg + ")"), false));
+                    status("нет связи с сервером" + (msg == null ? "" : " (" + msg + ")"), false);
                     try {
                         Thread.sleep(backoff * 1000L);
                     } catch (InterruptedException ie) {
