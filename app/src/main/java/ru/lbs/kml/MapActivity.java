@@ -6068,14 +6068,14 @@ public class MapActivity extends Activity {
             });
         }
         if (m.kind.equals("photo") && !m.media.isEmpty()) {
-            ImageView ph = new ImageView(this);
+            ImageView photoV = new ImageView(this);
             android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
             o.inSampleSize = 2;
-            ph.setImageBitmap(android.graphics.BitmapFactory.decodeFile(m.media, o));
-            ph.setAdjustViewBounds(true);
-            ph.setMaxHeight((int) dp(260));
-            ph.setScaleType(ImageView.ScaleType.FIT_START);
-            b.addView(ph, new LinearLayout.LayoutParams((int) dp(220), LinearLayout.LayoutParams.WRAP_CONTENT));
+            photoV.setImageBitmap(android.graphics.BitmapFactory.decodeFile(m.media, o));
+            photoV.setAdjustViewBounds(true);
+            photoV.setMaxHeight((int) dp(260));
+            photoV.setScaleType(ImageView.ScaleType.FIT_START);
+            b.addView(photoV, new LinearLayout.LayoutParams((int) dp(220), LinearLayout.LayoutParams.WRAP_CONTENT));
             b.setOnClickListener(v -> showPhoto(m));
         }
         if (m.hasLoc && !m.kind.equals("pt")) {
