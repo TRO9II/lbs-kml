@@ -7,7 +7,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/check_ov.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pbf
-          path: out/
+      - run: |
+          mkdir cls && javac -d cls app/src/main/java/ru/lbs/kml/Mvt.java scripts/mvt/T.java && java -cp cls ru.lbs.kml.T
