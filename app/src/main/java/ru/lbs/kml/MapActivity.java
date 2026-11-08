@@ -2350,7 +2350,7 @@ public class MapActivity extends Activity {
                 userPoints.isEmpty() ? null : hChip("Экспорт", R.drawable.ic_share, false, v -> { closeSheet(); exportPoints(); }),
                 iconAction(R.drawable.ic_qr, "Принять по QR", v -> { closeSheet(); scanQr(); }));
         if (chat != null && chat.active() && !chat.objects().isEmpty())
-            hRow(hIcon(R.drawable.ic_my_location, 0xFF42A5F5, 22), "Карта группы", chat.objects().size() + " общих объектов"
+            hRow(hIcon(R.drawable.ic_my_location, 0xFF42A5F5, 22), "Карта группы", chat.objects().size() + " общих объектов",
                     hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18), v -> showGroupObjects());
         if (userPoints.isEmpty()) {
             emptyState(R.drawable.ic_place, "Точек пока нет",
