@@ -64,6 +64,19 @@ final class Importer {
                 List<double[]> c = coords(text((Element) lines.item(k), "coordinates"));
                 if (c.size() >= 2) r.routes.add(route(name.isEmpty() ? "Линия " + (r.routes.size() + 1) : name, c));
             }
+            NodeList polys = pm.getElementsByTagNameNS("*", "Polygon");
+            for (int k = 0; k < polys.getLength(); k++) {
+                NodeList outer = ((Element) polys.item(k)).getElementsByTagNameNS("*", "outerBoundaryIs");
+                Element src = outer.getLength() > 0 ? (Element) outer.item(0) : (Element) polys.item(k);
+                List<double[]> c = coords(text(src, "coordinates"));
+                if (c.size() > 3 && c.get(0)[0] == c.get(c.size() - 1)[0] && c.get(0)[1] == c.get(c.size() - 1)[1])
+                    c.remove(c.size() - 1);
+                if (c.size() >= 3) {
+                    Routes.Route z = route(name.isEmpty() ? "Зона " + (r.routes.size() + 1) : name, c);
+                    z.area = true;
+                    r.routes.add(z);
+                }
+            }
             // gx:Track (треки Google Earth / AQ)
             NodeList tracks = pm.getElementsByTagNameNS("*", "Track");
             for (int k = 0; k < tracks.getLength(); k++) {

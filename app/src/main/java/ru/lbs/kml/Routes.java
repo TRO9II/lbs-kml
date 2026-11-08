@@ -23,6 +23,7 @@ final class Routes {
         String id, name;
         int color = COLORS[0];
         boolean visible = true;
+        boolean area; // зона (замкнутый многоугольник)
         long created;
         final List<double[]> pts = new ArrayList<>(); // {lat, lon}
     }
@@ -49,6 +50,33 @@ final class Routes {
             out.add(l);
         }
         return out;
+    }
+
+    /** Площадь многоугольника, м² (по плоским координатам СК-42 в зоне первой точки). */
+    static double area(List<double[]> pts) {
+        if (pts.size() < 3) return 0;
+        int zone = (int) Sk42.fromWgs(pts.get(0)[0], pts.get(0)[1])[2];
+        double[][] xy = new double[pts.size()][];
+        for (int i = 0; i < pts.size(); i++) xy[i] = Sk42.fromWgsInZone(pts.get(i)[0], pts.get(i)[1], zone);
+        double s = 0;
+        for (int i = 0; i < xy.length; i++) {
+            double[] a = xy[i], b = xy[(i + 1) % xy.length];
+            s += a[0] * b[1] - b[0] * a[1];
+        }
+        return Math.abs(s) / 2;
+    }
+
+    /** Периметр зоны (с замыкающей стороной). */
+    static double perimeter(List<double[]> pts) {
+        if (pts.size() < 2) return 0;
+        double[] a = pts.get(pts.size() - 1), b = pts.get(0);
+        return length(pts) + (pts.size() > 2 ? Geo.inverse(a[0], a[1], b[0], b[1])[0] : 0);
+    }
+
+    static String areaText(double m2) {
+        if (m2 < 10000) return Math.round(m2) + " м²";
+        if (m2 < 1_000_000) return String.format(Locale.US, "%.2f га", m2 / 10000).replace('.', ',');
+        return String.format(Locale.US, "%.2f км²", m2 / 1_000_000).replace('.', ',');
     }
 
     static double length(List<double[]> pts) {
@@ -98,6 +126,7 @@ final class Routes {
                 r.name = o.optString("name");
                 r.color = o.optInt("color", COLORS[0]);
                 r.visible = o.optBoolean("visible", true);
+                r.area = o.optBoolean("area", false);
                 r.created = o.optLong("created");
                 JSONArray p = o.getJSONArray("pts");
                 for (int j = 0; j < p.length(); j++) {
@@ -119,6 +148,7 @@ final class Routes {
             o.put("name", r.name);
             o.put("color", r.color);
             o.put("visible", r.visible);
+            if (r.area) o.put("area", true);
             o.put("created", r.created);
             JSONArray p = new JSONArray();
             for (double[] q : r.pts) {
@@ -147,6 +177,7 @@ final class Routes {
 
     /** KML: линия маршрута + контрольные точки КТ1, КТ2… с азимутами в описании. */
     static String toKml(Route r) {
+        if (r.area) return zoneKml(r);
         StringBuilder sb = new StringBuilder();
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
           .append("<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document><name>").append(esc(r.name)).append("</name>\n")
@@ -175,6 +206,26 @@ final class Routes {
               .append("</coordinates></Point></Placemark>\n");
         }
         sb.append("</Document></kml>\n");
+        return sb.toString();
+    }
+
+    /** KML зоны: многоугольник с полупрозрачной заливкой. */
+    private static String zoneKml(Route r) {
+        StringBuilder sb = new StringBuilder();
+        String col = kmlColor(r.color);
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+          .append("<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document><name>").append(esc(r.name)).append("</name>\n")
+          .append("<Placemark><name>").append(esc(r.name)).append("</name><description>")
+          .append(esc("Площадь: " + areaText(area(r.pts)) + ", периметр: " + Geo.dist(perimeter(r.pts))))
+          .append("</description><Style><LineStyle><color>").append(col).append("</color><width>3</width></LineStyle>")
+          .append("<PolyStyle><color>40").append(col.substring(2)).append("</color></PolyStyle></Style>")
+          .append("<Polygon><outerBoundaryIs><LinearRing><coordinates>");
+        for (int i = 0; i <= r.pts.size(); i++) {
+            double[] p = r.pts.get(i % r.pts.size());
+            if (i > 0) sb.append(' ');
+            sb.append(String.format(Locale.US, "%.7f,%.7f,0", p[1], p[0]));
+        }
+        sb.append("</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n</Document></kml>\n");
         return sb.toString();
     }
 

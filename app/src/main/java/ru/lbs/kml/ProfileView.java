@@ -25,6 +25,11 @@ public class ProfileView extends View {
     private final Paint tipBg = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path path = new Path();
     private float touchX = -1;
+    private double[] sight;      // высота луча визирования в каждой точке (уже с поправкой на кривизну Земли)
+    private boolean[] hidden;    // точка рельефа не видна наблюдателю
+    private final Paint sightOk = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint sightBad = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint hiddenLine = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public ProfileView(Context c) {
         super(c);
@@ -42,6 +47,23 @@ public class ProfileView extends View {
         tip.setColor(Color.WHITE);
         tip.setTextSize(12 * d);
         tipBg.setColor(Color.argb(230, 21, 24, 29));
+        sightOk.setStyle(Paint.Style.STROKE);
+        sightOk.setStrokeWidth(2f * d);
+        sightOk.setColor(Color.rgb(102, 187, 106));
+        sightOk.setPathEffect(new android.graphics.DashPathEffect(new float[]{8 * d, 5 * d}, 0));
+        sightBad.set(sightOk);
+        sightBad.setColor(Color.rgb(255, 82, 82));
+        hiddenLine.setStyle(Paint.Style.STROKE);
+        hiddenLine.setStrokeWidth(3.2f * d);
+        hiddenLine.setColor(Color.argb(220, 255, 82, 82));
+        hiddenLine.setStrokeCap(Paint.Cap.ROUND);
+    }
+
+    /** Линия прямой видимости и «невидимые» участки рельефа (null — убрать). */
+    void setSight(double[] sight, boolean[] hidden) {
+        this.sight = sight;
+        this.hidden = hidden;
+        if (elev != null) setData(dist, elev);
     }
 
     void setData(double[] dist, double[] elev) {
@@ -50,6 +72,11 @@ public class ProfileView extends View {
         minE = Double.MAX_VALUE;
         maxE = -Double.MAX_VALUE;
         for (double e : elev) {
+            if (Double.isNaN(e)) continue;
+            minE = Math.min(minE, e);
+            maxE = Math.max(maxE, e);
+        }
+        if (sight != null) for (double e : sight) {
             if (Double.isNaN(e)) continue;
             minE = Math.min(minE, e);
             maxE = Math.max(maxE, e);
@@ -102,6 +129,21 @@ public class ProfileView extends View {
         c.drawPath(area, fill);
         c.drawPath(path, line);
 
+        if (hidden != null) {
+            for (int i = 1; i < dist.length; i++) {
+                if (!hidden[i] || !hidden[i - 1] || Double.isNaN(elev[i]) || Double.isNaN(elev[i - 1])) continue;
+                c.drawLine(px(dist[i - 1], l, r, total), py(elev[i - 1], t, b), px(dist[i], l, r, total), py(elev[i], t, b), hiddenLine);
+            }
+        }
+        if (sight != null) {
+            for (int i = 1; i < dist.length; i++) {
+                if (Double.isNaN(sight[i]) || Double.isNaN(sight[i - 1])) continue;
+                boolean blocked = !Double.isNaN(elev[i]) && elev[i] > sight[i];
+                c.drawLine(px(dist[i - 1], l, r, total), py(sight[i - 1], t, b), px(dist[i], l, r, total), py(sight[i], t, b),
+                        blocked ? sightBad : sightOk);
+            }
+        }
+
         if (touchX >= l && touchX <= r) {
             double at = (touchX - l) / (r - l) * total;
             int i = 1;
@@ -119,6 +161,14 @@ public class ProfileView extends View {
                 c.drawText(s, tx, t + 11 * d, tip);
             }
         }
+    }
+
+    private float px(double dd, float l, float r, double total) {
+        return (float) (l + (r - l) * dd / total);
+    }
+
+    private float py(double e, float t, float b) {
+        return (float) (b - (b - t) * (e - minE) / (maxE - minE));
     }
 
     @Override

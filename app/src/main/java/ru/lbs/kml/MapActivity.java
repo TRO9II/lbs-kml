@@ -249,6 +249,15 @@ public class MapActivity extends Activity {
             }
         });
         findViewById(R.id.offlineChip).setOnClickListener(v -> openMenu(true));
+        findViewById(R.id.navStop).setOnClickListener(v -> stopNav());
+        findViewById(R.id.targetCard).setOnLongClickListener(v -> {
+            try {
+                startNav(Collections.singletonList(new double[]{Double.parseDouble(prefs.getString("targetLat", "0")),
+                        Double.parseDouble(prefs.getString("targetLon", "0"))}), 0, prefs.getString("targetName", "Цель"));
+            } catch (Exception ignored) {
+            }
+            return true;
+        });
         findViewById(R.id.toolProfile).setOnClickListener(v -> showProfile(toolPts, tool == TOOL_RULER ? "линейка" : "маршрут"));
         findViewById(R.id.dlCancel).setOnClickListener(v -> cancelDownload());
         findViewById(R.id.coordCard).setOnClickListener(v -> copyCenterCoords());
@@ -610,6 +619,10 @@ public class MapActivity extends Activity {
         View host = findViewById(R.id.genSheet), panel = findViewById(R.id.genPanel), scrim = findViewById(R.id.genScrim);
         if (host.getVisibility() != View.VISIBLE) return;
         hideKeyboard();
+        if (qrShown) {
+            qrShown = false;
+            applyNight();
+        }
         panel.animate().translationY(dp(800)).setDuration(170).withEndAction(() -> host.setVisibility(View.GONE)).start();
         scrim.animate().alpha(0f).setDuration(170).start();
     }
@@ -1660,6 +1673,23 @@ public class MapActivity extends Activity {
                     String nm = name.getText().toString().trim();
                     sharePointText(nm.isEmpty() ? "Точка" : nm, lat, lon);
                 }));
+        hChipRow(
+                hChip("Вести", R.drawable.ic_nav, true, v -> {
+                    String nm = name.getText().toString().trim();
+                    closeSheet();
+                    startNav(Collections.singletonList(new double[]{lat, lon}), 0, nm.isEmpty() ? "Точка" : nm);
+                }),
+                hChip("QR-код", R.drawable.ic_qr, false, v -> {
+                    UserPoints.Point q = new UserPoints.Point();
+                    String nm = name.getText().toString().trim();
+                    q.name = nm.isEmpty() ? "Точка" : nm;
+                    q.note = existing != null ? existing.note : "";
+                    q.color = chosen[0];
+                    q.icon = icon[0];
+                    q.lat = lat;
+                    q.lon = lon;
+                    showQr(QrCodec.encodePoint(q), q.name);
+                }));
         if (existing != null) {
             hChipRow(hChip("Удалить точку", R.drawable.ic_delete, false, v -> new AlertDialog.Builder(this)
                     .setTitle("Удалить «" + existing.name + "»?")
@@ -1715,6 +1745,7 @@ public class MapActivity extends Activity {
         hChipRow(
                 hChip("Точка в центре", R.drawable.ic_add, true, v -> { closeSheet(); newPointAtCenter(); }),
                 hChip("Экспорт KML", R.drawable.ic_share, false, v -> { closeSheet(); exportPoints(); }));
+        hChipRow(hChip("Принять по QR", R.drawable.ic_qr, false, v -> { closeSheet(); scanQr(); }));
         if (userPoints.isEmpty()) {
             TextView t = new TextView(this);
             t.setText("Пока нет точек.\nНажмите на прицел в центре карты — точка встанет туда. Или подержите палец на нужном месте.");
@@ -1814,7 +1845,7 @@ public class MapActivity extends Activity {
 
     // ================= Линейка и маршруты =================
 
-    private static final int TOOL_NONE = 0, TOOL_RULER = 1, TOOL_ROUTE = 2;
+    private static final int TOOL_NONE = 0, TOOL_RULER = 1, TOOL_ROUTE = 2, TOOL_AREA = 3;
     private int tool = TOOL_NONE;
     private final List<double[]> toolPts = new ArrayList<>();
     private Routes.Route editingRoute;
@@ -1829,14 +1860,15 @@ public class MapActivity extends Activity {
             route.visible = false; // пока редактируем — рисуем как активную линию
         }
         pathOverlay.setActive(toolPts, which == TOOL_RULER ? getColor(R.color.hud_amber)
-                : route != null ? route.color : Routes.COLORS[0]);
+                : route != null ? route.color : which == TOOL_AREA ? Routes.COLORS[3] : Routes.COLORS[0], which == TOOL_AREA);
         findViewById(R.id.dock).setVisibility(View.GONE);
         findViewById(R.id.toolPanel).setVisibility(View.VISIBLE);
         findViewById(R.id.toolCross).setVisibility(View.VISIBLE);
         findViewById(R.id.centerMark).setVisibility(View.GONE);
-        findViewById(R.id.toolSave).setVisibility(which == TOOL_ROUTE ? View.VISIBLE : View.GONE);
+        findViewById(R.id.toolSave).setVisibility(which != TOOL_RULER ? View.VISIBLE : View.GONE);
+        findViewById(R.id.toolProfile).setVisibility(which != TOOL_AREA ? View.VISIBLE : View.GONE);
         ((TextView) findViewById(R.id.toolTitle)).setText(which == TOOL_RULER ? "ЛИНЕЙКА"
-                : "МАРШРУТ" + (route != null ? " · " + route.name : ""));
+                : (which == TOOL_AREA ? "ЗОНА" : "МАРШРУТ") + (route != null ? " · " + route.name : ""));
         applyGrid();
         updateToolPanel();
         map.invalidate();
@@ -1845,11 +1877,12 @@ public class MapActivity extends Activity {
     }
 
     private void stopTool() {
-        if (tool == TOOL_ROUTE && editingRoute != null) editingRoute.visible = true;
-        if (tool == TOOL_ROUTE && editingRoute == null && toolPts.size() > 1) {
+        boolean editable = tool == TOOL_ROUTE || tool == TOOL_AREA;
+        if (editable && editingRoute != null) editingRoute.visible = true;
+        if (editable && editingRoute == null && toolPts.size() > (tool == TOOL_AREA ? 2 : 1)) {
             new AlertDialog.Builder(this)
-                    .setTitle("Маршрут не сохранён")
-                    .setMessage("Сохранить маршрут перед выходом?")
+                    .setTitle(tool == TOOL_AREA ? "Зона не сохранена" : "Маршрут не сохранён")
+                    .setMessage("Сохранить перед выходом?")
                     .setPositiveButton("Сохранить", (d, w) -> toolSave())
                     .setNegativeButton("Не сохранять", (d, w) -> finishTool())
                     .show();
@@ -1895,6 +1928,15 @@ public class MapActivity extends Activity {
         if (n == 0) {
             total.setText("—");
             sub.setText("Нажмите на карту или ⊕ — первая точка. Дальше двигайте карту: линия тянется к прицелу");
+            return;
+        }
+        if (tool == TOOL_AREA) {
+            List<double[]> withC = new ArrayList<>(toolPts);
+            GeoPoint cc = (GeoPoint) map.getMapCenter();
+            withC.add(new double[]{cc.getLatitude(), cc.getLongitude()});
+            total.setText(n >= 3 ? Routes.areaText(Routes.area(toolPts)) : "—");
+            sub.setText((n >= 3 ? "Периметр " + Geo.dist(Routes.perimeter(toolPts)) + " · " : "") + n + " верш."
+                    + (n >= 2 ? "\nС прицелом: " + Routes.areaText(Routes.area(withC)) + " · периметр " + Geo.dist(Routes.perimeter(withC)) : "\nСтавьте углы зоны — минимум 3"));
             return;
         }
         List<Routes.Leg> legs = Routes.legs(toolPts);
@@ -1943,20 +1985,26 @@ public class MapActivity extends Activity {
     }
 
     private void toolSave() {
-        if (toolPts.size() < 2) {
-            Toast.makeText(this, "Нужно минимум 2 точки", Toast.LENGTH_SHORT).show();
+        final boolean isArea = tool == TOOL_AREA;
+        if (toolPts.size() < (isArea ? 3 : 2)) {
+            Toast.makeText(this, isArea ? "Нужно минимум 3 угла" : "Нужно минимум 2 точки", Toast.LENGTH_SHORT).show();
             return;
         }
-        sheet(editingRoute != null ? "Изменить маршрут" : "Сохранить маршрут");
-        final EditText name = hInput("Название маршрута",
-                editingRoute != null ? editingRoute.name : "Маршрут " + (routes.size() + 1));
+        int zones = 0;
+        for (Routes.Route x : routes) if (x.area) zones++;
+        sheet(isArea ? (editingRoute != null ? "Изменить зону" : "Сохранить зону")
+                : editingRoute != null ? "Изменить маршрут" : "Сохранить маршрут");
+        final EditText name = hInput(isArea ? "Название зоны" : "Название маршрута",
+                editingRoute != null ? editingRoute.name : isArea ? "Зона " + (zones + 1) : "Маршрут " + (routes.size() - zones + 1));
         name.setSingleLine(true);
         name.setSelectAllOnFocus(true);
         sheetContent.addView(name);
 
         LinearLayout info = hCard();
         TextView t = new TextView(this);
-        t.setText(Geo.dist(Routes.length(toolPts)) + " · " + (toolPts.size() - 1) + " уч. · " + toolPts.size() + " точек");
+        t.setText(isArea ? Routes.areaText(Routes.area(toolPts)) + " · периметр " + Geo.dist(Routes.perimeter(toolPts))
+                + " · " + toolPts.size() + " углов"
+                : Geo.dist(Routes.length(toolPts)) + " · " + (toolPts.size() - 1) + " уч. · " + toolPts.size() + " точек");
         t.setTextColor(getColor(R.color.hud_text));
         t.setTextSize(14);
         info.addView(t);
@@ -1966,7 +2014,7 @@ public class MapActivity extends Activity {
         sheetContent.addView(info, il);
 
         hSection("ЦВЕТ ЛИНИИ");
-        final int[] chosen = {editingRoute != null ? editingRoute.color : Routes.COLORS[0]};
+        final int[] chosen = {editingRoute != null ? editingRoute.color : isArea ? Routes.COLORS[3] : Routes.COLORS[0]};
         LinearLayout colors = new LinearLayout(this);
         final List<View> sw = new ArrayList<>();
         for (int i = 0; i < Routes.COLORS.length; i++) {
@@ -1993,13 +2041,14 @@ public class MapActivity extends Activity {
                 routes.add(r);
             }
             String nm = name.getText().toString().trim();
-            r.name = nm.isEmpty() ? "Маршрут" : nm;
+            r.name = nm.isEmpty() ? (isArea ? "Зона" : "Маршрут") : nm;
             r.color = chosen[0];
+            r.area = isArea;
             r.pts.clear();
             r.pts.addAll(toolPts);
             r.visible = true;
             saveRoutes();
-            Toast.makeText(this, "Маршрут «" + r.name + "» сохранён", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, (isArea ? "Зона «" + r.name + "» сохранена" : "Маршрут «" + r.name + "» сохранён"), Toast.LENGTH_SHORT).show();
             editingRoute = r;
             closeSheet();
             finishTool();
@@ -2028,7 +2077,11 @@ public class MapActivity extends Activity {
 
     private void showRoutes() {
         sheet("Маршруты" + (routes.isEmpty() ? "" : " · " + routes.size()));
-        hChipRow(hChip("Новый маршрут", R.drawable.ic_add, true, v -> { closeSheet(); startTool(TOOL_ROUTE, null); }));
+        hChipRow(hChip("Новый маршрут", R.drawable.ic_add, true, v -> { closeSheet(); startTool(TOOL_ROUTE, null); }),
+                hChip("Новая зона", R.drawable.ic_area, false, v -> { closeSheet(); startTool(TOOL_AREA, null); }));
+        hChipRow(hChip("Принять по QR", R.drawable.ic_qr, false, v -> { closeSheet(); scanQr(); }));
+        if (track != null && track.pts.size() > 1)
+            hChipRow(hChip("Вернуться по треку", R.drawable.ic_nav, true, v -> { closeSheet(); navRoute(track, true); }));
         if (routes.isEmpty()) {
             TextView t = new TextView(this);
             t.setText("Маршрутов пока нет.\nНажмите «Новый маршрут» и ставьте точки на карте — "
@@ -2048,8 +2101,9 @@ public class MapActivity extends Activity {
                 saveRoutes();
                 eye.setImageTintList(ColorStateList.valueOf(r.visible ? getColor(R.color.hud_accent) : getColor(R.color.hud_text2)));
             });
-            hRow(routeSwatch(r.color), r.name, Geo.dist(Routes.length(r.pts)) + " · "
-                    + Math.max(0, r.pts.size() - 1) + " уч.", eye, v -> routeActions(r));
+            hRow(routeSwatch(r.color), r.name, r.area
+                    ? "Зона · " + Routes.areaText(Routes.area(r.pts)) + " · периметр " + Geo.dist(Routes.perimeter(r.pts))
+                    : Geo.dist(Routes.length(r.pts)) + " · " + Math.max(0, r.pts.size() - 1) + " уч.", eye, v -> routeActions(r));
         }
     }
 
@@ -2059,7 +2113,9 @@ public class MapActivity extends Activity {
         TextView t = new TextView(this);
         List<Routes.Leg> legs = Routes.legs(r.pts);
         StringBuilder sb = new StringBuilder(Geo.dist(Routes.length(r.pts))).append(" · ").append(legs.size()).append(" уч.");
-        if (!legs.isEmpty())
+        if (r.area) sb = new StringBuilder("Площадь ").append(Routes.areaText(Routes.area(r.pts))).append("\nПериметр ")
+                .append(Geo.dist(Routes.perimeter(r.pts))).append(" · ").append(r.pts.size()).append(" углов");
+        else if (!legs.isEmpty())
             sb.append("\nПервый участок: ").append(String.format(Locale.US, "%.1f°", legs.get(0).az))
               .append(" (").append(Geo.mils(legs.get(0).grid)).append(")");
         t.setText(sb);
@@ -2070,7 +2126,16 @@ public class MapActivity extends Activity {
         int tx = getColor(R.color.hud_text);
         hSection("ДЕЙСТВИЯ");
         hRow(hIcon(R.drawable.ic_eye, tx, 22), "Показать на карте", null, null, v -> { closeSheet(); fitRoute(r); });
-        hRow(hIcon(R.drawable.ic_route, tx, 22), "Изменить точки", null, null, v -> { closeSheet(); startTool(TOOL_ROUTE, r); });
+        if (!r.area) {
+            hRow(hIcon(R.drawable.ic_nav, 0xFF42A5F5, 22), "Вести по маршруту", "Стрелка, расстояние и время до каждой КТ", null,
+                    v -> { closeSheet(); navRoute(r, false); });
+            hRow(hIcon(R.drawable.ic_undo, 0xFF42A5F5, 22), "Вести обратно", "Возврат тем же путём (по треку назад)", null,
+                    v -> { closeSheet(); navRoute(r, true); });
+        }
+        hRow(hIcon(r.area ? R.drawable.ic_area : R.drawable.ic_route, tx, 22), "Изменить точки", null, null,
+                v -> { closeSheet(); startTool(r.area ? TOOL_AREA : TOOL_ROUTE, r); });
+        hRow(hIcon(R.drawable.ic_qr, tx, 22), "Передать по QR-коду", "На другой телефон без интернета", null,
+                v -> showQr(QrCodec.encodeRoute(r), r.name));
         hRow(hIcon(R.drawable.ic_table, tx, 22), "Таблица участков", "Длины, азимуты, дир. углы, координаты", null, v -> {
             closeSheet();
             List<double[]> keep = new ArrayList<>(toolPts);
@@ -2080,7 +2145,8 @@ public class MapActivity extends Activity {
             toolPts.clear();
             toolPts.addAll(keep);
         });
-        hRow(hIcon(R.drawable.ic_mountain, tx, 22), "Профиль высот", "Подъёмы, спуски, перепад", null, v -> showProfile(r.pts, r.name));
+        if (!r.area)
+            hRow(hIcon(R.drawable.ic_mountain, tx, 22), "Профиль высот", "Подъёмы, спуски, перепад", null, v -> showProfile(r.pts, r.name));
         hRow(hIcon(R.drawable.ic_share, tx, 22), "Экспорт в KML", "Для AlpineQuest", null, v -> {
             closeSheet();
             saveAndShare(r.name.replaceAll("[^A-Za-z0-9А-Яа-яЁё_-]", "_") + ".kml", Routes.toKml(r), "Отправить маршрут");
@@ -2121,6 +2187,9 @@ public class MapActivity extends Activity {
         findViewById(R.id.tileImport).setOnClickListener(v -> { openMenu(false); pickFile(REQ_IMPORT); });
         findViewById(R.id.tileBackup).setOnClickListener(v -> { openMenu(false); makeBackup(); });
         findViewById(R.id.tileRestore).setOnClickListener(v -> { openMenu(false); pickFile(REQ_RESTORE); });
+        findViewById(R.id.tileArea).setOnClickListener(v -> { openMenu(false); startTool(TOOL_AREA, null); });
+        findViewById(R.id.tileQrScan).setOnClickListener(v -> { openMenu(false); scanQr(); });
+        findViewById(R.id.tileSun).setOnClickListener(v -> { openMenu(false); showSun(); });
         findViewById(R.id.updateRow).setOnClickListener(v -> downloadUpdate());
         findViewById(R.id.pinRow).setOnClickListener(v -> { openMenu(false); showPinSettings(); });
         updatePinRow();
@@ -2455,6 +2524,7 @@ public class MapActivity extends Activity {
         if (dlTask != null) dlTask.cancel(true);
         if (locMgr != null) locMgr.removeUpdates(locListener);
         if (track != null) setTracking(false);
+        if (sensors != null) sensors.unregisterListener(navSensor);
         finishDownload("Загрузка остановлена. Уже скачанное сохранено");
     }
 
@@ -2551,6 +2621,10 @@ public class MapActivity extends Activity {
             android.hardware.Sensor rv = sensors.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR);
             if (rv != null) sensors.registerListener(compassListener, rv, android.hardware.SensorManager.SENSOR_DELAY_UI);
         }
+        if (navOn() && sensors != null) {
+            android.hardware.Sensor rv2 = sensors.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR);
+            if (rv2 != null) sensors.registerListener(navSensor, rv2, android.hardware.SensorManager.SENSOR_DELAY_UI);
+        }
         reloadLbs();
         showSavedCrash();
         maybeLock();
@@ -2566,6 +2640,7 @@ public class MapActivity extends Activity {
     @Override
     protected void onPause() {
         if (sensors != null) sensors.unregisterListener(compassListener);
+        if (sensors != null) sensors.unregisterListener(navSensor);
         if (map != null) {
             GeoPoint c = (GeoPoint) map.getMapCenter();
             prefs.edit().putString("viewLat", Double.toString(c.getLatitude()))
@@ -2647,6 +2722,7 @@ public class MapActivity extends Activity {
 
     private void stopLocation() {
         if (track != null) setTracking(false);
+        if (navOn()) stopNav();
         if (locMgr != null) locMgr.removeUpdates(locListener);
         locOn = false;
         follow = false;
@@ -2668,6 +2744,7 @@ public class MapActivity extends Activity {
         myLoc.setLocation(l);
         if (follow) map.getController().animateTo(new GeoPoint(l.getLatitude(), l.getLongitude()));
         if (track != null) appendTrack(l);
+        if (navOn()) updateNav(l);
         updateCoords();
         map.invalidate();
     }
@@ -2723,7 +2800,8 @@ public class MapActivity extends Activity {
             Toast.makeText(this, "Нужно минимум 2 точки", Toast.LENGTH_SHORT).show();
             return;
         }
-        sheet("Профиль высот · " + title);
+        final boolean los = pts.size() == 2;
+        sheet((los ? "Профиль и видимость · " : "Профиль высот · ") + title);
         final ProfileView pv = new ProfileView(this);
         sheetContent.addView(pv);
         LinearLayout card = hCard();
@@ -2737,8 +2815,35 @@ public class MapActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.topMargin = (int) dp(10);
         sheetContent.addView(card, lp);
+
+        final TextView losText = new TextView(this);
+        final double[] hObs = {prefs.getFloat("losObs", 2f)}, hTgt = {prefs.getFloat("losTgt", 0f)};
+        final double[][] data = new double[2][];
+        final Runnable[] recalc = new Runnable[1];
+        if (los) {
+            hSection("ПРЯМАЯ ВИДИМОСТЬ: ТОЧКА 1 → ТОЧКА 2");
+            LinearLayout lc = hCard();
+            losText.setTextColor(getColor(R.color.hud_text));
+            losText.setTextSize(13.5f);
+            losText.setLineSpacing(dp(3), 1f);
+            losText.setText("Жду высоты…");
+            lc.addView(losText);
+            sheetContent.addView(lc);
+            heightChips("Высота наблюдателя над землёй", new double[]{0, 2, 5, 10, 20, 50}, hObs, v -> {
+                prefs.edit().putFloat("losObs", (float) v).apply();
+                if (recalc[0] != null) recalc[0].run();
+            });
+            heightChips("Высота цели над землёй", new double[]{0, 2, 5, 10, 20, 50}, hTgt, v -> {
+                prefs.edit().putFloat("losTgt", (float) v).apply();
+                if (recalc[0] != null) recalc[0].run();
+            });
+        }
         TextView hint = new TextView(this);
-        hint.setText("Проведите пальцем по графику — высота и расстояние в этом месте.");
+        hint.setText(los ? "Зелёный пунктир — луч видит цель, красный — луч перекрыт рельефом. "
+                + "Красным на рельефе — участки, которые не видны из точки 1. Учтены кривизна Земли и рефракция; "
+                + "лес и постройки не учитываются."
+                : "Проведите пальцем по графику — высота и расстояние в этом месте. "
+                + "Для расчёта видимости поставьте линейкой ровно 2 точки.");
         hint.setTextColor(getColor(R.color.hud_text2));
         hint.setTextSize(12);
         hint.setPadding((int) dp(4), (int) dp(8), (int) dp(4), 0);
@@ -2751,7 +2856,7 @@ public class MapActivity extends Activity {
             for (int i = 1; i < n; i++)
                 cum[i] = cum[i - 1] + Geo.inverse(copy.get(i - 1)[0], copy.get(i - 1)[1], copy.get(i)[0], copy.get(i)[1])[0];
             double total = cum[n - 1];
-            int samples = 160;
+            int samples = los ? Math.max(160, Math.min(400, (int) (total / 15))) : 160;
             double[] d = new double[samples], e = new double[samples];
             int seg = 1;
             for (int k = 0; k < samples; k++) {
@@ -2776,7 +2881,8 @@ public class MapActivity extends Activity {
                 else if (ref - v > 3) { down += ref - v; ref = v; }
             }
             final String text;
-            if (known == 0) {
+            final boolean ok = known > 0;
+            if (!ok) {
                 text = offline() ? "Высоты для этого района не сохранены. Выключите режим «Без сети» и откройте профиль ещё раз."
                         : "Не удалось загрузить высоты. Проверьте интернет.";
             } else {
@@ -2791,8 +2897,114 @@ public class MapActivity extends Activity {
             runOnUiThread(() -> {
                 pv.setData(d, e);
                 st.setText(text);
+                if (los && ok) {
+                    data[0] = d;
+                    data[1] = e;
+                    recalc[0] = () -> losText.setText(computeLos(pv, data[0], data[1], hObs[0], hTgt[0]));
+                    recalc[0].run();
+                } else if (los) {
+                    losText.setText("Нет высот — видимость не посчитать.");
+                }
             });
         }).start();
+    }
+
+    private interface DoubleCb {
+        void on(double v);
+    }
+
+    /** Ряд кнопок выбора высоты (м). */
+    private void heightChips(String label, double[] values, double[] cur, DoubleCb cb) {
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextColor(getColor(R.color.hud_text2));
+        l.setTextSize(12);
+        l.setPadding((int) dp(4), (int) dp(10), 0, (int) dp(4));
+        sheetContent.addView(l);
+        LinearLayout row = new LinearLayout(this);
+        final List<TextView> all = new ArrayList<>();
+        for (double v : values) {
+            TextView c = new TextView(this);
+            c.setText(Math.round(v) + " м");
+            c.setGravity(android.view.Gravity.CENTER);
+            c.setTextSize(13);
+            c.setPadding(0, (int) dp(8), 0, (int) dp(8));
+            c.setTag(v);
+            all.add(c);
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            p.setMarginEnd((int) dp(6));
+            row.addView(c, p);
+            c.setOnClickListener(x -> {
+                cur[0] = v;
+                for (TextView o : all) styleHeightChip(o, (double) o.getTag() == v);
+                cb.on(v);
+            });
+            styleHeightChip(c, v == cur[0]);
+        }
+        sheetContent.addView(row);
+    }
+
+    private void styleHeightChip(TextView c, boolean on) {
+        c.setBackgroundResource(on ? R.drawable.bg_chip_on : R.drawable.bg_chip);
+        c.setTextColor(on ? getColor(R.color.hud_accent) : getColor(R.color.hud_text));
+    }
+
+    /** Прямая видимость точка 1 → точка 2 по профилю; рисует луч на графике, возвращает текст. */
+    private String computeLos(ProfileView pv, double[] d, double[] e, double hObs, double hTgt) {
+        int n = d.length;
+        double D = d[n - 1];
+        final double RE = 6371000.0 / (1 - 0.13); // эффективный радиус Земли с рефракцией
+        int i0 = 0, i1 = n - 1;
+        while (i0 < n && Double.isNaN(e[i0])) i0++;
+        while (i1 > 0 && Double.isNaN(e[i1])) i1--;
+        if (i0 >= i1) return "Недостаточно высот.";
+        double a = e[i0] + hObs, b = e[i1] + hTgt;
+        double[] sight = new double[n];
+        boolean[] hidden = new boolean[n];
+        boolean blocked = false;
+        double firstBlock = -1, worst = 0, worstAt = 0;
+        double maxSlope = -Double.MAX_VALUE;
+        for (int k = 0; k < n; k++) {
+            double bulge = d[k] * (D - d[k]) / (2 * RE);
+            sight[k] = a + (b - a) * d[k] / D - bulge;
+            if (Double.isNaN(e[k])) { sight[k] = Double.NaN; continue; }
+            if (k > i0 && k < i1 && e[k] > sight[k]) {
+                blocked = true;
+                if (firstBlock < 0) firstBlock = d[k];
+                if (e[k] - sight[k] > worst) { worst = e[k] - sight[k]; worstAt = d[k]; }
+            }
+            if (k > i0) {
+                double slope = (e[k] - d[k] * d[k] / (2 * RE) - a) / d[k];
+                hidden[k] = slope < maxSlope - 1e-6;
+                maxSlope = Math.max(maxSlope, slope);
+            }
+        }
+        // как высоко нужно поднять цель, чтобы её стало видно
+        double need = 0;
+        if (blocked) {
+            for (int k = i0 + 1; k < i1; k++) {
+                if (Double.isNaN(e[k])) continue;
+                double bulge = d[k] * (D - d[k]) / (2 * RE);
+                double t = d[k] / D;
+                double reqB = (e[k] + bulge - a * (1 - t)) / t;
+                need = Math.max(need, reqB - e[i1]);
+            }
+        }
+        int hiddenCount = 0, total = 0;
+        for (int k = i0 + 1; k <= i1; k++) { total++; if (hidden[k]) hiddenCount++; }
+        pv.setSight(sight, hidden);
+        StringBuilder sb = new StringBuilder();
+        if (!blocked) {
+            sb.append("✔ Точка 2 видна из точки 1\n");
+        } else {
+            sb.append("✖ Точка 2 не видна из точки 1\n")
+              .append("Первое препятствие: ").append(Geo.dist(firstBlock)).append(" от точки 1\n")
+              .append("Сильнее всего закрывает на ").append(Geo.dist(worstAt)).append(" (выше луча на ")
+              .append(Math.round(worst)).append(" м)\n")
+              .append("Цель станет видна на высоте ≈ ").append(Math.round(Math.ceil(need))).append(" м над землёй\n");
+        }
+        sb.append("Не видно с точки 1: ").append(Math.round(100.0 * hiddenCount / Math.max(1, total))).append("% линии");
+        return sb.toString();
     }
 
     // ================= Поделиться точкой текстом =================
@@ -3109,6 +3321,10 @@ public class MapActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_QR) {
+            if (res == RESULT_OK && data != null && data.getStringExtra("qr") != null) onQrResult(data.getStringExtra("qr"));
+            return;
+        }
         if (res != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         if (req == REQ_IMPORT) importFrom(uri);
@@ -3301,6 +3517,332 @@ public class MapActivity extends Activity {
         } catch (Exception e) {
             Toast.makeText(this, "Ошибка восстановления: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
+    }
+
+    // ================= Навигация к точке и по маршруту =================
+
+    private static final int REQ_QR = 33;
+    private List<double[]> navPts;
+    private int navIdx;
+    private String navName = "";
+    private float devHeading = Float.NaN;
+    private double speedEma = 0;
+    private long navSensorAt = 0;
+    private float navDecl = 0;
+
+    private final android.hardware.SensorEventListener navSensor = new android.hardware.SensorEventListener() {
+        private final float[] rm = new float[9], or = new float[3];
+        private double s, c;
+        private boolean init;
+
+        @Override
+        public void onSensorChanged(android.hardware.SensorEvent e) {
+            android.hardware.SensorManager.getRotationMatrixFromVector(rm, e.values);
+            android.hardware.SensorManager.getOrientation(rm, or);
+            double az = Math.toRadians(Math.toDegrees(or[0]) + navDecl);
+            if (!init) { s = Math.sin(az); c = Math.cos(az); init = true; }
+            s += (Math.sin(az) - s) * 0.15;
+            c += (Math.cos(az) - c) * 0.15;
+            devHeading = (float) ((Math.toDegrees(Math.atan2(s, c)) + 360) % 360);
+            long now = System.currentTimeMillis();
+            if (now - navSensorAt > 120) {
+                navSensorAt = now;
+                myLoc.setHeading(devHeading);
+                updateNav(null);
+                map.invalidate();
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(android.hardware.Sensor s, int a) {}
+    };
+
+    private boolean navOn() {
+        return navPts != null;
+    }
+
+    private void startNav(List<double[]> pts, int idx, String name) {
+        if (pts == null || pts.isEmpty()) return;
+        navPts = new ArrayList<>(pts);
+        navIdx = Math.max(0, Math.min(idx, navPts.size() - 1));
+        navName = name;
+        speedEma = 0;
+        if (!locOn) startLocation(false);
+        if (sensors == null) sensors = getSystemService(android.hardware.SensorManager.class);
+        android.hardware.Sensor rv = sensors == null ? null : sensors.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR);
+        if (rv != null) {
+            GeoPoint c = (GeoPoint) map.getMapCenter();
+            navDecl = new android.hardware.GeomagneticField((float) c.getLatitude(), (float) c.getLongitude(), 0,
+                    System.currentTimeMillis()).getDeclination();
+            sensors.registerListener(navSensor, rv, android.hardware.SensorManager.SENSOR_DELAY_UI);
+        }
+        findViewById(R.id.navPanel).setVisibility(View.VISIBLE);
+        myLoc.setNavTarget(navPts.get(navIdx));
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        updateNav(null);
+        map.invalidate();
+    }
+
+    private void stopNav() {
+        navPts = null;
+        if (sensors != null) sensors.unregisterListener(navSensor);
+        devHeading = Float.NaN;
+        myLoc.setHeading(Float.NaN);
+        myLoc.setNavTarget(null);
+        findViewById(R.id.navPanel).setVisibility(View.GONE);
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        map.invalidate();
+    }
+
+    private void vibrate(long ms) {
+        try {
+            android.os.Vibrator v = getSystemService(android.os.Vibrator.class);
+            if (v != null) v.vibrate(android.os.VibrationEffect.createOneShot(ms, android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Обновить панель навигации; l — новая координата (или null, если сработал компас). */
+    private void updateNav(android.location.Location l) {
+        if (!navOn()) return;
+        if (l != null && l.hasSpeed()) speedEma = speedEma == 0 ? l.getSpeed() : speedEma + (l.getSpeed() - speedEma) * 0.2;
+        android.location.Location me = myLoc.getLocation();
+        TextView dist = findViewById(R.id.navDist), sub = findViewById(R.id.navSub);
+        ImageView arrow = findViewById(R.id.navArrow);
+        String part = navPts.size() > 1 ? " · КТ " + (navIdx + 1) + "/" + navPts.size() : "";
+        if (me == null) {
+            dist.setText("Ищу спутники…");
+            sub.setText(navName + part);
+            arrow.setAlpha(0.35f);
+            return;
+        }
+        double[] wp = navPts.get(navIdx);
+        double[] inv = Geo.inverse(me.getLatitude(), me.getLongitude(), wp[0], wp[1]);
+        if (l != null) {
+            double radius = Math.max(12, Math.min(30, me.getAccuracy()));
+            if (inv[0] <= radius) {
+                if (navIdx < navPts.size() - 1) {
+                    vibrate(250);
+                    Toast.makeText(this, "КТ " + (navIdx + 1) + " пройдена", Toast.LENGTH_SHORT).show();
+                    navIdx++;
+                    myLoc.setNavTarget(navPts.get(navIdx));
+                    updateNav(null);
+                } else {
+                    vibrate(700);
+                    Toast.makeText(this, "Вы на месте: " + navName, Toast.LENGTH_LONG).show();
+                    stopNav();
+                }
+                return;
+            }
+        }
+        double remain = inv[0];
+        for (int i = navIdx + 1; i < navPts.size(); i++) {
+            double[] a = navPts.get(i - 1), b = navPts.get(i);
+            remain += Geo.inverse(a[0], a[1], b[0], b[1])[0];
+        }
+        // направление «вверх» экрана: компас → курс GPS → ориентация карты
+        float up;
+        String src;
+        if (!Float.isNaN(devHeading)) { up = devHeading; src = ""; }
+        else if (me.hasBearing() && me.getSpeed() > 0.8f) { up = me.getBearing(); src = " · по ходу движения"; }
+        else { up = -map.getMapOrientation(); src = " · стрелка по карте"; }
+        arrow.setAlpha(1f);
+        arrow.setRotation((float) (inv[1] - up));
+        double sp = speedEma > 0.4 ? speedEma : 1.25;
+        long min = Math.round(remain / sp / 60);
+        String eta = min < 1 ? "<1 мин" : min < 60 ? min + " мин" : (min / 60) + " ч " + (min % 60) + " мин";
+        dist.setText(Geo.dist(inv[0]) + (navPts.size() > 1 && navIdx < navPts.size() - 1 ? "  · всего " + Geo.dist(remain) : ""));
+        sub.setText(String.format(Locale.US, "%.0f°", inv[1]) + " · д.у. "
+                + Geo.mils(Geo.gridBearing(me.getLatitude(), me.getLongitude(), wp[0], wp[1]))
+                + " · ~" + eta + (speedEma > 0.4 ? "" : " пешком") + part + "\n" + navName + src);
+    }
+
+    /** Индекс ближайшей к моему местоположению вершины. */
+    private int nearestIdx(List<double[]> pts) {
+        android.location.Location me = myLoc.getLocation();
+        if (me == null) return 0;
+        int best = 0;
+        double bd = Double.MAX_VALUE;
+        for (int i = 0; i < pts.size(); i++) {
+            double dd = Geo.inverse(me.getLatitude(), me.getLongitude(), pts.get(i)[0], pts.get(i)[1])[0];
+            if (dd < bd) { bd = dd; best = i; }
+        }
+        return best;
+    }
+
+    private void navRoute(Routes.Route r, boolean back) {
+        List<double[]> p = new ArrayList<>(r.pts);
+        if (back) Collections.reverse(p);
+        if (back && r == track) setTracking(false);
+        startNav(p, nearestIdx(p), (back ? "Обратно: " : "") + r.name);
+    }
+
+    // ================= Обмен по QR-коду =================
+
+    private boolean qrShown;
+
+    private void showQr(String payload, String title) {
+        android.graphics.Bitmap bmp;
+        try {
+            bmp = QrCodec.bitmap(payload, (int) (getResources().getDisplayMetrics().widthPixels * 0.82));
+        } catch (Exception e) {
+            Toast.makeText(this, "Не удалось сделать QR-код: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        sheet("QR-код · " + title);
+        ImageView iv = new ImageView(this);
+        iv.setImageBitmap(bmp);
+        iv.setAdjustViewBounds(true);
+        iv.setBackgroundColor(Color.WHITE);
+        int p = (int) dp(10);
+        iv.setPadding(p, p, p, p);
+        sheetContent.addView(iv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        TextView t = new TextView(this);
+        t.setText("На другом телефоне: Меню → «Принять по QR» и наведите камеру на этот код. Интернет не нужен.");
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setTextSize(12.5f);
+        t.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        sheetContent.addView(t);
+        android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = 1f;
+        getWindow().setAttributes(lp);
+        findViewById(R.id.nightFilter).setVisibility(View.GONE);
+        qrShown = true;
+    }
+
+    private void scanQr() {
+        try {
+            startActivityForResult(new Intent(this, QrScanActivity.class), REQ_QR);
+        } catch (Exception e) {
+            Toast.makeText(this, "Сканер не запустился", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void onQrResult(String text) {
+        QrCodec.Item it;
+        try {
+            it = QrCodec.decode(text);
+        } catch (Exception e) {
+            Toast.makeText(this, "Не получилось прочитать: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (it.point != null) {
+            UserPoints.Point p = it.point;
+            sheet("Получена точка");
+            LinearLayout card = hCard();
+            addKV(card, "Название", p.name);
+            addKV(card, "СК-42", Sk42.format(p.lat, p.lon));
+            addKV(card, "WGS-84", String.format(Locale.US, "%.5f, %.5f", p.lat, p.lon));
+            if (p.note != null && !p.note.isEmpty()) addKV(card, "Заметка", p.note);
+            sheetContent.addView(card);
+            footer("Отмена", "Добавить", v -> {
+                p.id = Long.toString(now, 36);
+                p.created = now;
+                userPoints.add(p);
+                savePoints();
+                closeSheet();
+                map.getController().animateTo(new GeoPoint(p.lat, p.lon), Math.max(14.0, map.getZoomLevelDouble()), 600L);
+                Toast.makeText(this, "Точка «" + p.name + "» добавлена", Toast.LENGTH_SHORT).show();
+            });
+        } else {
+            Routes.Route r = it.route;
+            sheet(r.area ? "Получена зона" : "Получен маршрут");
+            LinearLayout card = hCard();
+            addKV(card, "Название", r.name);
+            if (r.area) {
+                addKV(card, "Площадь", Routes.areaText(Routes.area(r.pts)));
+                addKV(card, "Периметр", Geo.dist(Routes.perimeter(r.pts)));
+            } else {
+                addKV(card, "Длина", Geo.dist(Routes.length(r.pts)));
+            }
+            addKV(card, "Точек", Integer.toString(r.pts.size()));
+            sheetContent.addView(card);
+            footer("Отмена", "Добавить", v -> {
+                r.id = Long.toString(now, 36);
+                r.created = now;
+                routes.add(r);
+                saveRoutes();
+                closeSheet();
+                fitRoute(r);
+                Toast.makeText(this, "«" + r.name + "» добавлен(а)", Toast.LENGTH_SHORT).show();
+            });
+        }
+    }
+
+    // ================= Солнце и Луна =================
+
+    private void showSun() {
+        android.location.Location me = myLoc.getLocation();
+        double lat, lon;
+        String where;
+        if (me != null) { lat = me.getLatitude(); lon = me.getLongitude(); where = "по моему местоположению"; }
+        else { GeoPoint c = (GeoPoint) map.getMapCenter(); lat = c.getLatitude(); lon = c.getLongitude(); where = "по центру карты"; }
+        sheet("Солнце и Луна");
+        SimpleDateFormat hm = new SimpleDateFormat("HH:mm", Locale.US);
+        SimpleDateFormat day = new SimpleDateFormat("d MMMM, EEEE", new Locale("ru"));
+        long now = System.currentTimeMillis();
+        double alt = Astro.sunAltitude(now, lat, lon);
+        String state = alt > 0 ? "день" : alt > -6 ? "гражданские сумерки" : alt > -12 ? "навигационные сумерки" : "ночь";
+        TextView head = new TextView(this);
+        head.setText("Сейчас: " + state + " · Солнце " + String.format(Locale.US, "%+.0f°", alt)
+                + "\nРасчёт " + where + ", время телефона");
+        head.setTextColor(getColor(R.color.hud_text2));
+        head.setTextSize(12.5f);
+        head.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(4));
+        sheetContent.addView(head);
+
+        java.util.Calendar cal = java.util.Calendar.getInstance();
+        for (int k = 0; k < 2; k++) {
+            java.util.Calendar c = (java.util.Calendar) cal.clone();
+            c.add(java.util.Calendar.DAY_OF_YEAR, k);
+            c.set(java.util.Calendar.HOUR_OF_DAY, 12);
+            c.set(java.util.Calendar.MINUTE, 0);
+            c.set(java.util.Calendar.SECOND, 0);
+            long noon = c.getTimeInMillis();
+            c.set(java.util.Calendar.HOUR_OF_DAY, 0);
+            long midnight = c.getTimeInMillis();
+            long[] s = Astro.sunTimes(noon, lat, lon);
+            java.util.Calendar c2 = (java.util.Calendar) c.clone();
+            c2.add(java.util.Calendar.DAY_OF_YEAR, 1);
+            c2.set(java.util.Calendar.HOUR_OF_DAY, 12);
+            long[] next = Astro.sunTimes(c2.getTimeInMillis(), lat, lon);
+            hSection((k == 0 ? "СЕГОДНЯ · " : "ЗАВТРА · ") + day.format(new Date(noon)).toUpperCase(new Locale("ru")));
+            LinearLayout card = hCard();
+            addKV(card, "Начало навиг. сумерек", t(hm, s[4]));
+            addKV(card, "Рассвет (гражд. сумерки)", t(hm, s[2]));
+            addKV(card, "Восход Солнца", t(hm, s[0]));
+            addKV(card, "Заход Солнца", t(hm, s[1]));
+            addKV(card, "Конец гражд. сумерек", t(hm, s[3]));
+            addKV(card, "Конец навиг. сумерек", t(hm, s[5]));
+            if (s[0] > 0 && s[1] > 0) addKV(card, "Светлое время", dur(s[1] - s[0]));
+            if (s[3] > 0 && next[2] > 0) addKV(card, "Тёмное время (ночь)", t(hm, s[3]) + "–" + t(hm, next[2]) + " · " + dur(next[2] - s[3]));
+            long[] m = Astro.moonTimes(midnight, lat, lon);
+            double[] il = Astro.moonIllumination(k == 0 ? now : midnight + 22 * 3600000L);
+            addKV(card, "Восход Луны", t(hm, m[0]));
+            addKV(card, "Заход Луны", t(hm, m[1]));
+            addKV(card, k == 0 ? "Луна сейчас" : "Луна ночью", Astro.phaseName(il[1]) + " · освещена " + Math.round(il[0] * 100) + "%");
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            sheetContent.addView(card, lp);
+        }
+        double ma = Astro.moonAltitudeDeg(now, lat, lon);
+        TextView foot = new TextView(this);
+        foot.setText("Луна сейчас " + (ma > 0 ? "над горизонтом (" + Math.round(ma) + "°)" : "под горизонтом")
+                + ". Точность времени — около 1–2 минут; рельеф и облачность не учитываются.");
+        foot.setTextColor(getColor(R.color.hud_text2));
+        foot.setTextSize(12);
+        foot.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        sheetContent.addView(foot);
+    }
+
+    private static String t(SimpleDateFormat f, long ms) {
+        return ms <= 0 ? "—" : f.format(new Date(ms));
+    }
+
+    private static String dur(long ms) {
+        long m = ms / 60000;
+        return (m / 60) + " ч " + (m % 60) + " мин";
     }
 
     @SuppressWarnings("unused")

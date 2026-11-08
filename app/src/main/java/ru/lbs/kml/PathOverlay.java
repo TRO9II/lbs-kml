@@ -36,6 +36,8 @@ public class PathOverlay extends Overlay {
     private List<Routes.Route> saved = new ArrayList<>();
     private List<double[]> active;
     private int activeColor = 0xFFFFB300;
+    private boolean activeArea;
+    private final Paint areaFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rubber = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rubberHalo = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint liveText = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -82,8 +84,13 @@ public class PathOverlay extends Overlay {
 
     /** Редактируемая линия (null — нет). */
     void setActive(List<double[]> pts, int color) {
+        setActive(pts, color, false);
+    }
+
+    void setActive(List<double[]> pts, int color, boolean area) {
         active = pts;
         activeColor = color;
+        activeArea = area;
     }
 
     @Override
@@ -91,9 +98,9 @@ public class PathOverlay extends Overlay {
         if (shadow) return;
         Projection pj = mv.getProjection();
         float orient = mv.getMapOrientation();
-        for (Routes.Route r : saved) if (r.visible && r.pts.size() > 1) drawPath(c, pj, orient, r.pts, r.color, false);
+        for (Routes.Route r : saved) if (r.visible && r.pts.size() > 1) drawPath(c, pj, orient, r.pts, r.color, false, r.area);
         if (active != null && !active.isEmpty()) {
-            drawPath(c, pj, orient, active, activeColor, true);
+            drawPath(c, pj, orient, active, activeColor, true, activeArea);
             drawRubber(c, mv, pj, orient);
         }
     }
@@ -131,7 +138,7 @@ public class PathOverlay extends Overlay {
         c.restore();
     }
 
-    private void drawPath(Canvas c, Projection pj, float orient, List<double[]> pts, int color, boolean editing) {
+    private void drawPath(Canvas c, Projection pj, float orient, List<double[]> pts, int color, boolean editing, boolean area) {
         int n = pts.size();
         float[] xs = new float[n], ys = new float[n];
         path.reset();
@@ -146,13 +153,18 @@ public class PathOverlay extends Overlay {
         lineHalo.setStrokeWidth(w + 2.6f * density);
         line.setStrokeWidth(w);
         line.setColor(color);
+        if (area && n > 2) {
+            path.close();
+            areaFill.setColor((color & 0x00FFFFFF) | 0x38000000);
+            c.drawPath(path, areaFill);
+        }
         if (n > 1) {
             c.drawPath(path, lineHalo);
             c.drawPath(path, line);
         }
 
         // длины участков посередине (только у редактируемой линии и коротких маршрутов)
-        if (editing || n <= 30) {
+        if ((editing || n <= 30) && !(area && !editing)) {
             for (int i = 1; i < n; i++) {
                 float mx = (xs[i] + xs[i - 1]) / 2, my = (ys[i] + ys[i - 1]) / 2;
                 if (Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]) < 70 * density) continue;

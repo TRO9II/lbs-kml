@@ -47,6 +47,15 @@ public class MyLocationOverlay extends Overlay {
     }
 
     /** Направление (истинный азимут, °) или NaN. */
+    private double[] navTo;
+    private final Paint navLine = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final android.graphics.Point pnav = new android.graphics.Point();
+
+    /** Пунктир от меня к точке навигации (null — нет). */
+    void setNavTarget(double[] latLon) {
+        navTo = latLon;
+    }
+
     void setHeading(float h) {
         heading = h;
     }
@@ -64,6 +73,19 @@ public class MyLocationOverlay extends Overlay {
         if (r > 6 * density) {
             c.drawCircle(pt.x, pt.y, r, acc);
             c.drawCircle(pt.x, pt.y, r, accEdge);
+        }
+        if (navTo != null) {
+            if (navLine.getPathEffect() == null) {
+                navLine.setStyle(Paint.Style.STROKE);
+                navLine.setStrokeWidth(3 * density);
+                navLine.setColor(0xFF42A5F5);
+                navLine.setStrokeCap(Paint.Cap.ROUND);
+                navLine.setPathEffect(new android.graphics.DashPathEffect(new float[]{10 * density, 8 * density}, 0));
+            }
+            gp.setCoords(navTo[0], navTo[1]);
+            pj.toPixels(gp, pnav);
+            c.drawLine(pt.x, pt.y, pnav.x, pnav.y, navLine);
+            c.drawCircle(pnav.x, pnav.y, 7 * density, navLine);
         }
         float h = !Float.isNaN(heading) ? heading : (loc.hasBearing() && loc.getSpeed() > 0.8f ? loc.getBearing() : Float.NaN);
         if (!Float.isNaN(h)) {
