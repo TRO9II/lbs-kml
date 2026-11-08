@@ -153,6 +153,14 @@ public class MapActivity extends Activity {
         rotGesture = rot;
         rot.setEnabled(true);
         map.getOverlays().add(rot);
+        roadsOverlay = new RoadsOverlay(this, d);
+        roadsOverlay.setEnabled(false);
+        roadsOverlay.setStatus(t -> {
+            TextView at = findViewById(R.id.attribution);
+            if (attrBase.isEmpty() || !at.getText().toString().startsWith(attrBase)) attrBase = at.getText().toString();
+            at.setText(t == null ? attrBase : attrBase + " · " + t);
+        });
+        map.getOverlays().add(roadsOverlay);
         map.getOverlays().add(lbsFolder);
         gridOverlay = new GridOverlay(d);
         map.getOverlays().add(gridOverlay);
@@ -576,9 +584,9 @@ public class MapActivity extends Activity {
     }
 
     /** Ключ, название, описание, источник, прозрачность (0..1). */
-    private static final String[] OV_KEYS = {"ovRoads", "ovRail", "ovOsm", "ovPlaces"};
+    private static final String[] OV_KEYS = {"ovRoadsV", "ovRail", "ovOsm", "ovPlaces"};
     private static final String[] OV_NAMES = {"Дороги", "Железные дороги", "Схема поверх (полупрозрачно)", "Границы и названия"};
-    private static final String[] OV_SUBS = {"Трассы, улицы, номера дорог (Esri)", "Пути, станции, переезды (OpenRailwayMap)",
+    private static final String[] OV_SUBS = {"Только линии дорог: трассы, улицы, грунтовки (OpenStreetMap)", "Пути, станции, переезды (OpenRailwayMap)",
             "Всё из OpenStreetMap: реки, лес, дома, дороги", "Границы областей, названия (Esri, латиницей)"};
     private static final OnlineTileSourceBase[] OV_SRC = {
             new OvSource("OvRoads", 19, ".png", true, ESRI + "Reference/World_Transportation/MapServer/tile/"),
@@ -588,6 +596,8 @@ public class MapActivity extends Activity {
             new OvSource("OvPlaces", 19, ".png", true, ESRI + "Reference/World_Boundaries_and_Places/MapServer/tile/")};
     private static final float[] OV_ALPHA = {1f, 0.95f, 0.45f, 1f};
     private final List<TilesOverlay> ovLayers = new ArrayList<>();
+    private RoadsOverlay roadsOverlay;
+    private String attrBase = "";
 
     private void applyOverlays() {
         for (TilesOverlay o : ovLayers) {
@@ -597,7 +607,8 @@ public class MapActivity extends Activity {
         ovLayers.clear();
         int at = map.getOverlays().indexOf(lbsFolder);
         if (at < 0) at = 2;
-        for (int i = 0; i < OV_KEYS.length; i++) {
+        if (roadsOverlay != null) roadsOverlay.setEnabled(prefs.getBoolean(OV_KEYS[0], false));
+        for (int i = 1; i < OV_KEYS.length; i++) {
             if (!prefs.getBoolean(OV_KEYS[i], false)) continue;
             if (i == 3 && esriLabels != null) continue; // уже показаны как подписи
             MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), OV_SRC[i]);
@@ -673,6 +684,7 @@ public class MapActivity extends Activity {
                     ? "Архив Esri Wayback · снимок " + prefs.getString("wbLabel", "")
                     : "Esri, Maxar, Earthstar Geographics");
         }
+        attrBase = attr.getText().toString();
         applyHillshade();
         applyOverlays();
         placesOverlay.setEnabled(ru);
@@ -2895,6 +2907,23 @@ public class MapActivity extends Activity {
         final TextView t = findViewById(R.id.dlText);
         findViewById(R.id.dlRow).setVisibility(View.VISIBLE);
         t.setText("Скачиваю область: 0%");
+        if (roadsOverlay != null && prefs.getBoolean(OV_KEYS[0], false)) {
+            final List<String> keys = RoadsOverlay.keysFor(bb, 13, 80);
+            final RoadsOverlay ro = roadsOverlay;
+            new Thread(() -> {
+                int ok = 0;
+                for (String k : keys) {
+                    try {
+                        ro.download(k);
+                        ok++;
+                    } catch (Exception ignored) {
+                    }
+                }
+                final int fo = ok;
+                runOnUiThread(() -> Toast.makeText(this, "Дороги района сохранены: " + fo + " из " + keys.size() + " квадратов",
+                        Toast.LENGTH_LONG).show());
+            }).start();
+        }
         dlTask = cm.downloadAreaAsyncNoUI(this, bb, zMin, zMax, new CacheManager.CacheManagerCallback() {
             @Override public void onTaskComplete() { finishDownload("Область сохранена — работает без интернета"); }
             @Override public void onTaskFailed(int errors) {
@@ -3439,6 +3468,7 @@ public class MapActivity extends Activity {
         boolean off = offline();
         map.setUseDataConnection(!off);
         Elevation.offline = off;
+        if (roadsOverlay != null) roadsOverlay.setOffline(off);
         findViewById(R.id.offlineChip).setVisibility(off ? View.VISIBLE : View.GONE);
         map.invalidate();
     }
