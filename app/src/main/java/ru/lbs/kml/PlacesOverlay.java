@@ -107,7 +107,6 @@ public class PlacesOverlay extends Overlay {
         return out;
     }
 
-    @Override
     private android.graphics.RectF exclude;
     private final Point sp = new Point();
 
@@ -116,6 +115,7 @@ public class PlacesOverlay extends Overlay {
         exclude = r;
     }
 
+    @Override
     public void draw(Canvas c, MapView mv, boolean shadow) {
         if (shadow || places == null) return;
         double z = mv.getZoomLevelDouble();
