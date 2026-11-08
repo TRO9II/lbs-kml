@@ -1705,7 +1705,7 @@ public class MapActivity extends Activity {
         if (Double.isNaN(hNow)) elevHandler.postDelayed(elevTask, 120);
         if (findViewById(R.id.coordCard).getVisibility() == View.VISIBLE) {
             double[] r = Sk42.fromWgs(lat, lon);
-            ((TextView) findViewById(R.id.coordSk)).setText("X " + Math.round(r[0]) + "   Y " + Math.round(r[1]));
+            ((TextView) findViewById(R.id.coordSk)).setText("X\u00A0" + Math.round(r[0]) + "\u2002\u2002Y\u00A0" + Math.round(r[1]));
             coordWgsText = String.format(Locale.US, "%.5f° %s  %.5f° %s",
                     Math.abs(lat), lat >= 0 ? "N" : "S", Math.abs(lon), lon >= 0 ? "E" : "W");
             showCoordLine();
