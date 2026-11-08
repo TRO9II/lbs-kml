@@ -738,6 +738,7 @@ public class MapActivity extends Activity {
             ((ViewGroup) chatHeader.getParent()).removeView(chatHeader);
             chatHeader = null;
         }
+        hideEmoji();
         View host = findViewById(R.id.genSheet), panel = findViewById(R.id.genPanel), scrim = findViewById(R.id.genScrim);
         ((TextView) findViewById(R.id.genTitle)).setText(title);
         sheetContent = findViewById(R.id.genContent);
@@ -6113,6 +6114,8 @@ public class MapActivity extends Activity {
         plus.setContentDescription("Вложения, статус, SOS");
         sheetFooter.addView(plus, new LinearLayout.LayoutParams((int) dp(42), (int) dp(42)));
         final EditText input = hInput("Сообщение", "");
+        final ImageView smile = hIconButton(R.drawable.ic_smile, getColor(R.color.hud_text2), null);
+        smile.setContentDescription("Смайлы");
         input.setMinHeight((int) dp(48));
         input.setMaxLines(6);
         input.setTextSize(16);
@@ -6127,7 +6130,15 @@ public class MapActivity extends Activity {
         LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
         il.setMarginStart((int) dp(6));
         il.setMarginEnd((int) dp(8));
-        sheetFooter.addView(input, il);
+        android.widget.FrameLayout inWrap = new android.widget.FrameLayout(this);
+        inWrap.addView(input, new android.widget.FrameLayout.LayoutParams(-1, -2));
+        input.setPadding((int) dp(16), (int) dp(10), (int) dp(44), (int) dp(10));
+        inWrap.addView(smile, new android.widget.FrameLayout.LayoutParams((int) dp(40), (int) dp(40),
+                android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL));
+        smile.setOnClickListener(v -> toggleEmoji(input));
+        input.setOnClickListener(v -> hideEmoji());
+        input.setOnFocusChangeListener((v, f) -> { if (f) hideEmoji(); });
+        sheetFooter.addView(inWrap, il);
         final ImageView act = new ImageView(this);
         act.setImageTintList(ColorStateList.valueOf(Color.WHITE));
         int p = (int) dp(11);
@@ -7482,6 +7493,116 @@ public class MapActivity extends Activity {
                 .setPositiveButton("Стереть", (d, w) -> wipeAll())
                 .setNegativeButton("Отмена", null)
                 .show();
+    }
+
+
+    // ================= Смайлы =================
+
+    private static final String[][] EMOJI = {
+            {"Лица", "😀 😃 😄 😁 😆 😅 😂 🤣 🙂 😉 😊 😇 😍 😘 😋 😜 🤪 😎 🤓 🧐 🤔 🤨 😐 😑 😶 🙄 😏 😬 😌 😔 😪 😴 😷 🤒 🤕 🤢 🥵 🥶 😵 🤯 🤠 🥳 😕 😟 🙁 😮 😲 😳 🥺 😦 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 😤 😡 😠 🤬 💀 ☠️ 🤡 👻 👽 🤖 💩"},
+            {"Жесты", "👍 👎 👌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐 🖖 👋 🤝 🙏 💪 👊 ✊ 🤛 🤜 👏 🙌 👐 🤲 ✍️ 👀 👂 🫡"},
+            {"Знаки", "❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 ❗ ❓ ‼️ ⁉️ ✅ ❌ ⭕ 🛑 ⛔ 🚫 ⚠️ 🔴 🟠 🟡 🟢 🔵 🟣 ⚫ ⚪ ⬆️ ⬇️ ⬅️ ➡️ ↗️ ↘️ ↙️ ↖️ 🔄 🆗 🆘 💯 🔥 ⚡ 💥 ✨ 🎯 📍 📌 🚩 🏁"},
+            {"Разное", "☀️ 🌙 ⭐ ☁️ 🌧 ⛈ ❄️ 🌫 💨 💧 🌲 🌳 🌾 🏠 🏚 🏭 ⛺ 🌉 🛣 🚗 🚙 🚚 🛻 🚜 🏍 🚲 🚁 ✈️ 🛰 📡 📻 📱 🔋 🔦 🧭 🗺 ⏱ ⏰ 🍞 🍖 🍲 ☕ 🍺 🚬 💊 🩹 🔧 🔨 🪓 📦 🎒 💰 🔑 🔒 🐕 🐈 🐦"}};
+
+    private View emojiPanel;
+
+    private void hideEmoji() {
+        if (emojiPanel != null && emojiPanel.getParent() != null) ((ViewGroup) emojiPanel.getParent()).removeView(emojiPanel);
+        emojiPanel = null;
+    }
+
+    private void toggleEmoji(EditText input) {
+        if (emojiPanel != null) {
+            hideEmoji();
+            input.requestFocus();
+            InputMethodManager imm = getSystemService(InputMethodManager.class);
+            if (imm != null) imm.showSoftInput(input, 0);
+            return;
+        }
+        hideKeyboard();
+        input.clearFocus();
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        // вкладки
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        ScrollView sc = new ScrollView(this);
+        final LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        sc.addView(grid);
+        final List<TextView> tabViews = new ArrayList<>();
+        String recent = prefs.getString("emojiRecent", "");
+        final List<String[]> cats = new ArrayList<>();
+        if (!recent.isEmpty()) cats.add(new String[]{"Недавние", recent});
+        cats.addAll(Arrays.asList(EMOJI));
+        for (int i = 0; i < cats.size(); i++) {
+            final int ci = i;
+            TextView t = new TextView(this);
+            t.setText(cats.get(i)[0]);
+            t.setTextSize(12.5f);
+            t.setGravity(android.view.Gravity.CENTER);
+            t.setPadding(0, (int) dp(6), 0, (int) dp(6));
+            t.setOnClickListener(v -> {
+                fillEmojiGrid(grid, cats.get(ci)[1], input);
+                sc.scrollTo(0, 0);
+                for (int k = 0; k < tabViews.size(); k++) styleSeg(tabViews.get(k), k == ci);
+            });
+            tabViews.add(t);
+            tabs.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            styleSeg(t, i == 0);
+        }
+        GradientDrawable tg = new GradientDrawable();
+        tg.setCornerRadius(dp(10));
+        tg.setColor(0xFF15181D);
+        tabs.setBackground(tg);
+        tabs.setPadding((int) dp(3), (int) dp(3), (int) dp(3), (int) dp(3));
+        panel.addView(tabs);
+        LinearLayout.LayoutParams scl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) dp(210));
+        scl.topMargin = (int) dp(6);
+        panel.addView(sc, scl);
+        fillEmojiGrid(grid, cats.get(0)[1], input);
+        LinearLayout gp = findViewById(R.id.genPanel);
+        LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        pl.topMargin = (int) dp(8);
+        gp.addView(panel, gp.indexOfChild(sheetFooter) + 1, pl);
+        emojiPanel = panel;
+        scrollChatDown();
+    }
+
+    private void fillEmojiGrid(LinearLayout grid, String list, EditText input) {
+        grid.removeAllViews();
+        String[] em = list.trim().split("\\s+");
+        int cols = 8;
+        LinearLayout row = null;
+        for (int i = 0; i < em.length; i++) {
+            if (i % cols == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                grid.addView(row);
+            }
+            final String e = em[i];
+            TextView t = new TextView(this);
+            t.setText(e);
+            t.setTextSize(25);
+            t.setGravity(android.view.Gravity.CENTER);
+            t.setPadding(0, (int) dp(5), 0, (int) dp(5));
+            t.setBackgroundResource(R.drawable.bg_hud_btn);
+            t.setOnClickListener(v -> {
+                int st = Math.max(0, input.getSelectionStart());
+                input.getText().insert(st, e);
+                rememberEmoji(e);
+            });
+            row.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        }
+        if (row != null) for (int k = row.getChildCount(); k < cols; k++) row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+    }
+
+    private void rememberEmoji(String e) {
+        List<String> r = new ArrayList<>();
+        r.add(e);
+        for (String x : prefs.getString("emojiRecent", "").trim().split("\\s+"))
+            if (!x.isEmpty() && !x.equals(e) && r.size() < 24) r.add(x);
+        prefs.edit().putString("emojiRecent", String.join(" ", r)).apply();
     }
 
     @SuppressWarnings("unused")
