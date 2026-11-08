@@ -1,5 +1,4 @@
 import urllib.request, math, io, subprocess, sys
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pillow"], check=True)
 from PIL import Image
 def tile(lat, lon, z):
     n = 2 ** z

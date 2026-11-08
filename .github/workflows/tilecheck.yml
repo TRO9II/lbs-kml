@@ -6,4 +6,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 scripts/check_ov.py
+      - run: python3 -m pip install --break-system-packages pillow && python3 scripts/check_ov.py
