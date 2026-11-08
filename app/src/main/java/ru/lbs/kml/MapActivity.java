@@ -222,7 +222,6 @@ public class MapActivity extends Activity {
         findViewById(R.id.dlCancel).setOnClickListener(v -> cancelDownload());
         findViewById(R.id.coordCard).setOnClickListener(v -> copyCenterCoords());
         findViewById(R.id.targetClear).setOnClickListener(v -> clearTarget());
-        findViewById(R.id.lbsBannerBtn).setOnClickListener(v -> openLbsScreen());
 
         findViewById(R.id.dockLayers).setOnClickListener(v -> showLayers());
         findViewById(R.id.dockRuler).setOnClickListener(v -> startTool(TOOL_RULER, null));
@@ -260,14 +259,14 @@ public class MapActivity extends Activity {
             data = LbsCore.loadMapData(this);
         } catch (Exception ignored) {
         }
-        View banner = findViewById(R.id.lbsBanner);
+        View badge = findViewById(R.id.menuBadge);
         if (data == null || data.lines.isEmpty()) {
             lbsDate = "";
-            banner.setVisibility(View.VISIBLE);
+            badge.setVisibility(View.VISIBLE);
             map.invalidate();
             return;
         }
-        banner.setVisibility(View.GONE);
+        badge.setVisibility(View.GONE);
         lbsDate = data.date.replace(" o ", ", ");
         boolean gray = LbsCore.optGray(this), diff = LbsCore.optDiff(this);
         if (gray && prefs.getBoolean("showGray", true)) {
@@ -363,7 +362,7 @@ public class MapActivity extends Activity {
             chips.add(b);
         }
         styleChips();
-        findViewById(R.id.chipsScroll).setVisibility(prefs.getBoolean("showChips", true) ? View.VISIBLE : View.GONE);
+        findViewById(R.id.chipsScroll).setVisibility(prefs.getBoolean("showChips", false) ? View.VISIBLE : View.GONE);
     }
 
     private void styleChips() {
@@ -494,7 +493,7 @@ public class MapActivity extends Activity {
             prefs.edit().putBoolean("gridOn", on).apply();
             applyGrid();
         }));
-        box.addView(toggleRow("Кнопки направлений", "Херсонская, Запорожская…", prefs.getBoolean("showChips", true), on -> {
+        box.addView(toggleRow("Кнопки направлений", "Херсонская, Запорожская…", prefs.getBoolean("showChips", false), on -> {
             prefs.edit().putBoolean("showChips", on).apply();
             findViewById(R.id.chipsScroll).setVisibility(on ? View.VISIBLE : View.GONE);
         }));
@@ -573,7 +572,7 @@ public class MapActivity extends Activity {
 
     private void showMenu() {
         String[] items = {
-                "ЛБС — обновить, файл, автопроверка",
+                lbsDate.isEmpty() ? "● ЛБС не загружена — загрузить" : "ЛБС — снимок " + lbsDate + " · обновить, файл",
                 "Скачать видимую область (офлайн)",
                 "Экспорт моих точек в KML",
                 "О карте: даты снимков, легенда",
@@ -753,6 +752,7 @@ public class MapActivity extends Activity {
         findViewById(R.id.btnSearchClose).setVisibility(open ? View.VISIBLE : View.GONE);
         InputMethodManager imm = getSystemService(InputMethodManager.class);
         if (open) {
+            runLocalSearch();
             searchBox.requestFocus();
             if (imm != null) imm.showSoftInput(searchBox, InputMethodManager.SHOW_IMPLICIT);
         } else {
@@ -764,14 +764,25 @@ public class MapActivity extends Activity {
 
     private void showResults(boolean show) {
         resultsScroll.setVisibility(show ? View.VISIBLE : View.GONE);
-        findViewById(R.id.chipsScroll).setVisibility(!show && prefs.getBoolean("showChips", true) ? View.VISIBLE : View.GONE);
+        findViewById(R.id.chipsScroll).setVisibility(!show && prefs.getBoolean("showChips", false) ? View.VISIBLE : View.GONE);
     }
 
     private void runLocalSearch() {
         String q = searchBox.getText().toString().trim();
         results.removeAllViews();
-        if (q.isEmpty()) { showResults(false); return; }
         showResults(true);
+        if (q.isEmpty()) {
+            // пустой запрос — быстрый переход по направлениям
+            addHeader("НАПРАВЛЕНИЯ");
+            for (int i = 0; i < NAMES.length; i++) {
+                final int idx = i;
+                addResultRow(NAMES[i], i == 0 ? "весь фронт" : "область", v -> {
+                    openSearch(false);
+                    zoomTo(idx, true);
+                });
+            }
+            return;
+        }
         if (places == null) {
             addResultRow("Загружаю список…", "", null);
             return;
@@ -782,6 +793,16 @@ public class MapActivity extends Activity {
         }
         final String query = q;
         addResultRow("Искать «" + q + "» в интернете", "OpenStreetMap Nominatim", v -> searchOnline(query));
+    }
+
+    private void addHeader(String t) {
+        TextView h = new TextView(this);
+        h.setText(t);
+        h.setTextSize(11);
+        h.setLetterSpacing(0.1f);
+        h.setTextColor(getColor(R.color.hud_text2));
+        h.setPadding((int) dp(18), (int) dp(10), (int) dp(18), (int) dp(4));
+        results.addView(h);
     }
 
     private void addResultRow(String title, String sub, View.OnClickListener click) {
@@ -887,7 +908,7 @@ public class MapActivity extends Activity {
         gridOverlay.setEnabled(on);
         reticleOverlay.setReticle(on && tool == TOOL_NONE);
         findViewById(R.id.coordCard).setVisibility(on || tool != TOOL_NONE ? View.VISIBLE : View.GONE);
-        findViewById(R.id.scaleCard).setVisibility(on ? View.VISIBLE : View.GONE);
+        findViewById(R.id.scaleRow).setVisibility(on ? View.VISIBLE : View.GONE);
         ((ImageView) findViewById(R.id.btnGrid)).setImageTintList(ColorStateList.valueOf(
                 on ? getColor(R.color.hud_accent) : getColor(R.color.hud_text)));
         updateCoords();
@@ -902,8 +923,8 @@ public class MapActivity extends Activity {
         double lat = c.getLatitude(), lon = c.getLongitude();
         if (findViewById(R.id.coordCard).getVisibility() == View.VISIBLE) {
             double[] r = Sk42.fromWgs(lat, lon);
-            ((TextView) findViewById(R.id.coordSk)).setText("X = " + Math.round(r[0]) + "   Y = " + Math.round(r[1]));
-            ((TextView) findViewById(R.id.coordWgs)).setText(String.format(Locale.US, "%.6f° %s  %.6f° %s",
+            ((TextView) findViewById(R.id.coordSk)).setText("X " + Math.round(r[0]) + "   Y " + Math.round(r[1]));
+            ((TextView) findViewById(R.id.coordWgs)).setText(String.format(Locale.US, "%.5f° %s  %.5f° %s",
                     Math.abs(lat), lat >= 0 ? "N" : "S", Math.abs(lon), lon >= 0 ? "E" : "W"));
         }
         if (gridOn()) {
@@ -914,14 +935,14 @@ public class MapActivity extends Activity {
             if (pxPerM > 0) {
                 double xdpi = getResources().getDisplayMetrics().xdpi;
                 long scale = Math.round((1 / pxPerM) * xdpi / 0.0254 / 100.0) * 100;
-                ((TextView) findViewById(R.id.scaleText)).setText(STYLE_SHORT[currentStyle] + "   1:" + Geo.group(scale));
+                ((TextView) findViewById(R.id.scaleText)).setText("1:" + Geo.group(scale));
                 double bar = BARS[0];
                 for (double m : BARS) if (m * pxPerM <= dp(110)) bar = m;
                 ((ScaleBarView) findViewById(R.id.scaleBar)).setBarPx((float) (bar * pxPerM));
                 ((TextView) findViewById(R.id.scaleBarText)).setText(Geo.dist(bar));
             }
             int maxZ = (int) map.getTileProvider().getTileSource().getMaximumZoomLevel();
-            ((TextView) findViewById(R.id.zoomText)).setText(Math.round(map.getZoomLevelDouble()) + "/" + maxZ);
+            ((TextView) findViewById(R.id.zoomText)).setText("z" + Math.round(map.getZoomLevelDouble()) + "/" + maxZ);
         }
         updateTargetCard(lat, lon);
         if (tool != TOOL_NONE) updateToolPanel();
@@ -1315,13 +1336,13 @@ public class MapActivity extends Activity {
         int n = toolPts.size();
         TextView total = findViewById(R.id.toolTotal), sub = findViewById(R.id.toolSub);
         if (n == 0) {
-            total.setText("0 м");
-            sub.setText("Нажмите на карту или «В центр»");
+            total.setText("—");
+            sub.setText("Нажимайте на карту, на свои точки или ⊕ (точка по прицелу)");
             return;
         }
         List<Routes.Leg> legs = Routes.legs(toolPts);
         double len = legs.isEmpty() ? 0 : legs.get(legs.size() - 1).total;
-        total.setText(Geo.dist(len));
+        total.setText(legs.isEmpty() ? "—" : Geo.dist(len));
         GeoPoint c = (GeoPoint) map.getMapCenter();
         double[] last = toolPts.get(n - 1);
         double[] toC = Geo.inverse(last[0], last[1], c.getLatitude(), c.getLongitude());

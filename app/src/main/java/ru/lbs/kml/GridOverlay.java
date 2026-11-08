@@ -49,7 +49,7 @@ public class GridOverlay extends Overlay {
         zoneLine.setStrokeWidth(2.4f * density);
         zoneLine.setColor(Color.argb(230, 255, 64, 129));
         text.setColor(Color.argb(240, 15, 15, 15));
-        text.setTextSize(10.5f * density);
+        text.setTextSize(9.5f * density);
         text.setTextAlign(Paint.Align.CENTER);
         halo.set(text);
         halo.setStyle(Paint.Style.STROKE);
@@ -99,13 +99,17 @@ public class GridOverlay extends Overlay {
             xMin -= step; xMax += step; yMin -= step; yMax += step;
             if ((xMax - xMin) / step > 140 || (yMax - yMin) / step > 140) continue;
 
+            // подписываем каждую линию, если они редкие; иначе — через одну
+            boolean dense = step / mPerPx < 110 * density;
             for (double x = Math.ceil(xMin / step) * step; x <= xMax; x += step) {
                 boolean isMajor = Math.abs(Math.IEEEremainder(x, majorStep)) < 1;
-                line(c, pj, orient, x, yMin, x, yMax, zW, zE, isMajor, label(x, isMajor));
+                boolean lab = isMajor || !dense || Math.round(x / step) % 2 == 0;
+                line(c, pj, orient, x, yMin, x, yMax, zW, zE, isMajor, lab ? label(x, isMajor) : null);
             }
             for (double y = Math.ceil(yMin / step) * step; y <= yMax; y += step) {
                 boolean isMajor = Math.abs(Math.IEEEremainder(y, majorStep)) < 1;
-                line(c, pj, orient, xMin, y, xMax, y, zW, zE, isMajor, label(y, isMajor));
+                boolean lab = isMajor || !dense || Math.round(y / step) % 2 == 0;
+                line(c, pj, orient, xMin, y, xMax, y, zW, zE, isMajor, lab ? label(y, isMajor) : null);
             }
         }
         // границы зон
@@ -144,9 +148,10 @@ public class GridOverlay extends Overlay {
             if (!pen) { path.moveTo(pt.x, pt.y); pen = true; } else path.lineTo(pt.x, pt.y);
         }
         c.drawPath(path, isMajor ? major : minor);
+        if (label == null) return;
 
         // подписи вдоль линии через каждые ~280 dp
-        float gap = 280 * density, first = 140 * density, acc = 0, next = first;
+        float gap = 420 * density, first = 210 * density, acc = 0, next = first;
         for (int i = 1; i <= SAMPLES; i++) {
             if (!ok[i] || !ok[i - 1]) continue;
             float dx = xs[i] - xs[i - 1], dy = ys[i] - ys[i - 1];
