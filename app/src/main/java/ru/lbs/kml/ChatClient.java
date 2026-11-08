@@ -50,11 +50,16 @@ import javax.crypto.spec.SecretKeySpec;
  */
 final class ChatClient {
 
+    /**
+     * Сообщение. kind: msg — текст, pt — точка, st — статус, sos — тревога, voice — голос, photo — фото,
+     * obj — объект общей карты (op put/del, oid, obj — JSON объекта), snap — снимок всей общей карты.
+     */
     static final class Msg {
-        long seq, t;
-        String kind = "msg", from = "", dev = "", text = "", ptName = "";
+        long seq, t, exp, ms;
+        String kind = "msg", from = "", dev = "", text = "", ptName = "", media = "", op = "", oid = "", obj = "";
         double lat, lon;
-        boolean mine;
+        boolean mine, hasLoc;
+        transient String data; // base64 голоса/фото при отправке и приёме
 
         JSONObject json() throws Exception {
             JSONObject o = new JSONObject();
@@ -62,12 +67,27 @@ final class ChatClient {
             o.put("f", from);
             o.put("d", dev);
             o.put("t", t);
+            if (exp > 0) o.put("exp", exp);
             if (!text.isEmpty()) o.put("x", text);
-            if (kind.equals("pt")) {
+            if (kind.equals("pt") || hasLoc) {
                 o.put("n", ptName);
                 o.put("la", lat);
                 o.put("lo", lon);
+                o.put("hl", true);
             }
+            if (ms > 0) o.put("ms", ms);
+            if (!media.isEmpty()) o.put("media", media);
+            if (!op.isEmpty()) o.put("op", op);
+            if (!oid.isEmpty()) o.put("oid", oid);
+            if (!obj.isEmpty()) o.put("obj", obj);
+            return o;
+        }
+
+        /** Для отправки: с данными голоса/фото, без локального пути. */
+        JSONObject wire() throws Exception {
+            JSONObject o = json();
+            o.remove("media");
+            if (data != null) o.put("a", data);
             return o;
         }
 
@@ -77,10 +97,18 @@ final class ChatClient {
             m.from = o.optString("f");
             m.dev = o.optString("d");
             m.t = o.optLong("t");
+            m.exp = o.optLong("exp");
             m.text = o.optString("x", "");
             m.ptName = o.optString("n", "");
             m.lat = o.optDouble("la", 0);
             m.lon = o.optDouble("lo", 0);
+            m.hasLoc = o.optBoolean("hl", m.kind.equals("pt"));
+            m.ms = o.optLong("ms");
+            m.media = o.optString("media", "");
+            m.op = o.optString("op", "");
+            m.oid = o.optString("oid", "");
+            m.obj = o.optString("obj", "");
+            m.data = o.has("a") ? o.optString("a") : null;
             return m;
         }
     }
@@ -92,6 +120,7 @@ final class ChatClient {
         float acc, heading = Float.NaN;
         long t, recv;
         boolean off;
+        List<double[]> tail = new ArrayList<>(); // след за последний час (если участник его показывает)
     }
 
     /** Участник группы (по данным сервера). */
@@ -131,6 +160,10 @@ final class ChatClient {
 
         default void onRole(String role) {}
 
+        default void onReads() {}
+
+        default void onObjects() {}
+
         void onStatus(String status, boolean ok);
     }
 
@@ -144,19 +177,252 @@ final class ChatClient {
     private volatile boolean running;
     private volatile int gen;
     private Thread poller;
-    private Listener listener;
     private String server = "", room = "", me = "", token = "";
     private volatile String role = "";
     private volatile int epoch;
-    private long lastSeq, mver = -1;
+    private long lastSeq, mver = -1, rver = -1;
+    private final Map<String, Long> reads = new ConcurrentHashMap<>();
+    private final Map<String, GObj> objs = new ConcurrentHashMap<>();
+    private long lastReadSent;
 
-    ChatClient(Context c) {
+    // ---------- прочитано ----------
+
+    /** Сколько других активных участников прочитали сообщение seq; total — сколько их всего. */
+    int[] readBy(long seq) {
+        int n = 0, total = 0;
+        for (Person p : people.values()) {
+            if (!p.active() || p.id.equals(me)) continue;
+            total++;
+            Long r = reads.get(p.id);
+            if (r != null && r >= seq) n++;
+        }
+        return new int[]{n, total};
+    }
+
+    /** Отметить, что я прочитал всё до последнего сообщения (вызывается, когда чат открыт). */
+    void markRead() {
+        final long s = lastSeq;
+        if (!active() || s <= lastReadSent) return;
+        lastReadSent = s;
+        bg(() -> {
+            try {
+                http("POST", "/api/v2/read?seq=" + s, "{}", 10000);
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
+    // ---------- медиа ----------
+
+    private String saveMedia(long seq, String ext, String b64) {
+        try {
+            File d = new File(app.getFilesDir(), "chatmedia");
+            if (!d.exists()) d.mkdirs();
+            File f = new File(d, room + "_" + seq + "." + ext);
+            java.nio.file.Files.write(f.toPath(), unb64(b64));
+            return f.getAbsolutePath();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // ---------- общая карта группы ----------
+
+    /** Объект общей карты: точка, маршрут или зона. */
+    static final class GObj {
+        String id = "", type = "pt", name = "", icon = "", author = "", authorName = "", note = "";
+        int color;
+        long t;
+        final List<double[]> pts = new ArrayList<>();
+
+        JSONObject json() throws Exception {
+            JSONObject o = new JSONObject().put("id", id).put("ty", type).put("n", name).put("c", color).put("ic", icon)
+                    .put("au", author).put("an", authorName).put("t", t).put("no", note);
+            JSONArray a = new JSONArray();
+            for (double[] p : pts) a.put(new JSONArray().put(p[0]).put(p[1]));
+            return o.put("p", a);
+        }
+
+        static GObj of(JSONObject o) throws Exception {
+            GObj g = new GObj();
+            g.id = o.optString("id");
+            g.type = o.optString("ty", "pt");
+            g.name = o.optString("n");
+            g.color = o.optInt("c");
+            g.icon = o.optString("ic");
+            g.author = o.optString("au");
+            g.authorName = o.optString("an");
+            g.t = o.optLong("t");
+            g.note = o.optString("no");
+            JSONArray a = o.getJSONArray("p");
+            for (int i = 0; i < a.length(); i++) g.pts.add(new double[]{a.getJSONArray(i).getDouble(0), a.getJSONArray(i).getDouble(1)});
+            return g;
+        }
+    }
+
+    List<GObj> objects() {
+        return new ArrayList<>(objs.values());
+    }
+
+    GObj object(String id) {
+        return objs.get(id);
+    }
+
+    /** Может ли участник dev менять объект (автор или администратор). */
+    boolean canEdit(GObj g, String dev) {
+        if (g.author.equals(dev)) return true;
+        Person p = people.get(dev);
+        return p != null && p.admin();
+    }
+
+    private boolean applyObj(Msg m) {
+        try {
+            if (m.kind.equals("snap")) {
+                Person p = people.get(m.dev);
+                if (p != null && !p.admin()) return false; // снимок карты рассылают только администраторы
+                JSONArray a = new JSONArray(m.obj);
+                for (int i = 0; i < a.length(); i++) {
+                    GObj g = GObj.of(a.getJSONObject(i));
+                    GObj cur = objs.get(g.id);
+                    if (cur == null || cur.t < g.t) objs.put(g.id, g);
+                }
+                return true;
+            }
+            if (m.op.equals("del")) {
+                GObj cur = objs.get(m.oid);
+                if (cur == null || !canEdit(cur, m.dev)) return false;
+                objs.remove(m.oid);
+                return true;
+            }
+            GObj g = GObj.of(new JSONObject(m.obj));
+            GObj cur = objs.get(g.id);
+            if (cur != null && !canEdit(cur, m.dev)) return false;
+            if (cur == null) g.author = m.dev; // автор — тот, кого подтвердил сервер
+            else g.author = cur.author;
+            g.authorName = nameOf(g.author);
+            objs.put(g.id, g);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void saveObjs() {
+        try {
+            JSONArray a = new JSONArray();
+            for (GObj g : objs.values()) a.put(g.json());
+            prefs.edit().putString("c2Objs", a.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void loadObjs() {
+        objs.clear();
+        try {
+            JSONArray a = new JSONArray(prefs.getString("c2Objs", "[]"));
+            for (int i = 0; i < a.length(); i++) {
+                GObj g = GObj.of(a.getJSONObject(i));
+                objs.put(g.id, g);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Добавить / изменить объект общей карты. */
+    void putObj(GObj g, Runnable done, Consumer<String> fail) {
+        try {
+            if (g.id.isEmpty()) g.id = rnd(6);
+            g.t = System.currentTimeMillis();
+            Msg m = new Msg();
+            m.kind = "obj";
+            m.op = "put";
+            m.oid = g.id;
+            m.obj = g.json().toString();
+            send(m, done, fail);
+        } catch (Exception e) {
+            err(fail, e);
+        }
+    }
+
+    void delObj(GObj g, Runnable done, Consumer<String> fail) {
+        Msg m = new Msg();
+        m.kind = "obj";
+        m.op = "del";
+        m.oid = g.id;
+        m.text = g.name;
+        send(m, done, fail);
+    }
+
+    /** Снимок всей общей карты — чтобы новичок (или после смены ключа) увидел всё, что отмечено раньше. */
+    private void sendSnapshot() {
+        try {
+            if (objs.isEmpty() || !isAdmin()) return;
+            JSONArray a = new JSONArray();
+            for (GObj g : objs.values()) a.put(g.json());
+            Msg m = new Msg();
+            m.kind = "snap";
+            m.obj = a.toString();
+            m.from = callsign();
+            m.dev = me;
+            m.t = System.currentTimeMillis();
+            http("POST", "/api/v2/send", encrypt(m.wire().toString()), 30000);
+        } catch (Exception ignored) {
+        }
+    }
+
+    // ---------- исчезающие сообщения ----------
+
+    /** Убрать из ленты истёкшие сообщения (и их файлы). true — что-то удалено. */
+    boolean purgeExpired() {
+        long t = System.currentTimeMillis();
+        boolean any = false;
+        synchronized (history) {
+            for (java.util.Iterator<Msg> it = history.iterator(); it.hasNext(); ) {
+                Msg m = it.next();
+                if (m.exp > 0 && m.exp < t) {
+                    if (!m.media.isEmpty()) new File(m.media).delete();
+                    it.remove();
+                    any = true;
+                }
+            }
+            if (any) {
+                File f = store();
+                try {
+                    StringBuilder sb = new StringBuilder();
+                    for (Msg m : history) sb.append(m.json().put("s", m.seq)).append('\n');
+                    if (f != null) java.nio.file.Files.write(f.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return any;
+    }
+
+    private static ChatClient instance;
+
+    /** Один клиент на приложение — общий для карты и фонового сервиса. */
+    static synchronized ChatClient get(Context c) {
+        if (instance == null) instance = new ChatClient(c);
+        return instance;
+    }
+
+    private ChatClient(Context c) {
         app = c.getApplicationContext();
         prefs = LbsCore.prefs(app);
         load();
     }
 
-    void setListener(Listener l) { listener = l; }
+    private final List<Listener> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    void addListener(Listener l) { if (!listeners.contains(l)) listeners.add(l); }
+
+    void removeListener(Listener l) { listeners.remove(l); }
+
+    void setListener(Listener l) { addListener(l); }
+
+    private void each(Consumer<Listener> f) {
+        ui.post(() -> { for (Listener l : listeners) f.accept(l); });
+    }
 
     boolean configured() { return !server.isEmpty() && !room.isEmpty() && !me.isEmpty(); }
 
@@ -247,6 +513,7 @@ final class ChatClient {
         }
         epoch = 0;
         for (int e : keys.keySet()) epoch = Math.max(epoch, e);
+        loadObjs();
         people.clear();
         try {
             parsePeople(new JSONArray(prefs.getString("c2People", "[]")));
@@ -312,7 +579,12 @@ final class ChatClient {
         if (f != null) f.delete();
         prefs.edit().remove("c2Server").remove("c2Room").remove("c2Me").remove("c2Token").remove("c2Role")
                 .remove("c2Seq").remove("c2Keys").remove("c2People").remove("c2Group").remove("c2Priv").remove("c2Pub")
-                .remove("c2MVer").apply();
+                .remove("c2MVer").remove("c2Objs").remove("c2RekeyAt").remove("c2PendSeen").apply();
+        File md = new File(app.getFilesDir(), "chatmedia");
+        File[] fs = md.listFiles();
+        if (fs != null) for (File x : fs) x.delete();
+        objs.clear();
+        reads.clear();
         server = room = me = token = role = "";
         epoch = 0;
         lastSeq = 0;
@@ -664,6 +936,7 @@ final class ChatClient {
                 http("POST", "/api/v2/manage", j.toString(), 15000);
                 refreshPeople();
                 if (action.equals("remove")) rekey();
+                if (action.equals("approve")) sendSnapshot();
                 ok(done);
             } catch (Exception e) {
                 err(fail, e);
@@ -689,6 +962,7 @@ final class ChatClient {
             epoch = ne;
             saveKeys();
             prefs.edit().putLong("c2RekeyAt", System.currentTimeMillis()).apply();
+            sendSnapshot();
         } catch (ServerError e) {
             if (e.code == 409) fetchKeys(); // кто-то из администраторов уже сменил ключ
             else throw e;
@@ -746,14 +1020,21 @@ final class ChatClient {
 
     // ---------- сообщения и метки ----------
 
+    /** Срок жизни новых сообщений, секунд (0 — без срока). */
+    int ttl() { return prefs.getInt("c2Ttl", 0); }
+
+    void setTtl(int sec) { prefs.edit().putInt("c2Ttl", sec).apply(); }
+
     void send(Msg m, Runnable okR, Consumer<String> fail) {
         m.from = callsign();
         m.dev = me;
         m.t = System.currentTimeMillis();
+        final int tt = m.kind.equals("obj") || m.kind.equals("snap") ? 0 : ttl();
+        if (tt > 0) m.exp = m.t + tt * 1000L;
         bg(() -> {
             try {
                 if (!active()) throw new Exception(pending() ? "ждём подтверждения администратора" : "вы не в группе");
-                http("POST", "/api/v2/send", encrypt(m.json().toString()), 15000);
+                http("POST", "/api/v2/send" + (tt > 0 ? "?ttl=" + tt : ""), encrypt(m.wire().toString()), 60000);
                 ok(okR);
             } catch (Exception e) {
                 err(fail, e);
@@ -762,6 +1043,10 @@ final class ChatClient {
     }
 
     void sendLoc(double lat, double lon, float acc, float heading, boolean off) {
+        sendLoc(lat, lon, acc, heading, off, null);
+    }
+
+    void sendLoc(double lat, double lon, float acc, float heading, boolean off, List<double[]> tail) {
         if (!configured() || !active()) return;
         bg(() -> {
             try {
@@ -774,6 +1059,11 @@ final class ChatClient {
                     o.put("lo", Math.round(lon * 1e6) / 1e6);
                     o.put("ac", Math.round(acc));
                     if (!Float.isNaN(heading)) o.put("hd", Math.round(heading));
+                    if (tail != null && tail.size() > 1) {
+                        JSONArray tr = new JSONArray();
+                        for (double[] p : tail) tr.put(new JSONArray().put(Math.round(p[0] * 1e5) / 1e5).put(Math.round(p[1] * 1e5) / 1e5));
+                        o.put("tr", tr);
+                    }
                 }
                 http("POST", "/api/v2/loc", encrypt(o.toString()), 15000);
             } catch (Exception ignored) {
@@ -790,7 +1080,7 @@ final class ChatClient {
             boolean wasOk = false, firstLocs = true;
             while (running && gen == my) {
                 try {
-                    String r = http("GET", "/api/v2/poll?since=" + lastSeq + "&mver=" + mver
+                    String r = http("GET", "/api/v2/poll?since=" + lastSeq + "&mver=" + mver + "&rver=" + rver
                             + (firstLocs ? "&lsince=0&wait=0" : "&wait=25"), null, 35000);
                     if (gen != my) break;
                     firstLocs = false;
@@ -800,7 +1090,7 @@ final class ChatClient {
                         running = false;
                         final String rr = newRole;
                         wipeLocal();
-                        ui.post(() -> { if (listener != null) listener.onRole(rr); });
+                        each(l -> l.onRole(rr));
                         break;
                     }
                     boolean roleChanged = !newRole.equals(role);
@@ -815,7 +1105,7 @@ final class ChatClient {
                         int pend = 0;
                         for (Person p : people.values()) if (p.role.equals("pending")) pend++;
                         final int pc = pend;
-                        ui.post(() -> { if (listener != null) { listener.onPeople(pc); listener.onMembers(); } });
+                        each(l -> { l.onPeople(pc); l.onMembers(); });
                         // администратор: кто-то вышел или удалён после последней смены ключа → новый ключ
                         if (isAdmin()) {
                             long at = prefs.getLong("c2RekeyAt", 0);
@@ -829,12 +1119,22 @@ final class ChatClient {
                     } else if (mv != mver) {
                         mver = mv;
                     }
-                    if (roleChanged) ui.post(() -> { if (listener != null) listener.onRole(role); });
+                    if (roleChanged) { final String nr = role; each(l -> l.onRole(nr)); }
                     if (active() && o.optInt("epoch", 0) > epoch) fetchKeys();
 
                     if (active()) {
                         JSONArray arr = o.getJSONArray("msgs");
                         List<Msg> added = new ArrayList<>();
+                        boolean objChanged = false;
+                        if (o.has("rver")) rver = o.optLong("rver");
+                        JSONObject rd = o.optJSONObject("reads");
+                        if (rd != null) {
+                            for (java.util.Iterator<String> it = rd.keys(); it.hasNext(); ) {
+                                String k = it.next();
+                                reads.put(k, rd.optLong(k));
+                            }
+                            each(Listener::onReads);
+                        }
                         for (int i = 0; i < arr.length(); i++) {
                             JSONObject e = arr.getJSONObject(i);
                             long s = e.getLong("s");
@@ -844,9 +1144,18 @@ final class ChatClient {
                                 Msg m = Msg.of(new JSONObject(decrypt(e.getString("b"))));
                                 m.seq = s;
                                 m.dev = e.optString("m", m.dev); // отправителя подтверждает сервер
+                                if (e.optLong("x") > 0) m.exp = e.optLong("x");
                                 String nm = nameOf(m.dev);
                                 if (!nm.isEmpty()) m.from = nm;
                                 m.mine = m.dev.equals(me);
+                                if (m.data != null) {
+                                    m.media = saveMedia(m.seq, m.kind.equals("photo") ? "jpg" : "m4a", m.data);
+                                    m.data = null;
+                                }
+                                if (m.kind.equals("obj") || m.kind.equals("snap")) {
+                                    if (applyObj(m)) objChanged = true;
+                                    if (m.kind.equals("snap")) continue; // в ленте не показываем
+                                }
                                 added.add(m);
                             } catch (Exception bad) {
                                 // нет ключа этой эпохи (сообщения до вступления) — пропускаем
@@ -870,6 +1179,10 @@ final class ChatClient {
                                     m.heading = p.has("hd") ? (float) p.optDouble("hd") : Float.NaN;
                                     m.t = p.optLong("t");
                                     m.recv = e.optLong("t");
+                                    JSONArray tr = p.optJSONArray("tr");
+                                    if (tr != null)
+                                        for (int q = 0; q < tr.length(); q++)
+                                            m.tail.add(new double[]{tr.getJSONArray(q).getDouble(0), tr.getJSONArray(q).getDouble(1)});
                                     members.put(m.dev, m);
                                     memChanged = true;
                                 } catch (Exception bad) {
@@ -877,29 +1190,33 @@ final class ChatClient {
                                 }
                             }
                         }
-                        if (memChanged) ui.post(() -> { if (listener != null) listener.onMembers(); });
+                        if (memChanged) each(Listener::onMembers);
                         if (o.optLong("last") < lastSeq) lastSeq = o.optLong("last");
                         prefs.edit().putLong("c2Seq", lastSeq).apply();
+                        if (objChanged) {
+                            saveObjs();
+                            each(Listener::onObjects);
+                        }
                         if (!added.isEmpty()) {
                             synchronized (history) {
                                 history.addAll(added);
                             }
                             persist(added);
-                            ui.post(() -> { if (listener != null) listener.onMessages(added); });
+                            each(l -> l.onMessages(added));
                         }
                     } else {
                         Thread.sleep(pending() ? 8000 : 2000); // ожидающий опрашивает реже
                     }
                     if (!wasOk) {
                         wasOk = true;
-                        ui.post(() -> { if (listener != null) listener.onStatus(pending() ? "ждём подтверждения" : "на связи", true); });
+                        each(l -> l.onStatus(pending() ? "ждём подтверждения" : "на связи", true));
                     }
                     backoff = 2;
                 } catch (Exception e) {
                     if (!running) break;
                     wasOk = false;
                     final String msg = e.getMessage();
-                    ui.post(() -> { if (listener != null) listener.onStatus("нет связи с сервером" + (msg == null ? "" : " (" + msg + ")"), false); });
+                    each(l -> l.onStatus("нет связи с сервером" + (msg == null ? "" : " (" + msg + ")"), false));
                     try {
                         Thread.sleep(backoff * 1000L);
                     } catch (InterruptedException ie) {

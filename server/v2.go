@@ -55,8 +55,14 @@ type msg2 struct {
 	S int64  `json:"s"`
 	T int64  `json:"t"`
 	M string `json:"m"`
+	X int64  `json:"x,omitempty"` // когда удалить (мс), 0 — хранить
 	B string `json:"b"`
 }
+
+const (
+	maxBlob2   = 1536 << 10 // сообщение с фото или голосом
+	maxPollOut = 4 << 20    // не больше ~4 МБ за один ответ
+)
 
 type loc2 struct {
 	M string `json:"m"`
@@ -66,15 +72,18 @@ type loc2 struct {
 }
 
 type room2 struct {
-	mu   sync.Mutex
-	id   string
-	dir  string
-	meta meta2
-	msgs []msg2
-	last int64
-	locs map[string]loc2
-	wake chan struct{}
-	file *os.File
+	mu     sync.Mutex
+	id     string
+	dir    string
+	meta   meta2
+	msgs   []msg2
+	last   int64
+	locs   map[string]loc2
+	reads  map[string]int64 // до какого номера участник прочитал
+	rver   int64
+	wake   chan struct{}
+	file   *os.File
+	logged int
 }
 
 type hub2 struct {
@@ -104,7 +113,7 @@ func (h *hub2) open(id string, create bool) (*room2, error) {
 	}
 	dir := filepath.Join(h.dir, "v2", id)
 	mp := filepath.Join(dir, "meta.json")
-	r := &room2{id: id, dir: dir, locs: map[string]loc2{}, wake: make(chan struct{})}
+	r := &room2{id: id, dir: dir, locs: map[string]loc2{}, reads: map[string]int64{}, wake: make(chan struct{})}
 	if b, err := os.ReadFile(mp); err == nil {
 		if err := json.Unmarshal(b, &r.meta); err != nil {
 			return nil, err
@@ -120,16 +129,32 @@ func (h *hub2) open(id string, create bool) (*room2, error) {
 	lp := filepath.Join(dir, "msgs.log")
 	if f, err := os.Open(lp); err == nil {
 		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 1<<20), maxBlob*2)
+		sc.Buffer(make([]byte, 1<<20), maxBlob2*3)
+		tnow := now()
 		for sc.Scan() {
-			p := strings.SplitN(sc.Text(), "\t", 4)
-			if len(p) != 4 {
+			p := strings.SplitN(sc.Text(), "\t", 5)
+			var m msg2
+			if len(p) == 5 {
+				m.S, _ = strconv.ParseInt(p[0], 10, 64)
+				m.T, _ = strconv.ParseInt(p[1], 10, 64)
+				m.M = p[2]
+				m.X, _ = strconv.ParseInt(p[3], 10, 64)
+				m.B = p[4]
+			} else if len(p) == 4 {
+				m.S, _ = strconv.ParseInt(p[0], 10, 64)
+				m.T, _ = strconv.ParseInt(p[1], 10, 64)
+				m.M, m.B = p[2], p[3]
+			} else {
 				continue
 			}
-			s, _ := strconv.ParseInt(p[0], 10, 64)
-			t, _ := strconv.ParseInt(p[1], 10, 64)
-			r.msgs = append(r.msgs, msg2{s, t, p[2], p[3]})
-			r.last = s
+			r.logged++
+			if m.S > r.last {
+				r.last = m.S
+			}
+			if m.X > 0 && m.X < tnow {
+				continue
+			}
+			r.msgs = append(r.msgs, m)
 		}
 		f.Close()
 		if len(r.msgs) > keepMsgs {
@@ -141,8 +166,50 @@ func (h *hub2) open(id string, create bool) (*room2, error) {
 		return nil, err
 	}
 	r.file = f
+	if r.logged > len(r.msgs) {
+		r.compact() // в журнале были просроченные — стереть их с диска
+	}
 	h.rooms[id] = r
 	return r, nil
+}
+
+// compact — переписать журнал без удалённых и просроченных сообщений (под r.mu).
+func (r *room2) compact() {
+	lp := filepath.Join(r.dir, "msgs.log")
+	tmp := lp + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	w := bufio.NewWriter(f)
+	for _, m := range r.msgs {
+		fmt.Fprintf(w, "%d\t%d\t%s\t%d\t%s\n", m.S, m.T, m.M, m.X, m.B)
+	}
+	w.Flush()
+	f.Close()
+	if r.file != nil {
+		r.file.Close()
+	}
+	os.Rename(tmp, lp)
+	r.file, _ = os.OpenFile(lp, os.O_APPEND|os.O_WRONLY, 0600)
+	r.logged = len(r.msgs)
+}
+
+// expire — убрать просроченные (под r.mu); true, если что-то удалено.
+func (r *room2) expire() bool {
+	t := now()
+	k := 0
+	for _, m := range r.msgs {
+		if m.X == 0 || m.X > t {
+			r.msgs[k] = m
+			k++
+		}
+	}
+	if k == len(r.msgs) {
+		return false
+	}
+	r.msgs = r.msgs[:k]
+	return true
 }
 
 // save — под r.mu.
@@ -182,11 +249,29 @@ func readJSON(req *http.Request, v interface{}) error {
 	return json.Unmarshal(b, v)
 }
 
-func isAdmin(m *member2) bool { return m.Role == "owner" || m.Role == "admin" }
+func isAdmin(m *member2) bool  { return m.Role == "owner" || m.Role == "admin" }
 func isActive(m *member2) bool { return isAdmin(m) || m.Role == "member" }
 
 func registerV2(dir string) {
 	h := &hub2{rooms: map[string]*room2{}, dir: dir}
+	// раз в 5 минут физически удаляем исчезнувшие сообщения
+	go func() {
+		for range time.Tick(5 * time.Minute) {
+			h.mu.Lock()
+			rooms := make([]*room2, 0, len(h.rooms))
+			for _, r := range h.rooms {
+				rooms = append(rooms, r)
+			}
+			h.mu.Unlock()
+			for _, r := range rooms {
+				r.mu.Lock()
+				if r.expire() {
+					r.compact()
+				}
+				r.mu.Unlock()
+			}
+		}
+	}()
 
 	// auth: заголовок Authorization: Bearer <member>:<token>
 	auth := func(w http.ResponseWriter, req *http.Request, need string) (*room2, *member2, bool) {
@@ -532,19 +617,27 @@ func registerV2(dir string) {
 			return
 		}
 		defer r.mu.Unlock()
-		b, err := io.ReadAll(io.LimitReader(req.Body, maxBlob+1))
+		b, err := io.ReadAll(io.LimitReader(req.Body, maxBlob2+1))
 		s := strings.TrimSpace(string(b))
-		if err != nil || len(s) == 0 || len(b) > maxBlob || strings.ContainsAny(s, "\t\n\r") {
+		if err != nil || len(s) == 0 || len(b) > maxBlob2 || strings.ContainsAny(s, "\t\n\r") {
 			fail(w, 400, "bad body")
 			return
 		}
+		var exp int64
+		if ttl, _ := strconv.ParseInt(req.URL.Query().Get("ttl"), 10, 64); ttl > 0 && ttl <= 30*24*3600 {
+			exp = now() + ttl*1000
+		}
 		r.last++
-		x := msg2{r.last, now(), m.ID, s}
+		x := msg2{r.last, now(), m.ID, exp, s}
 		r.msgs = append(r.msgs, x)
 		if len(r.msgs) > keepMsgs {
 			r.msgs = r.msgs[len(r.msgs)-keepMsgs:]
 		}
-		fmt.Fprintf(r.file, "%d\t%d\t%s\t%s\n", x.S, x.T, x.M, x.B)
+		fmt.Fprintf(r.file, "%d\t%d\t%s\t%d\t%s\n", x.S, x.T, x.M, x.X, x.B)
+		r.logged++
+		if r.expire() || r.logged > len(r.msgs)*2+100 {
+			r.compact()
+		}
 		close(r.wake)
 		r.wake = make(chan struct{})
 		jsonOut(w, map[string]int64{"s": x.S, "t": x.T})
@@ -556,8 +649,8 @@ func registerV2(dir string) {
 			return
 		}
 		defer r.mu.Unlock()
-		b, err := io.ReadAll(io.LimitReader(req.Body, 4097))
-		if err != nil || len(b) == 0 || len(b) > 4096 {
+		b, err := io.ReadAll(io.LimitReader(req.Body, 8193))
+		if err != nil || len(b) == 0 || len(b) > 8192 {
 			fail(w, 400, "bad body")
 			return
 		}
@@ -566,6 +659,22 @@ func registerV2(dir string) {
 		close(r.wake)
 		r.wake = make(chan struct{})
 		jsonOut(w, map[string]int64{"s": r.last})
+	})
+
+	http.HandleFunc("/api/v2/read", func(w http.ResponseWriter, req *http.Request) {
+		r, m, ok := auth(w, req, "member")
+		if !ok {
+			return
+		}
+		defer r.mu.Unlock()
+		seq, _ := strconv.ParseInt(req.URL.Query().Get("seq"), 10, 64)
+		if seq > r.reads[m.ID] && seq <= r.last {
+			r.reads[m.ID] = seq
+			r.rver++
+			close(r.wake)
+			r.wake = make(chan struct{})
+		}
+		jsonOut(w, map[string]bool{"ok": true})
 	})
 
 	http.HandleFunc("/api/v2/poll", func(w http.ResponseWriter, req *http.Request) {
@@ -580,6 +689,7 @@ func registerV2(dir string) {
 			lsince, _ = strconv.ParseInt(v, 10, 64)
 		}
 		mver, _ := strconv.ParseInt(q.Get("mver"), 10, 64)
+		rver, _ := strconv.ParseInt(q.Get("rver"), 10, 64)
 		wait, _ := strconv.Atoi(q.Get("wait"))
 		if wait < 0 || wait > maxWait {
 			wait = maxWait
@@ -591,14 +701,23 @@ func registerV2(dir string) {
 			role := m.Role
 			msgs := []msg2{}
 			locs := []loc2{}
+			var reads map[string]int64
 			if isActive(m) {
+				size, tn := 0, now()
 				for _, x := range r.msgs {
-					if x.S > since {
+					if x.S > since && (x.X == 0 || x.X > tn) {
+						if len(msgs) >= 500 || (size > maxPollOut && len(msgs) > 0) {
+							break
+						}
 						msgs = append(msgs, x)
+						size += len(x.B)
 					}
 				}
-				if len(msgs) > 500 {
-					msgs = msgs[:500]
+				if r.rver != rver {
+					reads = map[string]int64{}
+					for k, v := range r.reads {
+						reads[k] = v
+					}
 				}
 				old := time.Now().Add(-locTTL).UnixMilli()
 				for id, l := range r.locs {
@@ -611,17 +730,21 @@ func registerV2(dir string) {
 					}
 				}
 			}
-			last, wake, epoch, mv := r.last, r.wake, r.meta.Epoch, r.meta.MVer
+			last, wake, epoch, mv, rv := r.last, r.wake, r.meta.Epoch, r.meta.MVer, r.rver
 			m.Seen = now()
 			r.mu.Unlock()
-			if len(msgs) > 0 || len(locs) > 0 || mv != mver || wait == 0 || role == "removed" || role == "left" {
-				jsonOut(w, map[string]interface{}{"msgs": msgs, "locs": locs, "last": last, "epoch": epoch, "mver": mv, "role": role})
+			out := map[string]interface{}{"msgs": msgs, "locs": locs, "last": last, "epoch": epoch, "mver": mv, "role": role, "rver": rv, "now": now()}
+			if reads != nil {
+				out["reads"] = reads
+			}
+			if len(msgs) > 0 || len(locs) > 0 || mv != mver || reads != nil || wait == 0 || role == "removed" || role == "left" {
+				jsonOut(w, out)
 				return
 			}
 			select {
 			case <-wake:
 			case <-deadline:
-				jsonOut(w, map[string]interface{}{"msgs": msgs, "locs": locs, "last": last, "epoch": epoch, "mver": mv, "role": role})
+				jsonOut(w, out)
 				return
 			case <-req.Context().Done():
 				return

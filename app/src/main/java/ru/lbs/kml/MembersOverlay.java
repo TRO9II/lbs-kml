@@ -31,7 +31,8 @@ public class MembersOverlay extends Overlay {
             labelBg = new Paint(Paint.ANTI_ALIAS_FLAG), acc = new Paint(Paint.ANTI_ALIAS_FLAG), arrow = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Point pt = new Point(), sp = new Point();
     private final GeoPoint gp = new GeoPoint(0.0, 0.0);
-    private final Path tri = new Path();
+    private final Path tri = new Path(), tailPath = new Path();
+    private final Paint tailPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public MembersOverlay(float density) {
         d = density;
@@ -48,6 +49,11 @@ public class MembersOverlay extends Overlay {
         labelBg.setColor(Color.argb(205, 21, 24, 29));
         acc.setColor(Color.argb(30, 255, 255, 255));
         arrow.setColor(Color.WHITE);
+        tailPaint.setStyle(Paint.Style.STROKE);
+        tailPaint.setStrokeWidth(2.4f * density);
+        tailPaint.setStrokeCap(Paint.Cap.ROUND);
+        tailPaint.setStrokeJoin(Paint.Join.ROUND);
+        tailPaint.setPathEffect(new android.graphics.DashPathEffect(new float[]{6 * density, 5 * density}, 0));
     }
 
     void setMembers(List<ChatClient.Member> m) {
@@ -98,6 +104,19 @@ public class MembersOverlay extends Overlay {
             float pxPerM = (float) (Math.hypot(p2.x - pt.x, p2.y - pt.y) / 100.0);
             float ar = m.acc * pxPerM;
             if (!stale && ar > 14 * d) c.drawCircle(pt.x, pt.y, ar, acc);
+            // след за последний час
+            if (m.tail.size() > 1) {
+                tailPaint.setColor((col & 0x00FFFFFF) | (stale ? 0x55000000 : 0xB0000000));
+                tailPath.reset();
+                for (int i = 0; i < m.tail.size(); i++) {
+                    gp.setCoords(m.tail.get(i)[0], m.tail.get(i)[1]);
+                    Point q = pj.toPixels(gp, null);
+                    if (i == 0) tailPath.moveTo(q.x, q.y); else tailPath.lineTo(q.x, q.y);
+                }
+                tailPath.lineTo(pt.x, pt.y);
+                c.drawPath(tailPath, tailPaint);
+                gp.setCoords(m.lat, m.lon);
+            }
             // направление движения
             if (!stale && !Float.isNaN(m.heading)) {
                 c.save();

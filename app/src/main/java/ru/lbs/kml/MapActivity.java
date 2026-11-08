@@ -173,6 +173,9 @@ public class MapActivity extends Activity {
         map.getOverlays().add(placesOverlay);
         pathOverlay = new PathOverlay(d);
         map.getOverlays().add(pathOverlay);
+        groupPtsOverlay = new PointsOverlay(d);
+        groupPtsOverlay.setGroup(true);
+        map.getOverlays().add(groupPtsOverlay);
         pointsOverlay = new PointsOverlay(d);
         map.getOverlays().add(pointsOverlay);
         membersOverlay = new MembersOverlay(d);
@@ -188,7 +191,7 @@ public class MapActivity extends Activity {
         pointsOverlay.setPoints(userPoints);
         pointsOverlay.setListener(this::onPointTap);
         routes = Routes.load(this);
-        pathOverlay.setSaved(routes);
+        pathOverlay.setSaved(allRoutes());
         restoreTarget();
 
         wireUi();
@@ -222,9 +225,15 @@ public class MapActivity extends Activity {
         applyNight();
         setupLock();
         setupChat();
+        refreshGroupMap();
+        groupPtsOverlay.setListener(p -> {
+            ChatClient.GObj g = chat.object(p.id);
+            if (g != null) groupObjSheet(g);
+        });
         if (prefs.getBoolean("locOn", false) && hasLocPerm()) startLocation(false);
         checkUpdates();
         if (savedInstanceState == null) handleViewIntent(getIntent());
+        if (savedInstanceState == null) map.post(() -> handleGroupIntent(getIntent()));
 
         // автопроверка ЛБС и разрешение на уведомления
         try {
@@ -897,7 +906,10 @@ public class MapActivity extends Activity {
         return t;
     }
 
-    private LinearLayout hChipRow(View... chips) {
+    private LinearLayout hChipRow(View... chipsIn) {
+        List<View> nn = new ArrayList<>();
+        for (View v : chipsIn) if (v != null) nn.add(v);
+        View[] chips = nn.toArray(new View[0]);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < chips.length; i++) {
@@ -1008,6 +1020,7 @@ public class MapActivity extends Activity {
                 layerTile(R.drawable.ic_label, "Подписи (рус.)", "labelsRu", true, () -> applyStyle(currentStyle)),
                 layerTile(R.drawable.ic_border, "Границы (лат.)", OV_KEYS[3], this::applyOverlays),
                 layerTile(R.drawable.ic_layers, "Схема поверх", OV_KEYS[2], this::applyOverlays),
+                layerTile(R.drawable.ic_my_location, "Карта группы", "showGroupMap", true, this::refreshGroupMap),
                 layerTile(R.drawable.ic_nav, "Кнопки областей", "showChips", () ->
                         findViewById(R.id.chipsScroll).setVisibility(prefs.getBoolean("showChips", false) ? View.VISIBLE : View.GONE)));
 
@@ -1831,7 +1844,10 @@ public class MapActivity extends Activity {
         }
         Routes.Route hit = routeAt(a.x, a.y);
         if (hit != null) {
-            routeActions(hit);
+            if (hit.id != null && hit.id.startsWith("g:")) {
+                ChatClient.GObj g = chat.object(hit.id.substring(2));
+                if (g != null) groupObjSheet(g);
+            } else routeActions(hit);
             return true;
         }
         return false;
@@ -1844,7 +1860,7 @@ public class MapActivity extends Activity {
         Routes.Route best = null, inside = null;
         double bestD = tol;
         GeoPoint g = new GeoPoint(0.0, 0.0);
-        for (Routes.Route r : routes) {
+        for (Routes.Route r : allRoutes()) {
             if (!r.visible || r.pts.size() < 2) continue;
             int n = r.pts.size();
             float[] xs = new float[n], ys = new float[n];
@@ -2032,6 +2048,18 @@ public class MapActivity extends Activity {
                     q.lon = lon;
                     showQr(QrCodec.encodePoint(q), q.name);
                 }));
+        if (chat != null && chat.active())
+            hChipRow(hChip("На общую карту группы", R.drawable.ic_my_location, false, v -> {
+                UserPoints.Point q = new UserPoints.Point();
+                String nm = name.getText().toString().trim();
+                q.name = nm.isEmpty() ? "Точка" : nm;
+                q.note = note.getText().toString().trim();
+                q.color = chosen[0];
+                q.icon = icon[0];
+                q.lat = lat;
+                q.lon = lon;
+                shareToGroupMap(objFromPoint(q));
+            }));
         final File draftFile = voiceFile(null);
         draftFile.delete();
         final File[] vfile = {existing != null ? voiceFile(existing.id) : draftFile};
@@ -2788,7 +2816,7 @@ public class MapActivity extends Activity {
         } catch (Exception e) {
             Toast.makeText(this, "Не удалось сохранить маршруты", Toast.LENGTH_LONG).show();
         }
-        pathOverlay.setSaved(routes);
+        pathOverlay.setSaved(allRoutes());
         map.invalidate();
     }
 
@@ -2870,6 +2898,9 @@ public class MapActivity extends Activity {
         });
         if (!r.area)
             hRow(hIcon(R.drawable.ic_mountain, tx, 22), "Профиль высот", "Подъёмы, спуски, перепад", null, v -> showProfile(r.pts, r.name));
+        if (chat != null && chat.active())
+            hRow(hIcon(R.drawable.ic_my_location, tx, 22), "На общую карту группы", "Увидят все участники", null,
+                    v -> { closeSheet(); shareToGroupMap(objFromRoute(r)); });
         hRow(hIcon(R.drawable.ic_share, tx, 22), "Экспорт в KML", "Для AlpineQuest", null, v -> {
             closeSheet();
             saveAndShare(r.name.replaceAll("[^A-Za-z0-9А-Яа-яЁё_-]", "_") + ".kml", Routes.toKml(r), "Отправить маршрут");
@@ -3364,12 +3395,24 @@ public class MapActivity extends Activity {
         reloadLbs();
         showSavedCrash();
         maybeLock();
-        if (chat != null && chat.configured() && !offline()) chat.start();
+        visible = true;
+        if (chat != null && chat.configured() && !offline()) {
+            chat.start();
+            GroupService.start(this);
+            if (chat.purgeExpired() && chatOpen) openChat();
+            if (chatOpen) chat.markRead();
+        }
+        android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
+        if (nm != null) nm.cancel(2002);
     }
+
+    /** Карта на экране (для фонового сервиса: не дублировать уведомления). */
+    static volatile boolean visible;
 
     @Override
     protected void onStop() {
-        if (chat != null) chat.stop();
+        visible = false;
+        if (chat != null && !GroupService.wanted(this)) chat.stop();
         lastStop = System.currentTimeMillis();
         if (track != null) saveRoutes();
         super.onStop();
@@ -3377,6 +3420,7 @@ public class MapActivity extends Activity {
 
     @Override
     protected void onPause() {
+        visible = false;
         if (sensors != null) sensors.unregisterListener(compassListener);
         if (sensors != null) sensors.unregisterListener(navSensor);
         if (map != null) {
@@ -3539,7 +3583,7 @@ public class MapActivity extends Activity {
         }
         track.pts.add(new double[]{l.getLatitude(), l.getLongitude()});
         if (track.pts.size() % 5 == 0) saveRoutes();
-        else pathOverlay.setSaved(routes);
+        else pathOverlay.setSaved(allRoutes());
     }
 
     // ================= Профиль высот =================
@@ -3783,7 +3827,10 @@ public class MapActivity extends Activity {
         map.setUseDataConnection(!off);
         Elevation.offline = off;
         if (roadsOverlay != null) roadsOverlay.setOffline(off);
-        if (chat != null) { if (off) chat.stop(); else if (chat.configured()) chat.start(); }
+        if (chat != null) {
+            if (off) { chat.stop(); GroupService.stop(this); }
+            else if (chat.configured()) { chat.start(); GroupService.start(this); }
+        }
         findViewById(R.id.offlineChip).setVisibility(off ? View.VISIBLE : View.GONE);
         map.invalidate();
     }
@@ -3877,6 +3924,13 @@ public class MapActivity extends Activity {
         pinInput.append(d);
         showPinDots();
         if (pinInput.length() == len) {
+            if (prefs.contains("wipeHash") && sha(prefs.getString("pinSalt", "") + "wipe|" + pinInput).equals(prefs.getString("wipeHash", ""))) {
+                // код стирания: всё удаляется, приложение открывается как новое — без лишних сообщений
+                unlocked = true;
+                findViewById(R.id.lockView).setVisibility(View.GONE);
+                wipeAll();
+                return;
+            }
             if (sha(prefs.getString("pinSalt", "") + pinInput).equals(prefs.getString("pinHash", ""))) {
                 unlock();
             } else {
@@ -3962,13 +4016,46 @@ public class MapActivity extends Activity {
         note.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
         sheetContent.addView(note);
         if (pinSet()) {
+            hSection("КОД СТИРАНИЯ");
+            TextView wn = new TextView(this);
+            wn.setText("Второй ПИН такой же длины. Если ввести его на экране блокировки, приложение молча сотрёт все данные "
+                    + "и откроется пустым, как после установки. "
+                    + (prefs.contains("wipeHash") ? "Код стирания задан." : "Сейчас не задан."));
+            wn.setTextColor(getColor(R.color.hud_text2));
+            wn.setTextSize(12);
+            wn.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
+            sheetContent.addView(wn);
+            final EditText w1 = hInput("Код стирания (" + prefs.getInt("pinLen", 4) + " цифр)", "");
+            w1.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+            sheetContent.addView(w1);
+            hChipRow(hChip(prefs.contains("wipeHash") ? "Сменить код стирания" : "Задать код стирания", R.drawable.ic_lock, false, v -> {
+                String c = w1.getText().toString();
+                if (c.length() != prefs.getInt("pinLen", 4)) {
+                    Toast.makeText(this, "Код должен быть той же длины, что и ПИН", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (sha(prefs.getString("pinSalt", "") + c).equals(prefs.getString("pinHash", ""))) {
+                    Toast.makeText(this, "Код стирания не должен совпадать с ПИН-кодом", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                prefs.edit().putString("wipeHash", sha(prefs.getString("pinSalt", "") + "wipe|" + c)).apply();
+                hideKeyboard();
+                Toast.makeText(this, "Код стирания задан", Toast.LENGTH_SHORT).show();
+                showPinSettings();
+            }), prefs.contains("wipeHash") ? hChip("Убрать", R.drawable.ic_close, false, v -> {
+                prefs.edit().remove("wipeHash").apply();
+                showPinSettings();
+            }) : null);
+            hSection("ЗАЩИТА");
             hChipRow(hChip("Выключить защиту", R.drawable.ic_close, false, v -> {
-                prefs.edit().remove("pinHash").remove("pinSalt").remove("pinLen").apply();
+                prefs.edit().remove("pinHash").remove("pinSalt").remove("pinLen").remove("wipeHash").apply();
                 updatePinRow();
                 closeSheet();
                 Toast.makeText(this, "Защита выключена", Toast.LENGTH_SHORT).show();
             }));
         }
+        hSection("ЭКСТРЕННО");
+        hChipRow(hChip("Стереть всё сейчас", R.drawable.ic_delete, false, v -> confirmWipe()));
         footer("Отмена", pinSet() ? "Сменить ПИН" : "Включить", v -> {
             String a = p1.getText().toString(), b = p2.getText().toString();
             if (a.length() < 4 || a.length() > 8) {
@@ -3980,7 +4067,7 @@ public class MapActivity extends Activity {
                 return;
             }
             String salt = Long.toString(new java.security.SecureRandom().nextLong(), 36);
-            prefs.edit().putString("pinSalt", salt).putString("pinHash", sha(salt + a)).putInt("pinLen", a.length()).apply();
+            prefs.edit().putString("pinSalt", salt).putString("pinHash", sha(salt + a)).putInt("pinLen", a.length()).remove("wipeHash").apply();
             unlocked = true;
             updatePinRow();
             closeSheet();
@@ -4072,6 +4159,16 @@ public class MapActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_CAM) {
+            if (res == RESULT_OK && camUri != null) sendPhoto(camUri, true);
+            else if (camUri != null) getContentResolver().delete(camUri, null, null);
+            camUri = null;
+            return;
+        }
+        if (req == REQ_GAL) {
+            if (res == RESULT_OK && data != null && data.getData() != null) sendPhoto(data.getData(), false);
+            return;
+        }
         if (req == REQ_DICT) {
             if (res == RESULT_OK && data != null && dictTarget != null) {
                 java.util.ArrayList<String> r = data.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS);
@@ -4135,6 +4232,17 @@ public class MapActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         handleViewIntent(intent);
+        handleGroupIntent(intent);
+    }
+
+    /** Открытие из уведомления: чат или SOS. */
+    private void handleGroupIntent(Intent i) {
+        if (i == null || chat == null) return;
+        long sos = i.getLongExtra("sosSeq", -1);
+        if (sos >= 0) {
+            for (ChatClient.Msg m : chat.history()) if (m.seq == sos) { showSos(m); return; }
+        }
+        if (i.getBooleanExtra("openChat", false)) map.post(this::openChat);
     }
 
     private void importFrom(Uri uri) {
@@ -5562,7 +5670,7 @@ public class MapActivity extends Activity {
     private TextView chatStatus;
 
     private void setupChat() {
-        chat = new ChatClient(this);
+        chat = ChatClient.get(this);
         chatUnread = prefs.getInt("chatUnread", 0);
         showChatBadge();
         findViewById(R.id.btnChat).setOnClickListener(v -> openChat());
@@ -5570,7 +5678,11 @@ public class MapActivity extends Activity {
             @Override
             public void onMessages(List<ChatClient.Msg> added) {
                 int fromOthers = 0;
-                for (ChatClient.Msg m : added) if (!m.mine) fromOthers++;
+                for (ChatClient.Msg m : added) {
+                    if (!m.mine) fromOthers++;
+                    if (!m.mine && m.kind.equals("sos")) showSos(m);
+                }
+                if (chatOpen) chat.markRead();
                 if (chatOpen && chatList != null) {
                     for (ChatClient.Msg m : added) addBubble(m);
                     scrollChatDown();
@@ -5589,6 +5701,16 @@ public class MapActivity extends Activity {
             public void onMembers() {
                 membersOverlay.setMembers(chat.members());
                 map.invalidate();
+            }
+
+            @Override
+            public void onObjects() {
+                refreshGroupMap();
+            }
+
+            @Override
+            public void onReads() {
+                refreshReadMarks();
             }
 
             @Override
@@ -5643,29 +5765,36 @@ public class MapActivity extends Activity {
 
     /** Вызывается при каждой новой координате GPS. */
     private void maybeShare(android.location.Location l) {
-        if (!sharing()) return;
-        long every = prefs.getInt("shareEvery", 60) * 1000L, now = System.currentTimeMillis();
-        boolean moved = lastShared != null && Geo.inverse(lastShared[0], lastShared[1], l.getLatitude(), l.getLongitude())[0] > 100;
-        if (now - lastShareAt < every && !(moved && now - lastShareAt > 10_000)) return;
-        if (l.getAccuracy() > 150) return;
-        lastShareAt = now;
-        lastShared = new double[]{l.getLatitude(), l.getLongitude()};
-        chat.sendLoc(l.getLatitude(), l.getLongitude(), l.getAccuracy(),
-                l.hasBearing() && l.getSpeed() > 0.8f ? l.getBearing() : Float.NaN, false);
+        ShareLoc.onLocation(this, l);
     }
 
     private void setSharing(boolean on) {
         prefs.edit().putBoolean("shareLoc", on).apply();
         if (on) {
-            lastShareAt = 0;
+            ShareLoc.reset();
             if (!locOn) startLocation(false);
             android.location.Location l = myLoc.getLocation();
             if (l != null) maybeShare(l);
-            Toast.makeText(this, "Группа видит вас на карте, пока приложение открыто", Toast.LENGTH_LONG).show();
+            askNotifPermission();
+            Toast.makeText(this, prefs.getBoolean("groupBg", true)
+                    ? "Группа видит вас на карте — и когда приложение свёрнуто" : "Группа видит вас на карте, пока приложение открыто",
+                    Toast.LENGTH_LONG).show();
         } else {
             chat.sendLoc(0, 0, 0, Float.NaN, true);
+            ShareLoc.clearTail();
             Toast.makeText(this, "Показ местоположения выключен", Toast.LENGTH_SHORT).show();
         }
+        restartGroupService();
+    }
+
+    private void restartGroupService() {
+        GroupService.stop(this);
+        if (GroupService.wanted(this)) map.postDelayed(() -> GroupService.start(this), 300);
+    }
+
+    private void askNotifPermission() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
     }
 
     private void showMembers() {
@@ -5760,8 +5889,11 @@ public class MapActivity extends Activity {
             return;
         }
         chat.start();
+        chat.purgeExpired();
+        readMarks.clear();
         sheet(chat.groupName());
         chatOpen = true;
+        chat.markRead();
         chatUnread = 0;
         prefs.edit().putInt("chatUnread", 0).apply();
         showChatBadge();
@@ -5823,12 +5955,22 @@ public class MapActivity extends Activity {
         sheetFooter.setGravity(android.view.Gravity.CENTER_VERTICAL);
         ImageView attach = hIconButton(R.drawable.ic_attach, getColor(R.color.hud_text), v -> chatAttach());
         sheetFooter.addView(attach);
+        ImageView status = hIconButton(R.drawable.ic_flag, 0xFFFF8A80, v -> showStatuses());
+        status.setContentDescription("Статус и SOS");
+        LinearLayout.LayoutParams stl = new LinearLayout.LayoutParams((int) dp(40), (int) dp(40));
+        stl.setMarginStart((int) dp(4));
+        sheetFooter.addView(status, stl);
         final EditText input = hInput("Сообщение", "");
         input.setMaxLines(4);
         LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
         il.setMarginStart((int) dp(8));
         il.setMarginEnd((int) dp(8));
         sheetFooter.addView(input, il);
+        ImageView mic = hIconButton(R.drawable.ic_mic, getColor(R.color.hud_text), v -> chatVoiceStart());
+        mic.setContentDescription("Голосовое сообщение");
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams((int) dp(40), (int) dp(40));
+        ml.setMarginEnd((int) dp(6));
+        sheetFooter.addView(mic, ml);
         ImageView send = new ImageView(this);
         send.setImageResource(R.drawable.ic_send);
         send.setImageTintList(ColorStateList.valueOf(Color.WHITE));
@@ -5860,6 +6002,25 @@ public class MapActivity extends Activity {
     private void addBubble(ChatClient.Msg m) {
         if (chatList == null) return;
         if (chatList.getChildCount() == 1 && "empty".equals(chatList.getChildAt(0).getTag())) chatList.removeAllViews();
+        if (m.kind.equals("obj")) {
+            TextView sys = new TextView(this);
+            String who = m.mine ? "Вы" : (m.from.isEmpty() ? "Участник" : m.from);
+            String nm = m.op.equals("del") ? m.text : "";
+            if (!m.op.equals("del")) try { nm = new JSONObject(m.obj).optString("n"); } catch (Exception ignored) { }
+            sys.setText(who + (m.op.equals("del") ? " убрал(а) с общей карты: " : " отметил(а) на общей карте: ") + nm
+                    + (m.op.equals("del") ? "" : "  ›"));
+            sys.setTextSize(12);
+            sys.setTextColor(0xFF64B5F6);
+            sys.setGravity(android.view.Gravity.CENTER);
+            sys.setPadding((int) dp(8), (int) dp(8), (int) dp(8), (int) dp(4));
+            if (!m.op.equals("del")) sys.setOnClickListener(v -> {
+                ChatClient.GObj g = chat.object(m.oid);
+                if (g != null) { chatOpen = false; sheetFooter.setVisibility(View.GONE); groupObjSheet(g); }
+                else Toast.makeText(this, "Уже убрано с общей карты", Toast.LENGTH_SHORT).show();
+            });
+            chatList.addView(sys);
+            return;
+        }
         LinearLayout row = new LinearLayout(this);
         row.setGravity(m.mine ? android.view.Gravity.END : android.view.Gravity.START);
         LinearLayout b = new LinearLayout(this);
@@ -5869,7 +6030,8 @@ public class MapActivity extends Activity {
         GradientDrawable g = new GradientDrawable();
         float r = dp(14), sm = dp(4);
         g.setCornerRadii(m.mine ? new float[]{r, r, r, r, sm, sm, r, r} : new float[]{r, r, r, r, r, r, sm, sm});
-        g.setColor(m.mine ? 0xFF7A2E29 : 0xFF262B33);
+        g.setColor(m.kind.equals("sos") ? 0xFFB71C1C : m.mine ? 0xFF7A2E29 : 0xFF262B33);
+        if (m.kind.equals("st")) g.setStroke((int) dp(1.5f), 0xFF64B5F6);
         b.setBackground(g);
         String time = new SimpleDateFormat("HH:mm", Locale.US).format(new Date(m.t));
         if (!m.mine) {
@@ -5879,6 +6041,58 @@ public class MapActivity extends Activity {
             who.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
             who.setTextColor(callColor(m.from));
             b.addView(who);
+        }
+        if (m.kind.equals("sos") || m.kind.equals("st")) {
+            TextView st = new TextView(this);
+            st.setText((m.kind.equals("sos") ? "🆘 SOS · " : "⚑ ") + m.text);
+            st.setTextSize(15);
+            st.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            st.setTextColor(Color.WHITE);
+            b.addView(st);
+        }
+        if (m.kind.equals("voice")) {
+            final TextView vb = new TextView(this);
+            vb.setText("▶  Голосовое · " + mmss(m.ms));
+            vb.setTextSize(15);
+            vb.setTextColor(getColor(R.color.hud_text));
+            vb.setPadding(0, (int) dp(4), 0, (int) dp(4));
+            b.addView(vb);
+            b.setOnClickListener(v -> {
+                if (m.media.isEmpty() || !new File(m.media).exists()) {
+                    Toast.makeText(this, "Запись недоступна", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (player != null) { stopPlaying(); vb.setText("▶  Голосовое · " + mmss(m.ms)); return; }
+                vb.setText("■  Играет · " + mmss(m.ms));
+                playVoice(new File(m.media), () -> vb.setText("▶  Голосовое · " + mmss(m.ms)));
+            });
+        }
+        if (m.kind.equals("photo") && !m.media.isEmpty()) {
+            ImageView ph = new ImageView(this);
+            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            o.inSampleSize = 2;
+            ph.setImageBitmap(android.graphics.BitmapFactory.decodeFile(m.media, o));
+            ph.setAdjustViewBounds(true);
+            ph.setMaxHeight((int) dp(260));
+            ph.setScaleType(ImageView.ScaleType.FIT_START);
+            b.addView(ph, new LinearLayout.LayoutParams((int) dp(220), LinearLayout.LayoutParams.WRAP_CONTENT));
+            b.setOnClickListener(v -> showPhoto(m));
+        }
+        if (m.hasLoc && !m.kind.equals("pt")) {
+            TextView act = new TextView(this);
+            act.setText(Sk42.format(m.lat, m.lon) + "\nПоказать на карте ›");
+            act.setTextSize(12.5f);
+            act.setTextColor(0xFF90CAF9);
+            act.setPadding(0, (int) dp(4), 0, 0);
+            b.addView(act);
+            if (!m.kind.equals("photo") && !m.kind.equals("voice")) b.setOnClickListener(v -> {
+                closeSheet();
+                goTo(m.lat, m.lon, (m.kind.equals("sos") ? "SOS · " : "") + m.from, time, Math.max(15, map.getZoomLevelDouble()));
+            });
+            else act.setOnClickListener(v -> {
+                closeSheet();
+                goTo(m.lat, m.lon, m.from, time, Math.max(15, map.getZoomLevelDouble()));
+            });
         }
         if (m.kind.equals("pt")) {
             TextView pt = new TextView(this);
@@ -5897,7 +6111,7 @@ public class MapActivity extends Activity {
                 goTo(m.lat, m.lon, m.ptName.isEmpty() ? "Точка" : m.ptName, "от " + m.from + " · " + time, Math.max(15, map.getZoomLevelDouble()));
             });
         }
-        if (!m.text.isEmpty()) {
+        if (!m.text.isEmpty() && !m.kind.equals("st") && !m.kind.equals("sos")) {
             TextView t = new TextView(this);
             t.setText(m.text);
             t.setTextSize(15);
@@ -5906,9 +6120,14 @@ public class MapActivity extends Activity {
             b.addView(t);
         }
         TextView tm = new TextView(this);
-        tm.setText(time);
+        tm.setText(readText(m));
         tm.setTextSize(10.5f);
         tm.setTextColor(getColor(R.color.hud_text2));
+        if (m.mine) {
+            readMarks.put(m.seq, tm);
+            int[] rb = chat.readBy(m.seq);
+            if (rb[1] > 0 && rb[0] == rb[1]) tm.setTextColor(0xFF64B5F6);
+        }
         tm.setGravity(android.view.Gravity.END);
         b.addView(tm, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -5936,6 +6155,8 @@ public class MapActivity extends Activity {
         chatOpen = false;
         sheet("Отправить в чат");
         int tx = getColor(R.color.hud_text);
+        hRow(hIcon(R.drawable.ic_add, tx, 22), "Сфотографировать", "Фото уйдёт зашифрованным, с местом съёмки", null, v -> takePhoto());
+        hRow(hIcon(R.drawable.ic_layers, tx, 22), "Фото из галереи", "Координаты возьмутся из снимка, если они в нём есть", null, v -> pickPhoto());
         android.location.Location me = myLoc.getLocation();
         if (me != null) {
             hRow(hIcon(R.drawable.ic_my_location, 0xFF42A5F5, 22), "Моё местоположение", "по GPS, точность ±" + Math.round(me.getAccuracy()) + " м", null, v -> {
@@ -6257,7 +6478,21 @@ public class MapActivity extends Activity {
         warn.setTextSize(12);
         warn.setPadding((int) dp(4), (int) dp(6), (int) dp(4), (int) dp(4));
         sheetContent.addView(warn);
+        hToggle("Показывать мой след", "Путь за последний час — пунктиром за меткой", prefs.getBoolean("shareTrail", false),
+                on -> prefs.edit().putBoolean("shareTrail", on).apply());
         hRow(hIcon(R.drawable.ic_my_location, tx, 22), "Кто на карте", chat.members().size() + " участн.", null, v -> showMembers());
+        hSection("ФОН И СООБЩЕНИЯ");
+        hToggle("Работать в фоне", "Сообщения, SOS и ваша метка — даже когда приложение свёрнуто. В шторке будет значок",
+                prefs.getBoolean("groupBg", true), on -> {
+                    prefs.edit().putBoolean("groupBg", on).apply();
+                    if (on) askNotifPermission();
+                    restartGroupService();
+                });
+        final double[] tt = {chat.ttl()};
+        heightChipsUnits("Исчезающие сообщения (для новых сообщений от вас)", new double[]{0, 3600, 86400, 604800}, tt, "", v -> chat.setTtl((int) v));
+        LinearLayout ttr = (LinearLayout) sheetContent.getChildAt(sheetContent.getChildCount() - 1);
+        String[] ttl = {"Выкл", "1 час", "24 часа", "7 дней"};
+        for (int i = 0; i < ttr.getChildCount(); i++) ((TextView) ttr.getChildAt(i)).setText(ttl[i]);
         hSection("ГРУППА");
         hRow(hIcon(R.drawable.ic_info, tx, 22), "Сервер", chat.server(), null, null);
         hRow(hIcon(R.drawable.ic_close, 0xFFFF6B60, 22), "Выйти из группы", "Переписка на этом телефоне удалится", null, v ->
@@ -6277,6 +6512,487 @@ public class MapActivity extends Activity {
                         .setNegativeButton("Отмена", null)
                         .show());
         hChipRow(hChip("Назад в чат", R.drawable.ic_back, true, v -> openChat()));
+    }
+
+
+    // ================= Общая карта группы =================
+
+    private PointsOverlay groupPtsOverlay;
+    private final List<Routes.Route> groupRoutes = new ArrayList<>();
+
+    private List<Routes.Route> allRoutes() {
+        if (groupRoutes.isEmpty()) return routes;
+        List<Routes.Route> a = new ArrayList<>(routes);
+        a.addAll(groupRoutes);
+        return a;
+    }
+
+    private void refreshGroupMap() {
+        if (chat == null || groupPtsOverlay == null) return;
+        boolean show = prefs.getBoolean("showGroupMap", true) && chat.active();
+        List<UserPoints.Point> pts = new ArrayList<>();
+        groupRoutes.clear();
+        if (show) {
+            for (ChatClient.GObj g : chat.objects()) {
+                if (g.pts.isEmpty()) continue;
+                if (g.type.equals("pt")) {
+                    UserPoints.Point p = new UserPoints.Point();
+                    p.id = g.id;
+                    p.name = g.name;
+                    p.note = g.note;
+                    p.color = g.color == 0 ? 0xFF42A5F5 : g.color;
+                    p.icon = g.icon;
+                    p.lat = g.pts.get(0)[0];
+                    p.lon = g.pts.get(0)[1];
+                    pts.add(p);
+                } else {
+                    Routes.Route r = new Routes.Route();
+                    r.id = "g:" + g.id;
+                    r.name = g.name;
+                    r.color = g.color == 0 ? 0xFF42A5F5 : g.color;
+                    r.area = g.type.equals("area");
+                    r.pts.addAll(g.pts);
+                    groupRoutes.add(r);
+                }
+            }
+        }
+        groupPtsOverlay.setPoints(pts);
+        pathOverlay.setSaved(allRoutes());
+        map.invalidate();
+    }
+
+    private ChatClient.GObj objFromPoint(UserPoints.Point p) {
+        ChatClient.GObj g = new ChatClient.GObj();
+        g.type = "pt";
+        g.name = p.name;
+        g.note = p.note == null ? "" : p.note;
+        g.color = p.color;
+        g.icon = p.icon == null ? "" : p.icon;
+        g.pts.add(new double[]{p.lat, p.lon});
+        return g;
+    }
+
+    private ChatClient.GObj objFromRoute(Routes.Route r) {
+        ChatClient.GObj g = new ChatClient.GObj();
+        g.type = r.area ? "area" : "route";
+        g.name = r.name;
+        g.color = r.color;
+        g.pts.addAll(r.pts);
+        return g;
+    }
+
+    private void shareToGroupMap(ChatClient.GObj g) {
+        if (chat == null || !chat.active()) {
+            Toast.makeText(this, "Сначала вступите в группу (кнопка чата)", Toast.LENGTH_LONG).show();
+            return;
+        }
+        chat.putObj(g, () -> Toast.makeText(this, "«" + g.name + "» добавлен(а) на общую карту группы", Toast.LENGTH_SHORT).show(),
+                err -> Toast.makeText(this, "Не отправлено: " + err, Toast.LENGTH_LONG).show());
+    }
+
+    private void groupObjSheet(ChatClient.GObj g) {
+        sheet(g.name.isEmpty() ? "Объект группы" : g.name);
+        LinearLayout card = hCard();
+        addKV(card, "На общей карте", g.type.equals("pt") ? "точка" : g.type.equals("area") ? "зона" : "маршрут");
+        addKV(card, "Добавил(а)", g.authorName.isEmpty() ? chat.nameOf(g.author) : g.authorName);
+        addKV(card, "Обновлено", new SimpleDateFormat("dd.MM HH:mm", Locale.US).format(new Date(g.t)));
+        if (g.type.equals("area")) addKV(card, "Площадь", Routes.areaText(Routes.area(g.pts)));
+        else if (g.type.equals("route")) addKV(card, "Длина", Geo.dist(Routes.length(g.pts)));
+        if (!g.note.isEmpty()) addKV(card, "Заметка", g.note);
+        sheetContent.addView(card);
+        final double[] p0 = g.pts.get(0);
+        if (g.type.equals("pt")) coordsCard(p0[0], p0[1]);
+        Routes.Route asRoute = new Routes.Route();
+        asRoute.name = g.name;
+        asRoute.color = g.color;
+        asRoute.area = g.type.equals("area");
+        asRoute.pts.addAll(g.pts);
+        actionRow(
+                vAction(R.drawable.ic_nav, "Вести", true, v -> {
+                    closeSheet();
+                    if (g.type.equals("pt")) startNav(Collections.singletonList(p0), 0, g.name);
+                    else guideOptions(asRoute, false);
+                }),
+                vAction(R.drawable.ic_flag, "Навести", false, v -> { closeSheet(); setTarget(p0[0], p0[1], g.name); }),
+                vAction(R.drawable.ic_save, "Себе", false, v -> {
+                    if (g.type.equals("pt")) editPoint(null, p0[0], p0[1], g.name);
+                    else {
+                        Routes.Route r = new Routes.Route();
+                        r.id = Long.toString(System.currentTimeMillis(), 36);
+                        r.created = System.currentTimeMillis();
+                        r.name = g.name;
+                        r.color = g.color;
+                        r.area = asRoute.area;
+                        r.pts.addAll(g.pts);
+                        routes.add(r);
+                        saveRoutes();
+                        closeSheet();
+                        Toast.makeText(this, "Сохранено в ваши маршруты", Toast.LENGTH_SHORT).show();
+                    }
+                }));
+        if (chat.canEdit(g, chat.deviceId()))
+            hChipRow(hChip("Убрать с общей карты", R.drawable.ic_delete, false, v -> new AlertDialog.Builder(this)
+                    .setTitle("Убрать «" + g.name + "» с общей карты?")
+                    .setMessage("Объект исчезнет у всех участников.")
+                    .setPositiveButton("Убрать", (d, w) -> chat.delObj(g, () -> { closeSheet(); Toast.makeText(this, "Убрано", Toast.LENGTH_SHORT).show(); },
+                            err -> Toast.makeText(this, "Не удалось: " + err, Toast.LENGTH_LONG).show()))
+                    .setNegativeButton("Отмена", null)
+                    .show()));
+    }
+
+    // ================= Статусы и SOS =================
+
+    private static final String[] STATUSES = {"На месте", "Выдвигаюсь", "Всё в норме", "Задерживаюсь", "Нужна помощь", "Связь пропадает"};
+
+    private void showStatuses() {
+        chatOpen = false;
+        sheetFooter.setVisibility(View.GONE);
+        sheet("Быстрый статус");
+        android.location.Location me = myLoc.getLocation();
+        TextView t = new TextView(this);
+        t.setText(me != null ? "К статусу добавятся ваши координаты (GPS ±" + Math.round(me.getAccuracy()) + " м)."
+                : "GPS выключен — статус уйдёт без координат. Включите ◎ на карте, чтобы приложить место.");
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setTextSize(12.5f);
+        t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
+        sheetContent.addView(t);
+        for (int i = 0; i < STATUSES.length; i += 2) {
+            final String a = STATUSES[i], b = STATUSES[i + 1];
+            hChipRow(hChip(a, R.drawable.ic_flag, false, v -> sendStatus("st", a)), hChip(b, R.drawable.ic_flag, false, v -> sendStatus("st", b)));
+        }
+        hSection("ТРЕВОГА");
+        TextView sos = new TextView(this);
+        sos.setText("SOS — удерживайте 2 секунды");
+        sos.setTextColor(Color.WHITE);
+        sos.setTextSize(16);
+        sos.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        sos.setGravity(android.view.Gravity.CENTER);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(14));
+        g.setColor(0xFFD32F2F);
+        sos.setBackground(g);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) dp(64));
+        sheetContent.addView(sos, lp);
+        final Runnable fire = () -> {
+            vibrate(500);
+            sendStatus("sos", "Нужна помощь!");
+        };
+        sos.setOnTouchListener((v, e) -> {
+            if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
+                v.setAlpha(0.6f);
+                vibrate(40);
+                v.postDelayed(fire, 2000);
+            } else if (e.getActionMasked() == android.view.MotionEvent.ACTION_UP || e.getActionMasked() == android.view.MotionEvent.ACTION_CANCEL) {
+                v.setAlpha(1f);
+                v.removeCallbacks(fire);
+            }
+            return true;
+        });
+        TextView n = new TextView(this);
+        n.setText("SOS громко оповестит всех участников (даже на беззвучном) и покажет вас на карте.");
+        n.setTextColor(getColor(R.color.hud_text2));
+        n.setTextSize(12);
+        n.setPadding((int) dp(4), (int) dp(8), (int) dp(4), 0);
+        sheetContent.addView(n);
+        hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
+    }
+
+    private void sendStatus(String kind, String text) {
+        ChatClient.Msg m = new ChatClient.Msg();
+        m.kind = kind;
+        m.text = text;
+        android.location.Location me = myLoc.getLocation();
+        if (me != null) {
+            m.hasLoc = true;
+            m.lat = me.getLatitude();
+            m.lon = me.getLongitude();
+        }
+        chat.send(m, () -> {
+            Toast.makeText(this, kind.equals("sos") ? "SOS отправлен всем" : "Статус отправлен", Toast.LENGTH_SHORT).show();
+            openChat();
+        }, err -> Toast.makeText(this, "Не отправлено: " + err, Toast.LENGTH_LONG).show());
+    }
+
+    private void showSos(ChatClient.Msg m) {
+        vibrate(800);
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("SOS · " + (m.from.isEmpty() ? "участник" : m.from))
+                .setMessage((m.text.isEmpty() ? "Нужна помощь" : m.text) + "\n" + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(m.t))
+                        + (m.hasLoc ? "\n" + Sk42.format(m.lat, m.lon) : "\nбез координат"))
+                .setNegativeButton("Закрыть", null);
+        if (m.hasLoc) b.setPositiveButton("Показать на карте", (d, w) -> {
+            closeSheet();
+            goTo(m.lat, m.lon, "SOS · " + m.from, new SimpleDateFormat("HH:mm", Locale.US).format(new Date(m.t)), Math.max(15, map.getZoomLevelDouble()));
+        });
+        b.show();
+    }
+
+    // ================= Голос и фото в чате =================
+
+    private android.media.MediaRecorder chatRec;
+    private File chatRecFile;
+    private long chatRecStart;
+    private static final int REQ_CAM = 35, REQ_GAL = 36;
+    private Uri camUri;
+
+    private void chatVoiceStart() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+            return;
+        }
+        stopPlaying();
+        try {
+            chatRecFile = new File(getCacheDir(), "chatrec.m4a");
+            chatRec = Build.VERSION.SDK_INT >= 31 ? new android.media.MediaRecorder(this) : new android.media.MediaRecorder();
+            chatRec.setAudioSource(android.media.MediaRecorder.AudioSource.MIC);
+            chatRec.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4);
+            chatRec.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC);
+            chatRec.setAudioEncodingBitRate(24000);
+            chatRec.setAudioSamplingRate(16000);
+            chatRec.setAudioChannels(1);
+            chatRec.setMaxDuration(60_000);
+            chatRec.setOutputFile(chatRecFile.getAbsolutePath());
+            chatRec.setOnInfoListener((mr, what, extra) -> {
+                if (what == android.media.MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) chatVoiceStop(true);
+            });
+            chatRec.prepare();
+            chatRec.start();
+            chatRecStart = System.currentTimeMillis();
+            vibrate(50);
+        } catch (Exception e) {
+            if (chatRec != null) chatRec.release();
+            chatRec = null;
+            Toast.makeText(this, "Микрофон недоступен: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        // строка записи вместо поля ввода
+        sheetFooter.removeAllViews();
+        TextView cancel = hChip("Отмена", R.drawable.ic_close, false, v -> chatVoiceStop(false));
+        final TextView rec = new TextView(this);
+        rec.setTextColor(0xFFFF5252);
+        rec.setTextSize(15);
+        rec.setGravity(android.view.Gravity.CENTER);
+        TextView send = hChip("Отправить", R.drawable.ic_send, true, v -> chatVoiceStop(true));
+        LinearLayout.LayoutParams l1 = new LinearLayout.LayoutParams(0, (int) dp(44), 1);
+        sheetFooter.addView(cancel, l1);
+        sheetFooter.addView(rec, new LinearLayout.LayoutParams(0, (int) dp(44), 1));
+        LinearLayout.LayoutParams l3 = new LinearLayout.LayoutParams(0, (int) dp(44), 1);
+        sheetFooter.addView(send, l3);
+        recHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (chatRec == null) return;
+                rec.setText("● " + mmss(System.currentTimeMillis() - chatRecStart) + " / 1:00");
+                recHandler.postDelayed(this, 300);
+            }
+        });
+    }
+
+    private void chatVoiceStop(boolean sendIt) {
+        if (chatRec == null) return;
+        long dur = System.currentTimeMillis() - chatRecStart;
+        try {
+            chatRec.stop();
+        } catch (Exception e) {
+            sendIt = false;
+        }
+        chatRec.release();
+        chatRec = null;
+        if (sendIt && dur > 700) {
+            try {
+                ChatClient.Msg m = new ChatClient.Msg();
+                m.kind = "voice";
+                m.ms = dur;
+                m.data = android.util.Base64.encodeToString(java.nio.file.Files.readAllBytes(chatRecFile.toPath()),
+                        android.util.Base64.URL_SAFE | android.util.Base64.NO_WRAP | android.util.Base64.NO_PADDING);
+                Toast.makeText(this, "Отправляю голосовое…", Toast.LENGTH_SHORT).show();
+                sendChat(m);
+            } catch (Exception e) {
+                Toast.makeText(this, "Не удалось прочитать запись", Toast.LENGTH_LONG).show();
+            }
+        }
+        chatRecFile.delete();
+        openChat();
+    }
+
+    private void takePhoto() {
+        try {
+            android.content.ContentValues cv = new android.content.ContentValues();
+            cv.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "rubezh_" + System.currentTimeMillis() + ".jpg");
+            cv.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            cv.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Rubezh");
+            camUri = getContentResolver().insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+            Intent i = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+            i.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, camUri);
+            startActivityForResult(i, REQ_CAM);
+        } catch (Exception e) {
+            Toast.makeText(this, "Камера недоступна: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void pickPhoto() {
+        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+        i.setType("image/*");
+        try {
+            startActivityForResult(Intent.createChooser(i, "Фото для чата"), REQ_GAL);
+        } catch (Exception e) {
+            Toast.makeText(this, "Нет галереи", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** Сжать фото (до 1280 px, JPEG), взять координаты из снимка или GPS и отправить. */
+    private void sendPhoto(Uri uri, boolean fromCamera) {
+        Toast.makeText(this, "Готовлю фото…", Toast.LENGTH_SHORT).show();
+        final android.location.Location me = myLoc.getLocation();
+        new Thread(() -> {
+            try {
+                byte[] raw = readUri(uri);
+                android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+                o.inJustDecodeBounds = true;
+                android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.length, o);
+                int s = 1;
+                while (Math.max(o.outWidth, o.outHeight) / (s * 2) >= 1280) s *= 2;
+                o = new android.graphics.BitmapFactory.Options();
+                o.inSampleSize = s;
+                android.graphics.Bitmap b = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.length, o);
+                double[] ll = null;
+                int rot = 0;
+                try {
+                    android.media.ExifInterface ex = new android.media.ExifInterface(new java.io.ByteArrayInputStream(raw));
+                    float[] f = new float[2];
+                    if (ex.getLatLong(f)) ll = new double[]{f[0], f[1]};
+                    int or = ex.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1);
+                    rot = or == 6 ? 90 : or == 3 ? 180 : or == 8 ? 270 : 0;
+                } catch (Exception ignored) {
+                }
+                float sc = 1280f / Math.max(b.getWidth(), b.getHeight());
+                android.graphics.Matrix mx = new android.graphics.Matrix();
+                if (sc < 1) mx.postScale(sc, sc);
+                if (rot != 0) mx.postRotate(rot);
+                android.graphics.Bitmap out = android.graphics.Bitmap.createBitmap(b, 0, 0, b.getWidth(), b.getHeight(), mx, true);
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                int q = 75;
+                do {
+                    bo.reset();
+                    out.compress(android.graphics.Bitmap.CompressFormat.JPEG, q, bo);
+                    q -= 10;
+                } while (bo.size() > 700_000 && q > 30);
+                ChatClient.Msg m = new ChatClient.Msg();
+                m.kind = "photo";
+                m.data = android.util.Base64.encodeToString(bo.toByteArray(),
+                        android.util.Base64.URL_SAFE | android.util.Base64.NO_WRAP | android.util.Base64.NO_PADDING);
+                if (ll == null && fromCamera && me != null) ll = new double[]{me.getLatitude(), me.getLongitude()};
+                if (ll != null) {
+                    m.hasLoc = true;
+                    m.lat = ll[0];
+                    m.lon = ll[1];
+                    m.ptName = "Место снимка";
+                }
+                if (fromCamera) getContentResolver().delete(uri, null, null); // не оставлять снимок в галерее
+                runOnUiThread(() -> sendChat(m));
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this, "Фото не отправлено: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    private void showPhoto(ChatClient.Msg m) {
+        chatOpen = false;
+        sheetFooter.setVisibility(View.GONE);
+        sheet("Фото · " + (m.from.isEmpty() ? "участник" : m.from));
+        ImageView iv = new ImageView(this);
+        iv.setAdjustViewBounds(true);
+        iv.setImageBitmap(android.graphics.BitmapFactory.decodeFile(m.media));
+        sheetContent.addView(iv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        if (m.hasLoc) {
+            coordsCard(m.lat, m.lon);
+            hChipRow(hChip("Показать на карте", R.drawable.ic_place, true, v -> {
+                closeSheet();
+                goTo(m.lat, m.lon, "Фото · " + m.from, new SimpleDateFormat("dd.MM HH:mm", Locale.US).format(new Date(m.t)), Math.max(15, map.getZoomLevelDouble()));
+            }), hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
+        } else hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
+    }
+
+    // ================= Прочитано =================
+
+    private final Map<Long, TextView> readMarks = new HashMap<>();
+
+    private String readText(ChatClient.Msg m) {
+        String time = new SimpleDateFormat("HH:mm", Locale.US).format(new Date(m.t));
+        String ttl = m.exp > 0 ? "⏱ " : "";
+        if (!m.mine) return ttl + time;
+        int[] r = chat.readBy(m.seq);
+        if (r[1] == 0 || r[0] == 0) return ttl + time + "  ✓";
+        return ttl + time + "  ✓✓" + (r[0] < r[1] ? " " + r[0] + "/" + r[1] : "");
+    }
+
+    private void refreshReadMarks() {
+        if (!chatOpen) return;
+        for (ChatClient.Msg m : chat.history()) {
+            TextView t = readMarks.get(m.seq);
+            if (t != null && m.mine) {
+                t.setText(readText(m));
+                int[] r = chat.readBy(m.seq);
+                t.setTextColor(r[1] > 0 && r[0] == r[1] ? 0xFF64B5F6 : getColor(R.color.hud_text2));
+            }
+        }
+    }
+
+    // ================= Экстренное удаление =================
+
+    /** Стереть всё личное: точки, маршруты, треки, переписку, группу, сохранённые карты и дороги. */
+    private void wipeAll() {
+        try {
+            if (guideOn()) stopGuide(false);
+            if (navOn()) stopNav();
+            if (track != null) track = null;
+            if (locOn) stopLocation();
+            if (chat != null) {
+                if (chat.configured()) chat.leave(null);
+                chat.dropLegacy();
+            }
+            GroupService.stop(this);
+            userPoints.clear();
+            routes.clear();
+            savePoints();
+            saveRoutes();
+            for (String d : new String[]{"voice", "chatmedia", "roads"}) delTree(new File(getFilesDir(), d));
+            File[] fs = getFilesDir().listFiles();
+            if (fs != null) for (File f : fs) if (f.getName().startsWith("chat") || f.getName().startsWith("restore")) f.delete();
+            delTree(getCacheDir());
+            try {
+                new org.osmdroid.tileprovider.modules.SqlTileWriter().purgeCache();
+            } catch (Exception ignored) {
+            }
+            String[] keep = {"mapStyle", "labelsRu", "lbsDate"};
+            java.util.Map<String, ?> all = prefs.getAll();
+            SharedPreferences.Editor ed = prefs.edit();
+            for (String k : all.keySet()) {
+                boolean kp = false;
+                for (String x : keep) if (x.equals(k)) kp = true;
+                if (!kp) ed.remove(k);
+            }
+            ed.commit();
+        } catch (Exception ignored) {
+        }
+        recreate();
+    }
+
+    private static void delTree(File f) {
+        if (f == null || !f.exists()) return;
+        File[] c = f.listFiles();
+        if (c != null) for (File x : c) delTree(x);
+        f.delete();
+    }
+
+    private void confirmWipe() {
+        new AlertDialog.Builder(this)
+                .setTitle("Стереть всё?")
+                .setMessage("Удалятся точки, маршруты, треки, голосовые заметки, переписка и группа, сохранённые карты, ПИН-код. "
+                        + "Отменить нельзя. Сделайте резервную копию, если она нужна.")
+                .setPositiveButton("Стереть", (d, w) -> wipeAll())
+                .setNegativeButton("Отмена", null)
+                .show();
     }
 
     @SuppressWarnings("unused")

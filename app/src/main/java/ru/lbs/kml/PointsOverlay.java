@@ -33,6 +33,15 @@ public class PointsOverlay extends Overlay {
     private List<UserPoints.Point> points = new ArrayList<>();
     private UserPoints.Point extra; // временная метка (результат поиска)
     private OnPointTap listener;
+    private boolean group; // общая карта группы: синее кольцо вокруг метки
+    private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    void setGroup(boolean g) {
+        group = g;
+        ring.setStyle(Paint.Style.STROKE);
+        ring.setStrokeWidth(2.2f * density);
+        ring.setColor(0xFF42A5F5);
+    }
 
     public PointsOverlay(float density) {
         this.density = density;
@@ -77,6 +86,7 @@ public class PointsOverlay extends Overlay {
         Bitmap b = UserPoints.pin(p.color, density, p.icon);
         c.save();
         if (orient != 0f) c.rotate(-orient, pt.x, pt.y);
+        if (group) c.drawCircle(pt.x, pt.y, b.getWidth() / 2f + 1.5f * density, ring);
         c.drawBitmap(b, pt.x - b.getWidth() / 2f, pt.y - b.getHeight() / 2f, bmp);
         if (withName && p.name != null && !p.name.isEmpty()) {
             float tx = pt.x + b.getWidth() / 2f + 1 * density;

@@ -40,6 +40,40 @@ systemctl restart rubezh   # при повторном запуске — обн
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
   ufw allow "$PORT"/tcp >/dev/null
 fi
+# автообновление: раз в час проверяем новую версию на GitHub
+cat > /usr/local/bin/rubezh-update <<'UPD'
+#!/usr/bin/env bash
+set -eu
+case "$(uname -m)" in x86_64|amd64) BIN=rubezh-server-linux-amd64 ;; *) BIN=rubezh-server-linux-arm64 ;; esac
+TMP=/usr/local/bin/rubezh-server.new
+curl -fsSL -o "$TMP" "https://github.com/TRO9II/lbs-kml/releases/download/server/$BIN" || exit 0
+chmod +x "$TMP"
+if cmp -s "$TMP" /usr/local/bin/rubezh-server; then rm -f "$TMP"; exit 0; fi
+mv -f "$TMP" /usr/local/bin/rubezh-server
+systemctl restart rubezh
+echo "rubezh: обновлён $(date)"
+UPD
+chmod +x /usr/local/bin/rubezh-update
+cat > /etc/systemd/system/rubezh-update.service <<'UNIT'
+[Unit]
+Description=Rubezh server auto-update
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/rubezh-update
+UNIT
+cat > /etc/systemd/system/rubezh-update.timer <<'UNIT'
+[Unit]
+Description=Rubezh server auto-update (hourly)
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=10min
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now rubezh-update.timer >/dev/null 2>&1
+
 sleep 1
 IP="$(curl -fsS https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
 if curl -fsS "http://127.0.0.1:$PORT/api/ping" >/dev/null; then
@@ -47,6 +81,7 @@ if curl -fsS "http://127.0.0.1:$PORT/api/ping" >/dev/null; then
   echo "✅ Сервер «Рубеж» работает."
   echo "   Адрес для приложения:  http://$IP:$PORT"
   echo "   (Меню → Чат → Создать группу → вставьте этот адрес)"
+  echo "   Автообновление включено: сервер раз в час сам ставит новую версию."
 else
   echo "❌ Сервер не ответил. Посмотрите журнал: journalctl -u rubezh -n 50"
   exit 1
