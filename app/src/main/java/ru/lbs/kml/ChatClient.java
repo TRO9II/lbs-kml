@@ -1158,6 +1158,7 @@ final class ChatClient {
                                 m.seq = s;
                                 m.dev = e.optString("m", m.dev); // отправителя подтверждает сервер
                                 if (e.optLong("x") > 0) m.exp = e.optLong("x");
+                                if (e.optLong("t") > 0) m.t = e.optLong("t"); // время сервера: у всех одинаковое
                                 String nm = nameOf(m.dev);
                                 if (!nm.isEmpty()) m.from = nm;
                                 m.mine = m.dev.equals(me);

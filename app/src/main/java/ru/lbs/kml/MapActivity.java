@@ -23,6 +23,7 @@ import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.util.TypedValue;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
@@ -729,8 +730,14 @@ public class MapActivity extends Activity {
         sc.setLayoutParams(sl);
     }
 
+    private View chatHeader;
+
     private void sheet(String title) {
         setSheetFull(false);
+        if (chatHeader != null) {
+            ((ViewGroup) chatHeader.getParent()).removeView(chatHeader);
+            chatHeader = null;
+        }
         View host = findViewById(R.id.genSheet), panel = findViewById(R.id.genPanel), scrim = findViewById(R.id.genScrim);
         ((TextView) findViewById(R.id.genTitle)).setText(title);
         sheetContent = findViewById(R.id.genContent);
@@ -1628,6 +1635,7 @@ public class MapActivity extends Activity {
         p.lat = lat;
         p.lon = lon;
         pointsOverlay.setExtra(p);
+        if (follow) { follow = false; styleMyLoc(); } // иначе карта сразу вернётся к GPS
         map.getController().animateTo(new GeoPoint(lat, lon), zoom, 900L);
         map.invalidate();
     }
@@ -2341,6 +2349,9 @@ public class MapActivity extends Activity {
         actionRow(hChip("Точка в центре", R.drawable.ic_add, true, v -> { closeSheet(); newPointAtCenter(); }),
                 userPoints.isEmpty() ? null : hChip("Экспорт", R.drawable.ic_share, false, v -> { closeSheet(); exportPoints(); }),
                 iconAction(R.drawable.ic_qr, "Принять по QR", v -> { closeSheet(); scanQr(); }));
+        if (chat != null && chat.active() && !chat.objects().isEmpty())
+            hRow(hIcon(R.drawable.ic_my_location, 0xFF42A5F5, 22), "Карта группы", chat.objects().size() + " общих объектов"
+                    hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18), v -> showGroupObjects());
         if (userPoints.isEmpty()) {
             emptyState(R.drawable.ic_place, "Точек пока нет",
                     "Нажмите на прицел в центре карты — точка встанет туда.\nИли подержите палец на нужном месте.");
@@ -5921,46 +5932,20 @@ public class MapActivity extends Activity {
         prefs.edit().putInt("chatUnread", 0).apply();
         showChatBadge();
 
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        chatStatus = new TextView(this);
-        chatStatus.setText(chat.lastOk() ? "● " + chat.lastStatus() : "○ " + chat.lastStatus());
-        chatStatus.setTextColor(chat.lastOk() ? 0xFF66BB6A : 0xFFFFB74D);
-        chatStatus.setTextSize(12);
-        chatStatus.setTextColor(getColor(R.color.hud_text2));
-        head.addView(chatStatus, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        TextView me = new TextView(this);
-        me.setText("Я: " + chat.callsign());
-        me.setTextSize(12);
-        me.setTextColor(getColor(R.color.hud_text2));
-        me.setPadding((int) dp(8), 0, (int) dp(8), 0);
-        head.addView(me);
-        TextView people = new TextView(this);
-        int nOn = chat.members().size();
-        people.setText((sharing() ? "📍 " : "") + "На карте: " + nOn);
-        people.setTextSize(12);
-        people.setTextColor(sharing() ? 0xFF66BB6A : getColor(R.color.hud_text));
-        people.setBackgroundResource(R.drawable.bg_sheet_chip);
-        int pp = (int) dp(10);
-        people.setPadding(pp, (int) dp(6), pp, (int) dp(6));
-        people.setOnClickListener(v -> { chatOpen = false; sheetFooter.setVisibility(View.GONE); showMembers(); });
-        head.addView(people);
-        ImageView set = hIconButton(R.drawable.ic_menu, getColor(R.color.hud_text), v -> chatSettings());
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams((int) dp(40), (int) dp(40));
-        slp.setMarginStart((int) dp(6));
-        head.addView(set, slp);
-        sheetContent.addView(head);
+        buildChatHeader();
 
         chatList = new LinearLayout(this);
         chatList.setOrientation(LinearLayout.VERTICAL);
-        chatList.setPadding(0, (int) dp(8), 0, (int) dp(4));
+        chatList.setPadding(0, (int) dp(2), 0, (int) dp(8));
+        lastBubbleDay = "";
+        lastBubbleDev = "";
+        lastBubbleT = 0;
         chatList.setMinimumHeight(0);
         sheetContent.addView(chatList);
         List<ChatClient.Msg> hist = chat.history();
         if (hist.isEmpty()) {
             TextView t = new TextView(this);
-            t.setText("Сообщений пока нет.\nВсё шифруется на телефоне — сервер видит только набор символов.");
+            t.setText("Сообщений пока нет.\n\nВсё шифруется на телефоне —\nсервер видит только набор символов.");
             t.setTextColor(getColor(R.color.hud_text2));
             t.setTextSize(13);
             t.setGravity(android.view.Gravity.CENTER);
@@ -6023,72 +6008,207 @@ public class MapActivity extends Activity {
         if (chatScroll != null) chatScroll.post(() -> chatScroll.fullScroll(View.FOCUS_DOWN));
     }
 
+    /** Неподвижная строка под заголовком чата: связь, люди на карте, карта группы, настройки. */
+    private void buildChatHeader() {
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        head.setPadding(0, (int) dp(2), 0, (int) dp(8));
+        chatStatus = new TextView(this);
+        chatStatus.setText((chat.lastOk() ? "● " : "○ ") + chat.lastStatus());
+        chatStatus.setTextColor(chat.lastOk() ? 0xFF66BB6A : 0xFFFFB74D);
+        chatStatus.setTextSize(12);
+        chatStatus.setSingleLine(true);
+        chatStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        head.addView(chatStatus, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        head.addView(headChip((sharing() ? "📍 " : "") + "Люди " + chat.members().size(), sharing() ? 0xFF66BB6A : getColor(R.color.hud_text),
+                v -> { chatOpen = false; sheetFooter.setVisibility(View.GONE); showMembers(); }));
+        head.addView(headChip("Карта группы " + chat.objects().size(), getColor(R.color.hud_text),
+                v -> { chatOpen = false; sheetFooter.setVisibility(View.GONE); showGroupObjects(); }));
+        ImageView set = hIconButton(R.drawable.ic_menu, getColor(R.color.hud_text), v -> chatSettings());
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams((int) dp(36), (int) dp(36));
+        slp.setMarginStart((int) dp(6));
+        head.addView(set, slp);
+        View line = new View(this);
+        line.setBackgroundColor(getColor(R.color.hud_line));
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(head);
+        box.addView(line, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1));
+        LinearLayout panel = findViewById(R.id.genPanel);
+        int at = panel.indexOfChild(findViewById(R.id.genScroll));
+        panel.addView(box, at);
+        chatHeader = box;
+    }
+
+    private TextView headChip(String text, int color, View.OnClickListener click) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(12);
+        t.setTextColor(color);
+        t.setSingleLine(true);
+        t.setBackgroundResource(R.drawable.bg_sheet_chip);
+        t.setPadding((int) dp(10), (int) dp(6), (int) dp(10), (int) dp(6));
+        t.setOnClickListener(click);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.setMarginStart((int) dp(6));
+        t.setLayoutParams(lp);
+        return t;
+    }
+
+    private String lastBubbleDay = "", lastBubbleDev = "";
+    private long lastBubbleT;
+
+    private static String dayLabel(long t) {
+        java.util.Calendar c = java.util.Calendar.getInstance(), d = java.util.Calendar.getInstance();
+        d.setTimeInMillis(t);
+        if (c.get(java.util.Calendar.YEAR) == d.get(java.util.Calendar.YEAR)) {
+            int diff = c.get(java.util.Calendar.DAY_OF_YEAR) - d.get(java.util.Calendar.DAY_OF_YEAR);
+            if (diff == 0) return "Сегодня";
+            if (diff == 1) return "Вчера";
+        }
+        return new SimpleDateFormat("d MMMM", new Locale("ru")).format(new Date(t));
+    }
+
+    private TextView linkChip(String text, int icon, View.OnClickListener click) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(12.5f);
+        t.setTextColor(Color.WHITE);
+        t.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(10));
+        g.setColor(0x33FFFFFF);
+        t.setBackground(g);
+        t.setPadding((int) dp(10), (int) dp(6), (int) dp(12), (int) dp(6));
+        if (icon != 0) {
+            android.graphics.drawable.Drawable d = getDrawable(icon).mutate();
+            d.setTint(Color.WHITE);
+            int sz = (int) dp(15);
+            d.setBounds(0, 0, sz, sz);
+            t.setCompoundDrawables(d, null, null, null);
+            t.setCompoundDrawablePadding((int) dp(6));
+        }
+        t.setOnClickListener(click);
+        return t;
+    }
+
     private void addBubble(ChatClient.Msg m) {
         if (chatList == null) return;
         if (chatList.getChildCount() == 1 && "empty".equals(chatList.getChildAt(0).getTag())) chatList.removeAllViews();
+        String day = dayLabel(m.t);
+        if (!day.equals(lastBubbleDay)) {
+            TextView sep = new TextView(this);
+            sep.setText(day);
+            sep.setTextSize(11.5f);
+            sep.setTextColor(getColor(R.color.hud_text2));
+            GradientDrawable g = new GradientDrawable();
+            g.setCornerRadius(dp(10));
+            g.setColor(0xFF22262C);
+            sep.setBackground(g);
+            sep.setPadding((int) dp(10), (int) dp(3), (int) dp(10), (int) dp(3));
+            LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            sl.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+            sl.topMargin = (int) dp(10);
+            sl.bottomMargin = (int) dp(4);
+            chatList.addView(sep, sl);
+            lastBubbleDay = day;
+            lastBubbleDev = "";
+        }
+        final String time = new SimpleDateFormat("HH:mm", Locale.US).format(new Date(m.t));
         if (m.kind.equals("obj")) {
             TextView sys = new TextView(this);
             String who = m.mine ? "Вы" : (m.from.isEmpty() ? "Участник" : m.from);
             String nm = m.op.equals("del") ? m.text : "";
             if (!m.op.equals("del")) try { nm = new JSONObject(m.obj).optString("n"); } catch (Exception ignored) { }
-            sys.setText(who + (m.op.equals("del") ? " убрал(а) с общей карты: " : " отметил(а) на общей карте: ") + nm
-                    + (m.op.equals("del") ? "" : "  ›"));
+            sys.setText(who + (m.op.equals("del") ? " убрал(а) с карты группы «" : " отметил(а) на карте группы «") + nm + "»  " + time);
             sys.setTextSize(12);
-            sys.setTextColor(0xFF64B5F6);
+            sys.setTextColor(0xFF90CAF9);
             sys.setGravity(android.view.Gravity.CENTER);
-            sys.setPadding((int) dp(8), (int) dp(8), (int) dp(8), (int) dp(4));
+            sys.setPadding((int) dp(16), (int) dp(6), (int) dp(16), (int) dp(6));
             if (!m.op.equals("del")) sys.setOnClickListener(v -> {
                 ChatClient.GObj g = chat.object(m.oid);
                 if (g != null) { chatOpen = false; sheetFooter.setVisibility(View.GONE); groupObjSheet(g); }
-                else Toast.makeText(this, "Уже убрано с общей карты", Toast.LENGTH_SHORT).show();
+                else Toast.makeText(this, "Уже убрано с карты группы", Toast.LENGTH_SHORT).show();
             });
             chatList.addView(sys);
+            lastBubbleDev = "";
             return;
         }
+        boolean cont = m.dev.equals(lastBubbleDev) && m.t - lastBubbleT < 5 * 60_000;
+        lastBubbleDev = m.dev;
+        lastBubbleT = m.t;
+
+        boolean sos = m.kind.equals("sos"), st = m.kind.equals("st");
+        int bg = sos ? 0xFFC62828 : m.mine ? 0xFF5C2622 : 0xFF252A32;
         LinearLayout row = new LinearLayout(this);
-        row.setGravity(m.mine ? android.view.Gravity.END : android.view.Gravity.START);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity((m.mine ? android.view.Gravity.END : android.view.Gravity.START) | android.view.Gravity.BOTTOM);
+        if (!m.mine) { // аватар с инициалами у первого сообщения серии
+            TextView av = new TextView(this);
+            av.setTextColor(Color.WHITE);
+            av.setTextSize(11);
+            av.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            av.setGravity(android.view.Gravity.CENTER);
+            if (!cont) {
+                av.setText(MembersOverlay.initials(m.from));
+                GradientDrawable ag = new GradientDrawable();
+                ag.setShape(GradientDrawable.OVAL);
+                ag.setColor(callColor(m.from));
+                av.setBackground(ag);
+            }
+            LinearLayout.LayoutParams al = new LinearLayout.LayoutParams((int) dp(30), (int) dp(30));
+            al.setMarginEnd((int) dp(6));
+            al.gravity = android.view.Gravity.TOP;
+            row.addView(av, al);
+        }
         LinearLayout b = new LinearLayout(this);
         b.setOrientation(LinearLayout.VERTICAL);
-        int ph = (int) dp(12), pv = (int) dp(8);
-        b.setPadding(ph, pv, ph, pv);
+        b.setPadding((int) dp(12), (int) dp(7), (int) dp(12), (int) dp(6));
         GradientDrawable g = new GradientDrawable();
-        float r = dp(14), sm = dp(4);
-        g.setCornerRadii(m.mine ? new float[]{r, r, r, r, sm, sm, r, r} : new float[]{r, r, r, r, r, r, sm, sm});
-        g.setColor(m.kind.equals("sos") ? 0xFFB71C1C : m.mine ? 0xFF7A2E29 : 0xFF262B33);
-        if (m.kind.equals("st")) g.setStroke((int) dp(1.5f), 0xFF64B5F6);
+        float r = dp(16), sm = dp(5);
+        g.setCornerRadii(m.mine ? new float[]{r, r, cont ? sm : r, cont ? sm : r, sm, sm, r, r}
+                : new float[]{cont ? sm : r, cont ? sm : r, r, r, r, r, sm, sm});
+        g.setColor(bg);
         b.setBackground(g);
-        String time = new SimpleDateFormat("HH:mm", Locale.US).format(new Date(m.t));
-        if (!m.mine) {
+        if (!m.mine && !cont) {
             TextView who = new TextView(this);
             who.setText(m.from.isEmpty() ? "без позывного" : m.from);
-            who.setTextSize(12);
+            who.setTextSize(12.5f);
             who.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-            who.setTextColor(callColor(m.from));
+            who.setTextColor(sos ? Color.WHITE : callColor(m.from));
             b.addView(who);
         }
-        if (m.kind.equals("sos") || m.kind.equals("st")) {
-            TextView st = new TextView(this);
-            st.setText((m.kind.equals("sos") ? "🆘 SOS · " : "⚑ ") + m.text);
-            st.setTextSize(15);
-            st.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-            st.setTextColor(Color.WHITE);
-            b.addView(st);
+        if (sos || st) {
+            TextView lab = new TextView(this);
+            lab.setText(sos ? "SOS · ТРЕВОГА" : "СТАТУС");
+            lab.setTextSize(10.5f);
+            lab.setLetterSpacing(0.08f);
+            lab.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            lab.setTextColor(sos ? 0xFFFFCDD2 : 0xFF90CAF9);
+            b.addView(lab);
+            TextView tx = new TextView(this);
+            tx.setText(m.text);
+            tx.setTextSize(16.5f);
+            tx.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            tx.setTextColor(Color.WHITE);
+            b.addView(tx);
         }
         if (m.kind.equals("voice")) {
             final TextView vb = new TextView(this);
-            vb.setText("▶  Голосовое · " + mmss(m.ms));
+            vb.setText("▶   " + mmss(m.ms));
             vb.setTextSize(15);
-            vb.setTextColor(getColor(R.color.hud_text));
-            vb.setPadding(0, (int) dp(4), 0, (int) dp(4));
+            vb.setTextColor(Color.WHITE);
+            vb.setPadding(0, (int) dp(2), (int) dp(30), (int) dp(2));
             b.addView(vb);
             b.setOnClickListener(v -> {
                 if (m.media.isEmpty() || !new File(m.media).exists()) {
                     Toast.makeText(this, "Запись недоступна", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                if (player != null) { stopPlaying(); vb.setText("▶  Голосовое · " + mmss(m.ms)); return; }
-                vb.setText("■  Играет · " + mmss(m.ms));
-                playVoice(new File(m.media), () -> vb.setText("▶  Голосовое · " + mmss(m.ms)));
+                if (player != null) { stopPlaying(); vb.setText("▶   " + mmss(m.ms)); return; }
+                vb.setText("■   " + mmss(m.ms) + "  играет");
+                playVoice(new File(m.media), () -> vb.setText("▶   " + mmss(m.ms)));
             });
         }
         if (m.kind.equals("photo") && !m.media.isEmpty()) {
@@ -6099,74 +6219,123 @@ public class MapActivity extends Activity {
             photoV.setAdjustViewBounds(true);
             photoV.setMaxHeight((int) dp(260));
             photoV.setScaleType(ImageView.ScaleType.FIT_START);
-            b.addView(photoV, new LinearLayout.LayoutParams((int) dp(220), LinearLayout.LayoutParams.WRAP_CONTENT));
-            b.setOnClickListener(v -> showPhoto(m));
-        }
-        if (m.hasLoc && !m.kind.equals("pt")) {
-            TextView act = new TextView(this);
-            act.setText(Sk42.format(m.lat, m.lon) + "\nПоказать на карте ›");
-            act.setTextSize(12.5f);
-            act.setTextColor(0xFF90CAF9);
-            act.setPadding(0, (int) dp(4), 0, 0);
-            b.addView(act);
-            if (!m.kind.equals("photo") && !m.kind.equals("voice")) b.setOnClickListener(v -> {
-                closeSheet();
-                goTo(m.lat, m.lon, (m.kind.equals("sos") ? "SOS · " : "") + m.from, time, Math.max(15, map.getZoomLevelDouble()));
-            });
-            else act.setOnClickListener(v -> {
-                closeSheet();
-                goTo(m.lat, m.lon, m.from, time, Math.max(15, map.getZoomLevelDouble()));
-            });
+            photoV.setClipToOutline(true);
+            GradientDrawable pg = new GradientDrawable();
+            pg.setCornerRadius(dp(10));
+            photoV.setBackground(pg);
+            LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams((int) dp(220), LinearLayout.LayoutParams.WRAP_CONTENT);
+            pl.topMargin = (int) dp(3);
+            b.addView(photoV, pl);
+            photoV.setOnClickListener(v -> showPhoto(m));
         }
         if (m.kind.equals("pt")) {
+            LinearLayout pc = new LinearLayout(this);
+            pc.setOrientation(LinearLayout.HORIZONTAL);
+            pc.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            pc.setPadding(0, (int) dp(2), 0, 0);
+            ImageView pin = new ImageView(this);
+            pin.setImageBitmap(UserPoints.pin(0xFF42A5F5, getResources().getDisplayMetrics().density, ""));
+            pc.addView(pin, new LinearLayout.LayoutParams((int) dp(24), (int) dp(24)));
             TextView pt = new TextView(this);
-            pt.setText("📍 " + (m.ptName.isEmpty() ? "Точка" : m.ptName) + "\n" + Sk42.format(m.lat, m.lon));
-            pt.setTextSize(14);
-            pt.setTextColor(getColor(R.color.hud_text));
-            b.addView(pt);
-            TextView act = new TextView(this);
-            act.setText("Показать на карте ›");
-            act.setTextSize(12.5f);
-            act.setTextColor(0xFF64B5F6);
-            act.setPadding(0, (int) dp(4), 0, 0);
-            b.addView(act);
-            b.setOnClickListener(v -> {
-                closeSheet();
-                goTo(m.lat, m.lon, m.ptName.isEmpty() ? "Точка" : m.ptName, "от " + m.from + " · " + time, Math.max(15, map.getZoomLevelDouble()));
-            });
+            pt.setText((m.ptName.isEmpty() ? "Точка" : m.ptName) + "\n" + Sk42.format(m.lat, m.lon));
+            pt.setTextSize(14.5f);
+            pt.setTextColor(Color.WHITE);
+            pt.setPadding((int) dp(8), 0, 0, 0);
+            pc.addView(pt);
+            b.addView(pc);
         }
-        if (!m.text.isEmpty() && !m.kind.equals("st") && !m.kind.equals("sos")) {
+        if (!m.text.isEmpty() && !st && !sos) {
             TextView t = new TextView(this);
             t.setText(m.text);
-            t.setTextSize(15);
-            t.setTextColor(getColor(R.color.hud_text));
-            t.setTextIsSelectable(true);
+            t.setTextSize(15.5f);
+            t.setTextColor(Color.WHITE);
+            t.setLineSpacing(dp(1), 1f);
             b.addView(t);
+            t.setOnLongClickListener(v -> { copy(m.text, "Текст скопирован"); return true; });
+        }
+        if (m.kind.equals("pt") || m.hasLoc) {
+            if (!m.kind.equals("pt")) {
+                TextView co = new TextView(this);
+                co.setText(Sk42.format(m.lat, m.lon));
+                co.setTextSize(12.5f);
+                co.setTextColor(0xCCFFFFFF);
+                co.setPadding(0, (int) dp(3), 0, 0);
+                b.addView(co);
+            }
+            LinearLayout acts = new LinearLayout(this);
+            acts.setOrientation(LinearLayout.HORIZONTAL);
+            acts.setPadding(0, (int) dp(6), 0, (int) dp(2));
+            final String nm = m.kind.equals("pt") ? (m.ptName.isEmpty() ? "Точка" : m.ptName) : (sos ? "SOS · " : "") + m.from;
+            acts.addView(linkChip("На карте", R.drawable.ic_place, v -> {
+                closeSheet();
+                goTo(m.lat, m.lon, nm, "от " + (m.mine ? "вас" : m.from) + " · " + time, Math.max(15, map.getZoomLevelDouble()));
+            }));
+            TextView sv = linkChip("Себе", R.drawable.ic_save, v -> editPoint(null, m.lat, m.lon, nm));
+            LinearLayout.LayoutParams svl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            svl.setMarginStart((int) dp(6));
+            acts.addView(sv, svl);
+            b.addView(acts);
         }
         TextView tm = new TextView(this);
         tm.setText(readText(m));
         tm.setTextSize(10.5f);
-        tm.setTextColor(getColor(R.color.hud_text2));
+        tm.setTextColor(0x99FFFFFF);
+        tm.setGravity(android.view.Gravity.END);
         if (m.mine) {
             readMarks.put(m.seq, tm);
             int[] rb = chat.readBy(m.seq);
-            if (rb[1] > 0 && rb[0] == rb[1]) tm.setTextColor(0xFF64B5F6);
+            if (rb[1] > 0 && rb[0] == rb[1]) tm.setTextColor(0xFF90CAF9);
         }
-        tm.setGravity(android.view.Gravity.END);
         b.addView(tm, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        b.setMinimumWidth((int) dp(90));
+        b.setMinimumWidth((int) dp(84));
         row.addView(b, bl);
         b.post(() -> {
-            int max = (int) (chatList.getWidth() * 0.82f);
+            int max = (int) (chatList.getWidth() * 0.8f);
             if (max > 0 && b.getWidth() > max) {
                 bl.width = max;
                 b.setLayoutParams(bl);
             }
         });
         LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        rl.topMargin = (int) dp(6);
+        rl.topMargin = (int) dp(cont ? 2 : 8);
         chatList.addView(row, rl);
+    }
+
+    /** Общая карта группы: список точек, маршрутов и зон. */
+    private void showGroupObjects() {
+        List<ChatClient.GObj> all = chat.objects();
+        sheet("Карта группы · " + all.size());
+        if (all.isEmpty()) {
+            emptyState(R.drawable.ic_my_location, "Пока пусто",
+                    "Откройте свою точку или маршрут и нажмите «На общую карту группы» — его увидят все участники.");
+            hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
+            return;
+        }
+        Collections.sort(all, (a, b) -> Long.compare(b.t, a.t));
+        String[][] groups = {{"pt", "ТОЧКИ"}, {"route", "МАРШРУТЫ"}, {"area", "ЗОНЫ"}};
+        android.location.Location me = myLoc.getLocation();
+        for (String[] gr : groups) {
+            boolean head = false;
+            for (ChatClient.GObj g : all) {
+                if (!g.type.equals(gr[0]) || g.pts.isEmpty()) continue;
+                if (!head) { hSection(gr[1]); head = true; }
+                View lead;
+                if (g.type.equals("pt")) {
+                    ImageView pin = new ImageView(this);
+                    pin.setImageBitmap(UserPoints.pin(g.color == 0 ? 0xFF42A5F5 : g.color, getResources().getDisplayMetrics().density, g.icon));
+                    lead = pin;
+                } else lead = routeSwatch(g.color == 0 ? 0xFF42A5F5 : g.color);
+                String sub = (g.authorName.isEmpty() ? chat.nameOf(g.author) : g.authorName);
+                if (g.type.equals("pt") && me != null)
+                    sub += " · " + Geo.dist(Geo.inverse(me.getLatitude(), me.getLongitude(), g.pts.get(0)[0], g.pts.get(0)[1])[0]) + " от вас";
+                else if (g.type.equals("route")) sub += " · " + Geo.dist(Routes.length(g.pts));
+                else if (g.type.equals("area")) sub += " · " + Routes.areaText(Routes.area(g.pts));
+                hRow(lead, g.name.isEmpty() ? "без названия" : g.name, sub, hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18),
+                        v -> groupObjSheet(g));
+            }
+        }
+        hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
     }
 
     private static int callColor(String s) {
@@ -6636,6 +6805,11 @@ public class MapActivity extends Activity {
                     closeSheet();
                     if (g.type.equals("pt")) startNav(Collections.singletonList(p0), 0, g.name);
                     else guideOptions(asRoute, false);
+                }),
+                vAction(R.drawable.ic_place, "На карте", false, v -> {
+                    closeSheet();
+                    if (g.type.equals("pt")) goTo(p0[0], p0[1], g.name, "карта группы", Math.max(15, map.getZoomLevelDouble()));
+                    else { if (follow) { follow = false; styleMyLoc(); } fitRoute(asRoute); }
                 }),
                 vAction(R.drawable.ic_flag, "Навести", false, v -> { closeSheet(); setTarget(p0[0], p0[1], g.name); }),
                 vAction(R.drawable.ic_save, "Себе", false, v -> {
