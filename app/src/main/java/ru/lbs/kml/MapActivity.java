@@ -5592,6 +5592,36 @@ public class MapActivity extends Activity {
             }
 
             @Override
+            public void onPeople(int pending) {
+                int seen = prefs.getInt("c2PendSeen", 0);
+                if (chat.isAdmin() && pending > seen) {
+                    vibrate(200);
+                    Toast.makeText(MapActivity.this, "Новый участник просит вступить в группу — Чат → ≡ → Участники",
+                            Toast.LENGTH_LONG).show();
+                }
+                prefs.edit().putInt("c2PendSeen", pending).apply();
+                chatPending = chat.isAdmin() ? pending : 0;
+                showChatBadge();
+            }
+
+            @Override
+            public void onRole(String role) {
+                if (role.equals("removed") || role.equals("left")) {
+                    prefs.edit().putBoolean("shareLoc", false).apply();
+                    membersOverlay.setMembers(new ArrayList<>());
+                    map.invalidate();
+                    if (role.equals("removed"))
+                        Toast.makeText(MapActivity.this, "Администратор удалил вас из группы", Toast.LENGTH_LONG).show();
+                    if (chatOpen || sheetOpen()) closeSheet();
+                } else if (role.equals("member") || role.equals("admin")) {
+                    Toast.makeText(MapActivity.this, role.equals("admin") ? "Вы теперь администратор группы"
+                            : "Вас приняли в группу «" + chat.groupName() + "»", Toast.LENGTH_LONG).show();
+                    vibrate(200);
+                    if (chatOpen) openChat();
+                }
+            }
+
+            @Override
             public void onStatus(String status, boolean ok) {
                 if (chatStatus != null) {
                     chatStatus.setText((ok ? "● " : "○ ") + status);
@@ -5688,15 +5718,40 @@ public class MapActivity extends Activity {
                 vAction(R.drawable.ic_add, "В точки", false, v -> editPoint(null, m.lat, m.lon, m.name)));
     }
 
+    private int chatPending;
+
     private void showChatBadge() {
         TextView b = findViewById(R.id.chatBadge);
-        b.setVisibility(chatUnread > 0 ? View.VISIBLE : View.GONE);
-        b.setText(chatUnread > 99 ? "99+" : Integer.toString(chatUnread));
+        int n = chatUnread + chatPending;
+        b.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
+        b.setText(n > 99 ? "99+" : Integer.toString(n));
     }
 
     private void openChat() {
+        if (chat.legacy()) {
+            chatOpen = false;
+            sheet("Чат группы");
+            emptyState(R.drawable.ic_chat, "Группа старой версии",
+                    "В новой версии появились администраторы, одобрение новичков и удаление участников. "
+                            + "Для этого группу нужно создать заново (сервер тот же) и пригласить всех снова.");
+            hChipRow(hChip("Создать новую группу", R.drawable.ic_add, true, v -> { chat.dropLegacy(); createGroup(); }));
+            return;
+        }
         if (!chat.configured()) {
             chatSetup();
+            return;
+        }
+        if (chat.pending()) {
+            chat.start();
+            chatOpen = true;
+            sheet(chat.groupName());
+            emptyState(R.drawable.ic_lock, "Ожидает подтверждения",
+                    "Заявка отправлена. Как только администратор примет вас, откроется чат — придёт уведомление.\n\nВаш позывной: "
+                            + chat.callsign());
+            hChipRow(hChip("Отменить заявку", R.drawable.ic_close, false, v -> chat.leave(() -> {
+                closeSheet();
+                Toast.makeText(this, "Заявка отменена", Toast.LENGTH_SHORT).show();
+            })));
             return;
         }
         if (offline()) Toast.makeText(this, "Включён режим «Без сети» — сообщения не уйдут", Toast.LENGTH_LONG).show();
@@ -5962,14 +6017,15 @@ public class MapActivity extends Activity {
     }
 
     private void joinInvite(String inv) {
-        try {
-            chat.join(inv);
-            Toast.makeText(this, "Вы в группе «" + chat.groupName() + "»", Toast.LENGTH_LONG).show();
-            closeSheet();
-            openChat();
-        } catch (Exception ex) {
-            Toast.makeText(this, "Приглашение не подошло: " + ex.getMessage(), Toast.LENGTH_LONG).show();
+        if (chat.callsign().isEmpty()) {
+            askCallsign(() -> joinInvite(inv));
+            return;
         }
+        Toast.makeText(this, "Отправляю заявку…", Toast.LENGTH_SHORT).show();
+        chat.join(inv, () -> {
+            Toast.makeText(this, "Заявка отправлена — ждите, пока администратор примет", Toast.LENGTH_LONG).show();
+            openChat();
+        }, err -> Toast.makeText(this, "Не удалось вступить: " + err, Toast.LENGTH_LONG).show());
     }
 
     private void createGroup() {
@@ -5983,7 +6039,8 @@ public class MapActivity extends Activity {
         lp.topMargin = (int) dp(8);
         sheetContent.addView(name, lp);
         TextView t = new TextView(this);
-        t.setText("Адрес выдаёт команда установки сервера. Ключ шифрования создаётся на этом телефоне и передаётся только в QR-приглашении.");
+        t.setText("Адрес выдаёт команда установки сервера. Вы станете администратором: будете принимать и удалять участников. "
+                + "Ключ шифрования создаётся на этом телефоне, сервер его не знает.");
         t.setTextColor(getColor(R.color.hud_text2));
         t.setTextSize(12);
         t.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
@@ -6001,24 +6058,176 @@ public class MapActivity extends Activity {
                     return;
                 }
                 prefs.edit().putString("chatLastServer", s).apply();
-                chat.create(s, name.getText().toString());
                 hideKeyboard();
-                showInvite();
+                final String gname = name.getText().toString();
+                Runnable go = () -> chat.create(s, gname, () -> {
+                    Toast.makeText(this, "Группа создана — вы её администратор", Toast.LENGTH_LONG).show();
+                    chat.start();
+                    showInvite();
+                }, e2 -> Toast.makeText(this, "Не удалось создать: " + e2, Toast.LENGTH_LONG).show());
+                if (chat.callsign().isEmpty()) askCallsign(go); else go.run();
             });
         });
     }
 
+    /** Приглашение: срок и число людей → QR. */
     private void showInvite() {
-        String inv = chat.invite();
-        showQr(inv, "приглашение в «" + chat.groupName() + "»");
+        chatOpen = false;
+        sheetFooter.setVisibility(View.GONE);
+        if (!chat.isAdmin()) {
+            Toast.makeText(this, "Приглашать могут только администраторы", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        sheet("Пригласить в «" + chat.groupName() + "»");
         TextView t = new TextView(this);
-        t.setText("Участник: «Чат» → «Вступить по приглашению» → навести камеру. Это ключ от группы — показывайте только своим.");
+        t.setText("По QR человек отправит заявку, а вы примете или отклоните её в «Участниках». Без вашего согласия он ничего не увидит.");
         t.setTextColor(getColor(R.color.hud_text2));
         t.setTextSize(12.5f);
-        t.setPadding((int) dp(4), (int) dp(6), (int) dp(4), 0);
+        t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(4));
         sheetContent.addView(t);
-        hChipRow(hChip("Скопировать текстом", R.drawable.ic_share, false, v -> copy(inv, "Приглашение скопировано")),
-                hChip("В чат", R.drawable.ic_chat, true, v -> openChat()));
+        final double[] hours = {24}, uses = {1};
+        heightChipsUnits("Сколько действует", new double[]{1, 24, 168}, hours, "", v -> { });
+        LinearLayout r1 = (LinearLayout) sheetContent.getChildAt(sheetContent.getChildCount() - 1);
+        String[] l1 = {"1 час", "24 часа", "7 дней"};
+        for (int i = 0; i < r1.getChildCount(); i++) ((TextView) r1.getChildAt(i)).setText(l1[i]);
+        heightChipsUnits("Сколько человек по нему вступит", new double[]{1, 5, 0}, uses, "", v -> { });
+        LinearLayout r2 = (LinearLayout) sheetContent.getChildAt(sheetContent.getChildCount() - 1);
+        String[] l2 = {"Один", "До пяти", "Без ограничения"};
+        for (int i = 0; i < r2.getChildCount(); i++) ((TextView) r2.getChildAt(i)).setText(l2[i]);
+        hSection("ДЕЙСТВУЮЩИЕ ПРИГЛАШЕНИЯ");
+        final LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        sheetContent.addView(list);
+        loadInvites(list, null);
+        footer("Назад", "Создать QR", v -> chat.makeInvite((int) hours[0], (int) uses[0], inv -> {
+            showQr(inv, "приглашение · " + (int) hours[0] + " ч");
+            TextView n = new TextView(this);
+            n.setText("Участник: «Чат» → «Вступить по приглашению» → навести камеру. После этого примите его в «Участниках».");
+            n.setTextColor(getColor(R.color.hud_text2));
+            n.setTextSize(12.5f);
+            n.setPadding((int) dp(4), (int) dp(6), (int) dp(4), 0);
+            sheetContent.addView(n);
+            hChipRow(hChip("Скопировать текстом", R.drawable.ic_share, false, x -> copy(inv, "Приглашение скопировано")),
+                    hChip("Участники", R.drawable.ic_my_location, true, x -> showPeople()));
+        }, err -> Toast.makeText(this, "Не удалось: " + err, Toast.LENGTH_LONG).show()));
+    }
+
+    private void loadInvites(LinearLayout list, String revoke) {
+        chat.invites(revoke, invs -> {
+            list.removeAllViews();
+            if (invs.isEmpty()) {
+                TextView t = new TextView(this);
+                t.setText("Нет действующих приглашений");
+                t.setTextColor(getColor(R.color.hud_text2));
+                t.setTextSize(12.5f);
+                t.setPadding((int) dp(4), (int) dp(4), 0, (int) dp(4));
+                list.addView(t);
+                return;
+            }
+            SimpleDateFormat f = new SimpleDateFormat("dd.MM HH:mm", Locale.US);
+            for (ChatClient.Invite v : invs) {
+                LinearLayout row = new LinearLayout(this);
+                row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                row.setPadding((int) dp(8), (int) dp(6), 0, (int) dp(6));
+                TextView t = new TextView(this);
+                t.setText("до " + f.format(new Date(v.expires)) + " · " + (v.uses == 0 ? "без ограничения" : v.used + " из " + v.uses)
+                        + (v.by.isEmpty() ? "" : " · " + chat.nameOf(v.by)));
+                t.setTextColor(getColor(R.color.hud_text));
+                t.setTextSize(13);
+                row.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+                TextView x = hChip("Отозвать", 0, false, z -> loadInvites(list, v.code));
+                row.addView(x, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (int) dp(36)));
+                list.addView(row);
+            }
+        }, err -> { });
+    }
+
+    /** Участники группы и управление ими. */
+    private void showPeople() {
+        chatOpen = false;
+        sheetFooter.setVisibility(View.GONE);
+        List<ChatClient.Person> ps = chat.people();
+        int act = 0;
+        for (ChatClient.Person p : ps) if (p.active()) act++;
+        sheet("Участники · " + act);
+        boolean admin = chat.isAdmin();
+        if (admin) actionRow(hChip("Пригласить", R.drawable.ic_qr, true, v -> showInvite()));
+        boolean pendHead = false, restHead = false, goneHead = false;
+        for (ChatClient.Person p : ps) {
+            if (p.role.equals("pending")) {
+                if (!admin) continue;
+                if (!pendHead) { hSection("ЖДУТ ПОДТВЕРЖДЕНИЯ"); pendHead = true; }
+                hRow(personDot(p), p.callsign.isEmpty() ? "без позывного" : p.callsign,
+                        "заявка " + MembersOverlay.age(p.joined) + " назад", null, null);
+                hChipRow(hChip("Принять", R.drawable.ic_check, true, v -> chat.manage("approve", p, () -> {
+                            Toast.makeText(this, p.callsign + " принят(а) в группу", Toast.LENGTH_SHORT).show();
+                            showPeople();
+                        }, err -> Toast.makeText(this, "Не удалось: " + err, Toast.LENGTH_LONG).show())),
+                        hChip("Отклонить", R.drawable.ic_close, false, v -> chat.manage("reject", p, this::showPeople,
+                                err -> Toast.makeText(this, "Не удалось: " + err, Toast.LENGTH_LONG).show())));
+            } else if (p.active()) {
+                if (!restHead) { hSection("В ГРУППЕ"); restHead = true; }
+                String sub = p.roleName() + " · " + (p.id.equals(chat.deviceId()) ? "это вы" : "был(а) " + MembersOverlay.age(p.seen)
+                        + (MembersOverlay.age(p.seen).equals("сейчас") ? "" : " назад"));
+                hRow(personDot(p), p.callsign.isEmpty() ? "без позывного" : p.callsign, sub,
+                        admin && !p.id.equals(chat.deviceId()) && !p.role.equals("owner") ? hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18) : null,
+                        admin && !p.id.equals(chat.deviceId()) && !p.role.equals("owner") ? v -> personActions(p) : null);
+            } else if (admin) {
+                if (!goneHead) { hSection("БЫВШИЕ"); goneHead = true; }
+                hRow(personDot(p), p.callsign.isEmpty() ? "без позывного" : p.callsign, p.roleName(), null, null);
+            }
+        }
+        TextView n = new TextView(this);
+        n.setText(admin ? "Удалённый участник сразу теряет доступ, а группа переходит на новый ключ шифрования — "
+                + "он не сможет прочитать ничего нового. Остальным ничего делать не нужно."
+                : "Принимать и удалять участников могут администраторы.");
+        n.setTextColor(getColor(R.color.hud_text2));
+        n.setTextSize(12);
+        n.setPadding((int) dp(4), (int) dp(12), (int) dp(4), 0);
+        sheetContent.addView(n);
+    }
+
+    private View personDot(ChatClient.Person p) {
+        TextView d = new TextView(this);
+        d.setText(MembersOverlay.initials(p.callsign));
+        d.setTextColor(Color.WHITE);
+        d.setTextSize(11);
+        d.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        d.setGravity(android.view.Gravity.CENTER);
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(p.active() || p.role.equals("pending") ? MembersOverlay.color(p.callsign) : 0xFF555B66);
+        d.setBackground(g);
+        d.setLayoutParams(new LinearLayout.LayoutParams((int) dp(32), (int) dp(32)));
+        return d;
+    }
+
+    private void personActions(ChatClient.Person p) {
+        sheet(p.callsign.isEmpty() ? "Участник" : p.callsign);
+        LinearLayout card = hCard();
+        addKV(card, "Роль", p.roleName());
+        addKV(card, "В группе с", new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.US).format(new Date(p.joined)));
+        addKV(card, "Последний раз на связи", MembersOverlay.age(p.seen) + (MembersOverlay.age(p.seen).equals("сейчас") ? "" : " назад"));
+        sheetContent.addView(card);
+        int tx = getColor(R.color.hud_text);
+        hSection("ДЕЙСТВИЯ");
+        if (p.role.equals("admin"))
+            hRow(hIcon(R.drawable.ic_lock, tx, 22), "Снять права администратора", null, null,
+                    v -> chat.manage("member", p, this::showPeople, err -> Toast.makeText(this, err, Toast.LENGTH_LONG).show()));
+        else
+            hRow(hIcon(R.drawable.ic_lock, tx, 22), "Сделать администратором", "Сможет принимать и удалять участников", null,
+                    v -> chat.manage("admin", p, this::showPeople, err -> Toast.makeText(this, err, Toast.LENGTH_LONG).show()));
+        hRow(hIcon(R.drawable.ic_delete, 0xFFFF6B60, 22), "Удалить из группы", "Сразу потеряет доступ, ключ группы сменится", null,
+                v -> new AlertDialog.Builder(this)
+                        .setTitle("Удалить «" + p.callsign + "»?")
+                        .setMessage("Он сразу потеряет доступ к чату и меткам. Группа перейдёт на новый ключ.")
+                        .setPositiveButton("Удалить", (d, w) -> chat.manage("remove", p, () -> {
+                            Toast.makeText(this, p.callsign + " удалён(а), ключ группы сменён", Toast.LENGTH_LONG).show();
+                            showPeople();
+                        }, err -> Toast.makeText(this, "Не удалось: " + err, Toast.LENGTH_LONG).show()))
+                        .setNegativeButton("Отмена", null)
+                        .show());
+        hChipRow(hChip("Назад к участникам", R.drawable.ic_back, false, v -> showPeople()));
     }
 
     private void chatSettings() {
@@ -6026,7 +6235,12 @@ public class MapActivity extends Activity {
         sheetFooter.setVisibility(View.GONE);
         sheet("Группа «" + chat.groupName() + "»");
         int tx = getColor(R.color.hud_text);
-        hRow(hIcon(R.drawable.ic_qr, tx, 22), "Пригласить", "Показать QR-код с ключом группы", null, v -> showInvite());
+        int pend = 0, act = 0;
+        for (ChatClient.Person p : chat.people()) { if (p.role.equals("pending")) pend++; if (p.active()) act++; }
+        hRow(hIcon(R.drawable.ic_my_location, tx, 22), "Участники", act + " в группе" + (chat.isAdmin() && pend > 0 ? " · " + pend + " ждут подтверждения" : "")
+                + " · вы " + chat.role().replace("owner", "создатель").replace("admin", "администратор").replace("member", "участник"),
+                null, v -> showPeople());
+        if (chat.isAdmin()) hRow(hIcon(R.drawable.ic_qr, tx, 22), "Пригласить", "QR со сроком действия", null, v -> showInvite());
         hRow(hIcon(R.drawable.ic_chat, tx, 22), "Позывной", chat.callsign(), null, v -> askCallsign(this::openChat));
         hSection("МОЁ МЕСТОПОЛОЖЕНИЕ");
         hToggle("Показывать меня на карте группы", "Только пока приложение открыто. Координаты шифруются",
@@ -6049,11 +6263,13 @@ public class MapActivity extends Activity {
         hRow(hIcon(R.drawable.ic_close, 0xFFFF6B60, 22), "Выйти из группы", "Переписка на этом телефоне удалится", null, v ->
                 new AlertDialog.Builder(this)
                         .setTitle("Выйти из группы?")
-                        .setMessage("Чтобы вернуться, понадобится приглашение.")
+                        .setMessage(chat.role().equals("owner")
+                                ? "Вы создатель. Группа продолжит работать, но управлять ею смогут только назначенные вами администраторы. Вернуться можно по приглашению."
+                                : "Чтобы вернуться, понадобится новое приглашение.")
                         .setPositiveButton("Выйти", (d, w) -> {
                             if (prefs.getBoolean("shareLoc", false)) chat.sendLoc(0, 0, 0, Float.NaN, true);
                             prefs.edit().putBoolean("shareLoc", false).apply();
-                            chat.leave();
+                            chat.leave(null);
                             membersOverlay.setMembers(new ArrayList<>());
                             closeSheet();
                             Toast.makeText(this, "Вы вышли из группы", Toast.LENGTH_SHORT).show();

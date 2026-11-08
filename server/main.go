@@ -271,6 +271,8 @@ func main() {
 		}
 	})
 
+	registerV2(*dir)
+
 	srv := &http.Server{Addr: *addr, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("Рубеж: сервер слушает %s, данные в %s", *addr, *dir)
 	log.Fatal(srv.ListenAndServe())
