@@ -5,7 +5,6 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Point;
-import android.graphics.Typeface;
 
 import org.osmdroid.util.BoundingBox;
 import org.osmdroid.util.GeoPoint;
@@ -13,37 +12,49 @@ import org.osmdroid.views.MapView;
 import org.osmdroid.views.Projection;
 import org.osmdroid.views.overlay.Overlay;
 
-/** Километровая сетка СК-42 (Гаусс-Крюгер, 6° зоны) с подписями и границами зон. */
+import java.util.Locale;
+
+/**
+ * Километровая сетка СК-42 (Гаусс-Крюгер, 6° зоны) в стиле топокарт / AlpineQuest:
+ * тонкие линии с подписями «5 332к», каждые 10 км — жирнее с полной подписью «5 330 000».
+ * Подписи идут вдоль линий и не переворачиваются вверх ногами.
+ */
 public class GridOverlay extends Overlay {
 
     private static final double[] STEPS = {1000, 2000, 5000, 10000, 20000, 50000, 100000};
+    private static final int SAMPLES = 24;
 
     private final float density;
-    private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint minor = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint major = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint zoneLine = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Point pt = new Point();
-    private final Point sp = new Point();
     private final GeoPoint gp = new GeoPoint(0.0, 0.0);
     private final Path path = new Path();
+    private final float[] xs = new float[SAMPLES + 1], ys = new float[SAMPLES + 1];
+    private final boolean[] ok = new boolean[SAMPLES + 1];
     private double lastStep = 1000;
 
     public GridOverlay(float density) {
         this.density = density;
-        line.setStyle(Paint.Style.STROKE);
-        line.setStrokeWidth(1.1f * density);
-        line.setColor(Color.argb(190, 0, 229, 255));
+        minor.setStyle(Paint.Style.STROKE);
+        minor.setStrokeWidth(1f * density);
+        minor.setColor(Color.argb(170, 0, 0, 0));
+        major.setStyle(Paint.Style.STROKE);
+        major.setStrokeWidth(1.8f * density);
+        major.setColor(Color.argb(230, 0, 0, 0));
         zoneLine.setStyle(Paint.Style.STROKE);
-        zoneLine.setStrokeWidth(2.2f * density);
-        zoneLine.setColor(Color.argb(220, 255, 64, 129));
-        text.setColor(Color.WHITE);
-        text.setTextSize(12 * density);
-        text.setTypeface(Typeface.DEFAULT_BOLD);
+        zoneLine.setStrokeWidth(2.4f * density);
+        zoneLine.setColor(Color.argb(230, 255, 64, 129));
+        text.setColor(Color.argb(240, 15, 15, 15));
+        text.setTextSize(10.5f * density);
+        text.setTextAlign(Paint.Align.CENTER);
         halo.set(text);
         halo.setStyle(Paint.Style.STROKE);
         halo.setStrokeWidth(3f * density);
-        halo.setColor(Color.argb(220, 0, 0, 0));
+        halo.setColor(Color.argb(200, 255, 255, 255));
     }
 
     /** Текущий шаг сетки, м. */
@@ -61,23 +72,22 @@ public class GridOverlay extends Overlay {
         double n = bb.getLatNorth(), s = bb.getLatSouth(), e = bb.getLonEast(), w = bb.getLonWest();
         if (n - s > 12 || e - w > 18) return;
 
-        // шаг: линии не чаще ~70 px
-        double minGapM = 70 * density * (156543.034 * Math.cos(Math.toRadians((n + s) / 2)) / Math.pow(2, z));
+        // шаг: линии не чаще ~55 dp
+        double mPerPx = 156543.034 * Math.cos(Math.toRadians((n + s) / 2)) / Math.pow(2, z);
+        double minGapM = 55 * density * mPerPx;
         double step = STEPS[STEPS.length - 1];
         for (double st : STEPS) if (st >= minGapM) { step = st; break; }
         lastStep = step;
+        double majorStep = step < 10000 ? 10000 : step * 5;
 
         Projection pj = mv.getProjection();
         float orient = mv.getMapOrientation();
-        int w0 = c.getWidth(), h0 = c.getHeight();
 
-        // зоны в кадре (по долготе СК-42 ≈ WGS-84 с точностью ~0.002°)
         int zFrom = Sk42.zoneOf(w - 0.01), zTo = Sk42.zoneOf(e + 0.01);
         for (int zone = zFrom; zone <= zTo; zone++) {
-            double zW = (zone - 1) * 6, zE = zone * 6;   // границы зоны (долгота)
+            double zW = (zone - 1) * 6, zE = zone * 6;
             double lw = Math.max(w, zW), le = Math.min(e, zE);
             if (le <= lw) continue;
-            // прямоугольник кадра в координатах зоны
             double[][] corners = {
                     Sk42.fromWgsInZone(n, lw, zone), Sk42.fromWgsInZone(n, le, zone),
                     Sk42.fromWgsInZone(s, lw, zone), Sk42.fromWgsInZone(s, le, zone)};
@@ -87,18 +97,15 @@ public class GridOverlay extends Overlay {
                 yMin = Math.min(yMin, k[1]); yMax = Math.max(yMax, k[1]);
             }
             xMin -= step; xMax += step; yMin -= step; yMax += step;
-            if ((xMax - xMin) / step > 120 || (yMax - yMin) / step > 120) continue;
+            if ((xMax - xMin) / step > 140 || (yMax - yMin) / step > 140) continue;
 
-            int samples = 24;
-            // линии X = const (идут с запада на восток)
             for (double x = Math.ceil(xMin / step) * step; x <= xMax; x += step) {
-                drawLine(c, pj, x, yMin, x, yMax, samples, zW, zE, line);
-                labelAlong(c, pj, x, yMin, x, yMax, samples, zW, zE, orient, w0, h0, km(x), true);
+                boolean isMajor = Math.abs(Math.IEEEremainder(x, majorStep)) < 1;
+                line(c, pj, orient, x, yMin, x, yMax, zW, zE, isMajor, label(x, isMajor));
             }
-            // линии Y = const (идут с юга на север)
             for (double y = Math.ceil(yMin / step) * step; y <= yMax; y += step) {
-                drawLine(c, pj, xMin, y, xMax, y, samples, zW, zE, line);
-                labelAlong(c, pj, xMin, y, xMax, y, samples, zW, zE, orient, w0, h0, km(y), false);
+                boolean isMajor = Math.abs(Math.IEEEremainder(y, majorStep)) < 1;
+                line(c, pj, orient, xMin, y, xMax, y, zW, zE, isMajor, label(y, isMajor));
             }
         }
         // границы зон
@@ -106,65 +113,63 @@ public class GridOverlay extends Overlay {
             double lonB = (zone - 1) * 6;
             if (lonB < w || lonB > e) continue;
             path.reset();
-            boolean first = true;
             for (int i = 0; i <= 30; i++) {
-                double la = s + (n - s) * i / 30.0;
-                gp.setCoords(la, lonB);
+                gp.setCoords(s + (n - s) * i / 30.0, lonB);
                 pj.toPixels(gp, pt);
-                if (first) { path.moveTo(pt.x, pt.y); first = false; } else path.lineTo(pt.x, pt.y);
+                if (i == 0) path.moveTo(pt.x, pt.y); else path.lineTo(pt.x, pt.y);
             }
             c.drawPath(path, zoneLine);
         }
     }
 
-    /** Две последние цифры километра, как на топокартах: 5 354 000 → "54". */
-    private static String km(double v) {
-        long k = Math.round(v / 1000.0);
-        return String.format(java.util.Locale.US, "%02d", Math.abs(k % 100));
+    /** Полная подпись для каждых 10 км («5 330 000»), иначе — в километрах («5 332к»). */
+    private static String label(double v, boolean isMajor) {
+        long m = Math.round(v);
+        return isMajor ? Geo.group(m) : Geo.group(Math.round(v / 1000.0)) + "к";
     }
 
-    private void drawLine(Canvas c, Projection pj, double x1, double y1, double x2, double y2,
-                          int samples, double zW, double zE, Paint p) {
+    private void line(Canvas c, Projection pj, float orient, double x1, double y1, double x2, double y2,
+                      double zW, double zE, boolean isMajor, String label) {
         path.reset();
         boolean pen = false;
-        for (int i = 0; i <= samples; i++) {
-            double x = x1 + (x2 - x1) * i / samples, y = y1 + (y2 - y1) * i / samples;
+        for (int i = 0; i <= SAMPLES; i++) {
+            double x = x1 + (x2 - x1) * i / SAMPLES, y = y1 + (y2 - y1) * i / SAMPLES;
             double[] ll = Sk42.toWgs(x, y);
-            if (ll[1] < zW - 0.02 || ll[1] > zE + 0.02) { pen = false; continue; }
+            ok[i] = ll[1] >= zW - 0.02 && ll[1] <= zE + 0.02;
+            if (!ok[i]) { pen = false; continue; }
             gp.setCoords(ll[0], ll[1]);
             pj.toPixels(gp, pt);
+            xs[i] = pt.x;
+            ys[i] = pt.y;
             if (!pen) { path.moveTo(pt.x, pt.y); pen = true; } else path.lineTo(pt.x, pt.y);
         }
-        c.drawPath(path, p);
-    }
+        c.drawPath(path, isMajor ? major : minor);
 
-    /** Подпись линии у края экрана (сверху для вертикальных, слева для горизонтальных). */
-    private void labelAlong(Canvas c, Projection pj, double x1, double y1, double x2, double y2, int samples,
-                            double zW, double zE, float orient, int w0, int h0, String label, boolean horizontal) {
-        float margin = 22 * density;
-        float bestScore = Float.MAX_VALUE;
-        int bx = 0, by = 0;
-        boolean found = false;
-        int fine = samples * 2;
-        for (int i = 0; i <= fine; i++) {
-            double x = x1 + (x2 - x1) * i / fine, y = y1 + (y2 - y1) * i / fine;
-            double[] ll = Sk42.toWgs(x, y);
-            if (ll[1] < zW || ll[1] > zE) continue;
-            gp.setCoords(ll[0], ll[1]);
-            pj.toPixels(gp, pt);
-            if (orient != 0f) pj.rotateAndScalePoint(pt.x, pt.y, sp); else sp.set(pt.x, pt.y);
-            if (sp.x < margin || sp.y < margin || sp.x > w0 - margin * 2.5f || sp.y > h0 - margin) continue;
-            if (!horizontal && sp.y > h0 - 80 * density) continue; // снизу — панель координат
-            // горизонтальные линии подписываем у левого края, вертикальные — у нижнего
-            float score = horizontal ? sp.x : (h0 - sp.y);
-            if (score < bestScore) { bestScore = score; bx = pt.x; by = pt.y; found = true; }
+        // подписи вдоль линии через каждые ~280 dp
+        float gap = 280 * density, first = 140 * density, acc = 0, next = first;
+        for (int i = 1; i <= SAMPLES; i++) {
+            if (!ok[i] || !ok[i - 1]) continue;
+            float dx = xs[i] - xs[i - 1], dy = ys[i] - ys[i - 1];
+            float segLen = (float) Math.hypot(dx, dy);
+            while (segLen > 0 && acc + segLen >= next) {
+                float t = (next - acc) / segLen;
+                float lx = xs[i - 1] + dx * t, ly = ys[i - 1] + dy * t;
+                float ang = (float) Math.toDegrees(Math.atan2(dy, dx));
+                float screen = ang + orient;                 // угол на экране
+                while (screen > 180) screen -= 360;
+                while (screen <= -180) screen += 360;
+                if (screen > 90 || screen <= -90) ang += 180; // не вверх ногами
+                text.setFakeBoldText(isMajor);
+                halo.setFakeBoldText(isMajor);
+                c.save();
+                c.rotate(ang, lx, ly);
+                float ty = ly - 3 * density;
+                c.drawText(label, lx, ty, halo);
+                c.drawText(label, lx, ty, text);
+                c.restore();
+                next += gap;
+            }
+            acc += segLen;
         }
-        if (!found) return;
-        c.save();
-        if (orient != 0f) c.rotate(-orient, bx, by);
-        float tx = bx + 3 * density, ty = by - 3 * density;
-        c.drawText(label, tx, ty, halo);
-        c.drawText(label, tx, ty, text);
-        c.restore();
     }
 }

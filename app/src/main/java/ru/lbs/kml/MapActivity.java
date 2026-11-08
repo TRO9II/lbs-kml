@@ -124,7 +124,8 @@ public class MapActivity extends Activity {
         findViewById(R.id.dlCancel).setOnClickListener(v -> cancelDownload());
         findViewById(R.id.btnGrid).setOnClickListener(v -> toggleGrid());
         findViewById(R.id.btnPoints).setOnClickListener(v -> showPointsList());
-        findViewById(R.id.coordPanel).setOnClickListener(v -> copyCenterCoords());
+        findViewById(R.id.coordCard).setOnClickListener(v -> copyCenterCoords());
+        findViewById(R.id.targetClear).setOnClickListener(v -> clearTarget());
         styleLabelsButton();
         setupSearch();
 
@@ -148,11 +149,14 @@ public class MapActivity extends Activity {
         addOverlays(data);
         gridOverlay = new GridOverlay(getResources().getDisplayMetrics().density);
         map.getOverlays().add(gridOverlay);
+        reticleOverlay = new ReticleOverlay(getResources().getDisplayMetrics().density);
+        restoreTarget();
         loadPlaces();
         pointsOverlay = new PointsOverlay(getResources().getDisplayMetrics().density);
         pointsOverlay.setPoints(userPoints = UserPoints.load(this));
         pointsOverlay.setListener(this::onPointTap);
         map.getOverlays().add(pointsOverlay);
+        map.getOverlays().add(reticleOverlay);
         map.getOverlays().add(new CompassSync());
         applyGrid();
         map.addMapListener(new MapListener() {
@@ -341,6 +345,7 @@ public class MapActivity extends Activity {
             attr.setText("Esri, Maxar, Earthstar Geographics");
         }
         if (placesOverlay != null) placesOverlay.setEnabled(ru);
+        updateCoords();
         map.invalidate();
     }
 
@@ -760,9 +765,10 @@ public class MapActivity extends Activity {
                 .show();
     }
 
-    // ---------- Сетка СК-42 ----------
+    // ---------- Сетка СК-42, круг-компас, плашки ----------
 
     private GridOverlay gridOverlay;
+    private ReticleOverlay reticleOverlay;
 
     private boolean gridOn() {
         return LbsCore.prefs(this).getBoolean("gridOn", false);
@@ -778,23 +784,107 @@ public class MapActivity extends Activity {
     private void applyGrid() {
         boolean on = gridOn();
         gridOverlay.setEnabled(on);
-        findViewById(R.id.crosshair).setVisibility(on ? View.VISIBLE : View.GONE);
-        findViewById(R.id.coordPanel).setVisibility(on ? View.VISIBLE : View.GONE);
+        reticleOverlay.setReticle(on);
+        findViewById(R.id.coordCard).setVisibility(on ? View.VISIBLE : View.GONE);
+        findViewById(R.id.scaleCard).setVisibility(on ? View.VISIBLE : View.GONE);
         ((TextView) findViewById(R.id.btnGrid)).setTextColor(on ? getColor(R.color.accent) : getColor(R.color.text));
         updateCoords();
         map.invalidate();
     }
 
+    private static final double[] BARS = {10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000};
+
+    /** Обновляет плашки: координаты центра, масштаб, цель. */
     private void updateCoords() {
-        if (gridOverlay == null || !gridOn()) return;
+        if (reticleOverlay == null) return;
         GeoPoint c = (GeoPoint) map.getMapCenter();
-        double[] r = Sk42.fromWgs(c.getLatitude(), c.getLongitude());
-        double st = gridOverlay.step();
-        String stepTxt = st >= 1000 ? Math.round(st / 1000) + " км" : Math.round(st) + " м";
-        ((TextView) findViewById(R.id.coordText)).setText(
-                Sk42.format(c.getLatitude(), c.getLongitude()) + "\n"
-                        + String.format(Locale.US, "%.5f, %.5f", c.getLatitude(), c.getLongitude())
-                        + "   ·   зона " + (int) r[2] + " · сетка " + stepTxt);
+        double lat = c.getLatitude(), lon = c.getLongitude();
+        if (gridOn()) {
+            double[] r = Sk42.fromWgs(lat, lon);
+            ((TextView) findViewById(R.id.coordSk)).setText(
+                    "X = " + Math.round(r[0]) + "   Y = " + Math.round(r[1]));
+            ((TextView) findViewById(R.id.coordWgs)).setText(String.format(Locale.US, "%.6f° %s  %.6f° %s",
+                    Math.abs(lat), lat >= 0 ? "N" : "S", Math.abs(lon), lon >= 0 ? "E" : "W"));
+
+            // метров на пиксель: точка в 1 км к северу
+            org.osmdroid.views.Projection pj = map.getProjection();
+            android.graphics.Point p0 = pj.toPixels(c, null);
+            android.graphics.Point p1 = pj.toPixels(new GeoPoint(lat + 1000.0 / 111132.0, lon), null);
+            double pxPerM = Math.hypot(p1.x - p0.x, p1.y - p0.y) / 1000.0;
+            if (pxPerM > 0) {
+                double xdpi = getResources().getDisplayMetrics().xdpi;
+                long scale = Math.round((1 / pxPerM) * xdpi / 0.0254 / 100.0) * 100;
+                ((TextView) findViewById(R.id.scaleText)).setText(
+                        STYLE_SHORT[currentStyle] + "   1:" + Geo.group(scale));
+                double bar = BARS[0];
+                for (double m : BARS) if (m * pxPerM <= dp(110)) bar = m;
+                ((ScaleBarView) findViewById(R.id.scaleBar)).setBarPx((float) (bar * pxPerM));
+                ((TextView) findViewById(R.id.scaleBarText)).setText(Geo.dist(bar));
+            }
+            int maxZ = (int) map.getTileProvider().getTileSource().getMaximumZoomLevel();
+            ((TextView) findViewById(R.id.zoomText)).setText(Math.round(map.getZoomLevelDouble()) + "/" + maxZ);
+        }
+        updateTargetCard(lat, lon);
+    }
+
+    private static final String[] STYLE_SHORT = {"Схема", "Esri Спутник", "Esri Топо"};
+
+    // ---------- Цель (навигация к точке) ----------
+
+    private boolean hasTarget() {
+        return LbsCore.prefs(this).contains("targetLat");
+    }
+
+    private void setTarget(double lat, double lon, String name) {
+        LbsCore.prefs(this).edit()
+                .putString("targetLat", Double.toString(lat))
+                .putString("targetLon", Double.toString(lon))
+                .putString("targetName", name)
+                .apply();
+        reticleOverlay.setTarget(lat, lon);
+        updateCoords();
+        map.invalidate();
+        Toast.makeText(this, "Цель: " + name, Toast.LENGTH_SHORT).show();
+    }
+
+    private void clearTarget() {
+        LbsCore.prefs(this).edit().remove("targetLat").remove("targetLon").remove("targetName").apply();
+        reticleOverlay.clearTarget();
+        updateCoords();
+        map.invalidate();
+    }
+
+    private void restoreTarget() {
+        if (!hasTarget()) return;
+        try {
+            reticleOverlay.setTarget(Double.parseDouble(LbsCore.prefs(this).getString("targetLat", "0")),
+                    Double.parseDouble(LbsCore.prefs(this).getString("targetLon", "0")));
+        } catch (NumberFormatException e) {
+            clearTarget();
+        }
+    }
+
+    private void updateTargetCard(double lat, double lon) {
+        View card = findViewById(R.id.targetCard);
+        if (!hasTarget()) {
+            card.setVisibility(View.GONE);
+            return;
+        }
+        double tLat, tLon;
+        try {
+            tLat = Double.parseDouble(LbsCore.prefs(this).getString("targetLat", "0"));
+            tLon = Double.parseDouble(LbsCore.prefs(this).getString("targetLon", "0"));
+        } catch (NumberFormatException e) {
+            card.setVisibility(View.GONE);
+            return;
+        }
+        double[] inv = Geo.inverse(lat, lon, tLat, tLon);
+        double grid = Geo.gridBearing(lat, lon, tLat, tLon);
+        card.setVisibility(View.VISIBLE);
+        ((TextView) findViewById(R.id.targetMain)).setText(
+                "→ " + Geo.dist(inv[0]) + "   " + String.format(Locale.US, "%.1f°", inv[1]));
+        ((TextView) findViewById(R.id.targetSub)).setText(
+                LbsCore.prefs(this).getString("targetName", "") + " · дир. угол " + Geo.mils(grid));
     }
 
     private void copyCenterCoords() {
@@ -834,10 +924,7 @@ public class MapActivity extends Activity {
                         pointsOverlay.setExtra(null);
                         editPoint(null, p.lat, p.lon, p.name);
                     })
-                    .setNeutralButton("Убрать метку", (d, w) -> {
-                        pointsOverlay.setExtra(null);
-                        map.invalidate();
-                    })
+                    .setNeutralButton("⚑ Навести", (d, w) -> setTarget(p.lat, p.lon, p.name))
                     .setNegativeButton("Закрыть", null)
                     .show();
             return;
@@ -911,6 +998,20 @@ public class MapActivity extends Activity {
         coords.setTextIsSelectable(true);
         box.addView(coords);
 
+        final AlertDialog[] dlgRef = new AlertDialog[1];
+        Button nav = new Button(this);
+        nav.setText("⚑  Навести сюда (расстояние и азимут)");
+        nav.setAllCaps(false);
+        nav.setOnClickListener(v -> {
+            String nm = name.getText().toString().trim();
+            setTarget(lat, lon, nm.isEmpty() ? "Точка" : nm);
+            if (dlgRef[0] != null) dlgRef[0].dismiss();
+        });
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        nlp.topMargin = (int) dp(10);
+        box.addView(nav, nlp);
+
         AlertDialog.Builder b = new AlertDialog.Builder(this)
                 .setTitle(existing == null ? "Новая точка" : "Точка")
                 .setView(box)
@@ -941,7 +1042,7 @@ public class MapActivity extends Activity {
                     .setNegativeButton("Отмена", null)
                     .show());
         }
-        b.show();
+        dlgRef[0] = b.show();
     }
 
     private android.graphics.drawable.GradientDrawable swatch(int color, boolean selected) {

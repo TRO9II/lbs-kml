@@ -49,6 +49,20 @@
         <item name="android:layout_marginEnd">10dp</item>
         <item name="android:background">@color/divider</item>
     </style>
+    <style name="InfoCard">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">12dp</item>
+        <item name="android:layout_marginTop">6dp</item>
+        <item name="android:layout_marginEnd">72dp</item>
+        <item name="android:background">@drawable/bg_info</item>
+        <item name="android:elevation">4dp</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingTop">6dp</item>
+        <item name="android:paddingEnd">12dp</item>
+        <item name="android:paddingBottom">6dp</item>
+    </style>
     <style name="MapBtn">
         <item name="android:layout_width">48dp</item>
         <item name="android:layout_height">48dp</item>

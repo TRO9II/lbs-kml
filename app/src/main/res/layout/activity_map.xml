@@ -124,6 +124,122 @@
                 android:layout_height="wrap_content"
                 android:orientation="horizontal" />
         </HorizontalScrollView>
+
+        <!-- Плашки как в AlpineQuest: координаты, масштаб, цель -->
+        <LinearLayout
+            android:id="@+id/coordCard"
+            style="@style/InfoCard"
+            android:clickable="true"
+            android:focusable="true"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/coordSk"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:textColor="@color/text"
+                android:textSize="17sp" />
+
+            <TextView
+                android:id="@+id/coordWgs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#1E88E5"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/scaleCard"
+            style="@style/InfoCard"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/scaleText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/text"
+                android:textSize="14sp" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:gravity="bottom"
+                android:orientation="horizontal">
+
+                <ru.lbs.kml.ScaleBarView
+                    android:id="@+id/scaleBar"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="3dp" />
+
+                <TextView
+                    android:id="@+id/scaleBarText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:textColor="@color/text"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/zoomText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:textColor="@color/text2"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/targetCard"
+            style="@style/InfoCard"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:text="⚑"
+                android:textColor="#D633AA"
+                android:textSize="18sp" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/targetMain"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/text"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/targetSub"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/text2"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/targetClear"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="6dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Сбросить цель"
+                android:gravity="center"
+                android:text="✕"
+                android:textColor="@color/text2"
+                android:textSize="15sp" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- Справа: панель управления + масштаб -->
@@ -217,15 +333,6 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Прицел в центре (при сетке СК-42) -->
-    <ImageView
-        android:id="@+id/crosshair"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:layout_gravity="center"
-        android:src="@drawable/ic_crosshair"
-        android:visibility="gone" />
-
     <!-- Масштаб: справа внизу -->
     <LinearLayout
         android:id="@+id/zoomGroup"
@@ -306,33 +413,6 @@
                 android:text="Отмена"
                 android:textColor="@color/accent"
                 android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/coordPanel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="start"
-            android:layout_marginEnd="72dp"
-            android:layout_marginBottom="6dp"
-            android:background="@drawable/bg_float"
-            android:clickable="true"
-            android:elevation="6dp"
-            android:focusable="true"
-            android:orientation="vertical"
-            android:paddingStart="12dp"
-            android:paddingTop="6dp"
-            android:paddingEnd="12dp"
-            android:paddingBottom="6dp"
-            android:visibility="gone">
-
-            <TextView
-                android:id="@+id/coordText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:textColor="@color/text"
-                android:textSize="12sp" />
         </LinearLayout>
 
         <TextView
