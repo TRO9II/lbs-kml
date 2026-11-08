@@ -25,6 +25,7 @@ public class PlacesOverlay extends Overlay {
     private final Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Point pt = new Point();
+    private final Point sp = new Point();
     private final GeoPoint gp = new GeoPoint(0.0, 0.0);
     private Places places;
     private boolean[] occ = new boolean[0];
@@ -61,6 +62,7 @@ public class PlacesOverlay extends Overlay {
         Places p = places;
         int drawn = 0;
         float pad = 2 * density;
+        float orient = mv.getMapOrientation();
 
         for (int i = 0; i < p.n && drawn < MAX_LABELS; i++) {
             int r = p.rank[i];
@@ -70,6 +72,9 @@ public class PlacesOverlay extends Overlay {
 
             gp.setCoords(la, lo);
             pj.toPixels(gp, pt);
+            // экранная точка с учётом поворота карты — для проверки наложений
+            if (orient != 0f) pj.rotateAndScalePoint(pt.x, pt.y, sp);
+            else sp.set(pt.x, pt.y);
 
             float size = SIZE_DP[r] * density;
             fill.setTextSize(size);
@@ -81,8 +86,8 @@ public class PlacesOverlay extends Overlay {
             String label = p.name[i];
             float tw = fill.measureText(label);
             float dotR = (r == 0 ? 3.5f : r == 1 ? 3f : 2.2f) * density;
-            float x0 = pt.x - dotR - pad, x1 = pt.x + dotR + 4 * density + tw + pad;
-            float y0 = pt.y - size * 0.75f - pad, y1 = pt.y + size * 0.45f + pad;
+            float x0 = sp.x - dotR - pad, x1 = sp.x + dotR + 4 * density + tw + pad;
+            float y0 = sp.y - size * 0.75f - pad, y1 = sp.y + size * 0.45f + pad;
 
             int cx0 = (int) Math.floor(x0 / cell) + 1, cx1 = (int) Math.floor(x1 / cell) + 1;
             int cy0 = (int) Math.floor(y0 / cell) + 1, cy1 = (int) Math.floor(y1 / cell) + 1;
@@ -98,11 +103,14 @@ public class PlacesOverlay extends Overlay {
             for (int yy = cy0; yy <= cy1; yy++)
                 for (int xx = cx0; xx <= cx1; xx++) occ[yy * cols + xx] = true;
 
+            c.save();
+            if (orient != 0f) c.rotate(-orient, pt.x, pt.y); // подпись всегда ровно, как бы ни повернули карту
             c.drawCircle(pt.x, pt.y, dotR + 1.2f * density, halo);
             c.drawCircle(pt.x, pt.y, dotR, dot);
             float tx = pt.x + dotR + 4 * density, ty = pt.y + size * 0.35f;
             c.drawText(label, tx, ty, halo);
             c.drawText(label, tx, ty, fill);
+            c.restore();
             drawn++;
         }
     }

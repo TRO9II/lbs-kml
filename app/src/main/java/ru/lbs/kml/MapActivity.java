@@ -2,61 +2,57 @@ package ru.lbs.kml;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.WindowInsets;
-import android.text.Editable;
-import android.text.TextWatcher;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
-import android.widget.EditText;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
-import org.osmdroid.tileprovider.tilesource.XYTileSource;
-import org.osmdroid.events.MapListener;
-import org.osmdroid.tileprovider.cachemanager.CacheManager;
-import org.osmdroid.tileprovider.modules.SqlTileWriter;
-import org.osmdroid.events.ScrollEvent;
-import org.osmdroid.events.ZoomEvent;
-import org.osmdroid.views.overlay.Marker;
-
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLEncoder;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.osmdroid.config.Configuration;
 import org.osmdroid.config.IConfigurationProvider;
 import org.osmdroid.tileprovider.MapTileProviderBasic;
+import org.osmdroid.tileprovider.cachemanager.CacheManager;
+import org.osmdroid.tileprovider.modules.SqlTileWriter;
 import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase;
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory;
-import org.osmdroid.util.MapTileIndex;
+import org.osmdroid.tileprovider.tilesource.XYTileSource;
 import org.osmdroid.util.BoundingBox;
 import org.osmdroid.util.GeoPoint;
+import org.osmdroid.util.MapTileIndex;
 import org.osmdroid.views.CustomZoomButtonsController;
 import org.osmdroid.views.MapView;
+import org.osmdroid.views.overlay.Marker;
+import org.osmdroid.views.overlay.Overlay;
 import org.osmdroid.views.overlay.Polygon;
 import org.osmdroid.views.overlay.Polyline;
 import org.osmdroid.views.overlay.TilesOverlay;
+import org.osmdroid.views.overlay.gestures.RotationGestureOverlay;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/** Карта ЛБС по направлениям (областям). */
+/** Карта ЛБС по направлениям: подложки, поиск, русские подписи, поворот, офлайн. */
 public class MapActivity extends Activity {
 
     private static final String[] NAMES = {
@@ -77,6 +73,7 @@ public class MapActivity extends Activity {
     private MapView map;
     private final List<Button> chips = new ArrayList<>();
     private int selected = 0;
+    private String lbsDate = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -89,17 +86,16 @@ public class MapActivity extends Activity {
         File base = new File(getFilesDir(), "osmdroid");
         conf.setOsmdroidBasePath(base);
         conf.setOsmdroidTileCache(new File(base, "tiles"));
-        conf.setTileDownloadThreads((short) 8);          // по умолчанию 2 — отсюда медленная прогрузка
+        conf.setTileDownloadThreads((short) 8);
         conf.setTileFileSystemThreads((short) 8);
         conf.setTileDownloadMaxQueueSize((short) 120);
         conf.setTileFileSystemMaxQueueSize((short) 120);
         conf.setTileFileSystemCacheMaxBytes(3000L * 1024 * 1024);
         conf.setTileFileSystemCacheTrimBytes(2500L * 1024 * 1024);
-        conf.setExpirationExtendedDuration(60L * 24 * 60 * 60 * 1000); // скачанное считается свежим 60 дней
+        conf.setExpirationExtendedDuration(60L * 24 * 60 * 60 * 1000);
 
         setContentView(R.layout.activity_map);
         applyInsets(findViewById(R.id.mapRoot), findViewById(R.id.topBar), findViewById(R.id.bottomBar));
-        findViewById(R.id.btnBack).setOnClickListener(v -> finish());
 
         map = findViewById(R.id.map);
         map.setMultiTouchControls(true);
@@ -108,18 +104,22 @@ public class MapActivity extends Activity {
         map.setMaxZoomLevel(19.5);
         map.getZoomController().setVisibility(CustomZoomButtonsController.Visibility.NEVER);
 
+        // поворот карты двумя пальцами на 360°
+        RotationGestureOverlay rot = new RotationGestureOverlay(map);
+        rot.setEnabled(true);
+        map.getOverlays().add(rot);
+
+        findViewById(R.id.btnBack).setOnClickListener(v -> onBackPressed());
         findViewById(R.id.btnZoomIn).setOnClickListener(v -> map.getController().zoomIn());
         findViewById(R.id.btnZoomOut).setOnClickListener(v -> map.getController().zoomOut());
         findViewById(R.id.btnLayers).setOnClickListener(v -> chooseStyle());
-        findViewById(R.id.btnDownload).setOnClickListener(v -> chooseDownload());
-        findViewById(R.id.dlCancel).setOnClickListener(v -> cancelDownload());
         findViewById(R.id.btnLabels).setOnClickListener(v -> toggleLabels());
+        findViewById(R.id.btnDownload).setOnClickListener(v -> chooseDownload());
+        findViewById(R.id.btnInfo).setOnClickListener(v -> showInfo());
+        findViewById(R.id.btnCompass).setOnClickListener(v -> resetNorth());
+        findViewById(R.id.dlCancel).setOnClickListener(v -> cancelDownload());
         styleLabelsButton();
         setupSearch();
-        map.addMapListener(new MapListener() {
-            @Override public boolean onScroll(ScrollEvent e) { updateImageryInfo(); return false; }
-            @Override public boolean onZoom(ZoomEvent e) { updateImageryInfo(); return false; }
-        });
 
         KmlBuilder.Parsed data;
         try {
@@ -132,14 +132,128 @@ public class MapActivity extends Activity {
             finish();
             return;
         }
-        ((TextView) findViewById(R.id.mapDate)).setText("Снимок DeepState: " + data.date.replace(" o ", ", "));
+        lbsDate = data.date.replace(" o ", ", ");
         addOverlays(data);
         loadPlaces();
+        map.getOverlays().add(new CompassSync());
         applyStyle(LbsCore.prefs(this).getInt("mapStyle", STYLE_SAT));
         buildChips();
 
         if (savedInstanceState != null) selected = savedInstanceState.getInt("sel", 0);
         map.addOnFirstLayoutListener((v, l, t, r, b) -> zoomTo(selected, false));
+    }
+
+    private float dp(float v) {
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+    }
+
+    // ---------- Компас ----------
+
+    /** Невидимый слой: при каждой перерисовке поворачивает стрелку компаса вслед за картой. */
+    private final class CompassSync extends Overlay {
+        private float last = Float.NaN;
+
+        @Override
+        public void draw(Canvas c, MapView mv, boolean shadow) {
+            if (shadow) return;
+            float o = mv.getMapOrientation();
+            if (o != last) {
+                last = o;
+                View needle = findViewById(R.id.compassNeedle);
+                needle.setRotation(o);
+            }
+        }
+    }
+
+    private void resetNorth() {
+        if (map.getMapOrientation() == 0f) {
+            Toast.makeText(this, "Поворачивайте карту двумя пальцами", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        map.getController().animateTo(map.getMapCenter(), map.getZoomLevelDouble(), 400L, 0f);
+    }
+
+    // ---------- Слои линии ----------
+
+    private static List<GeoPoint> pts(double[][] l) {
+        List<GeoPoint> out = new ArrayList<>(l.length);
+        for (double[] p : l) out.add(new GeoPoint(p[1], p[0]));
+        return out;
+    }
+
+    private void addOverlays(KmlBuilder.Parsed d) {
+        boolean gray = LbsCore.optGray(this), diff = LbsCore.optDiff(this);
+        if (gray) {
+            for (double[][] g : d.gray) {
+                Polygon pg = new Polygon();
+                pg.setPoints(pts(g));
+                pg.getFillPaint().setColor(Color.argb(90, 120, 120, 120));
+                pg.getOutlinePaint().setColor(Color.argb(200, 110, 110, 110));
+                pg.getOutlinePaint().setStrokeWidth(dp(1));
+                map.getOverlays().add(pg);
+            }
+        }
+        if (diff) for (double[][] l : d.removed) map.getOverlays().add(line(l, Color.rgb(140, 140, 140), 3));
+        for (double[][] l : d.lines) map.getOverlays().add(line(l, Color.rgb(220, 0, 0), 3.5f));
+        if (diff) for (double[][] l : d.added) map.getOverlays().add(line(l, Color.rgb(255, 210, 0), 5));
+    }
+
+    private Polyline line(double[][] l, int color, float widthDp) {
+        Polyline pl = new Polyline();
+        pl.setPoints(pts(l));
+        Paint p = pl.getOutlinePaint();
+        p.setColor(color);
+        p.setStrokeWidth(dp(widthDp));
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeJoin(Paint.Join.ROUND);
+        p.setAntiAlias(true);
+        return pl;
+    }
+
+    // ---------- Направления ----------
+
+    private void buildChips() {
+        LinearLayout row = findViewById(R.id.chips);
+        for (int i = 0; i < NAMES.length; i++) {
+            Button b = new Button(this);
+            b.setText(NAMES[i]);
+            b.setAllCaps(false);
+            b.setTextSize(14);
+            b.setStateListAnimator(null);
+            b.setMinHeight(0);
+            b.setMinimumHeight(0);
+            b.setMinWidth(0);
+            b.setMinimumWidth(0);
+            b.setElevation(dp(3));
+            int ph = (int) dp(14), pv = (int) dp(8);
+            b.setPadding(ph, pv, ph, pv);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.setMarginEnd((int) dp(8));
+            lp.topMargin = (int) dp(2);
+            lp.bottomMargin = (int) dp(6);
+            final int idx = i;
+            b.setOnClickListener(v -> zoomTo(idx, true));
+            row.addView(b, lp);
+            chips.add(b);
+        }
+        styleChips();
+    }
+
+    private void styleChips() {
+        for (int i = 0; i < chips.size(); i++) {
+            Button b = chips.get(i);
+            boolean on = i == selected;
+            b.setBackgroundResource(on ? R.drawable.bg_chip_on : R.drawable.bg_chip);
+            b.setTextColor(on ? Color.WHITE : getColor(R.color.text));
+        }
+    }
+
+    private void zoomTo(int i, boolean animated) {
+        selected = i;
+        styleChips();
+        double[] b = BOX[i];
+        map.zoomToBoundingBox(new BoundingBox(b[0], b[1], b[2], b[3]), animated, (int) dp(24));
     }
 
     // ---------- Подложка ----------
@@ -164,15 +278,13 @@ public class MapActivity extends Activity {
     private static final OnlineTileSourceBase SAT = new EsriSource("EsriImagery", "World_Imagery", ".jpg");
     private static final OnlineTileSourceBase TOPO = new EsriSource("EsriTopo", "World_Topo_Map", ".jpg");
     private static final OnlineTileSourceBase LABELS = new EsriSource("EsriLabels", "Reference/World_Boundaries_and_Places", ".png");
-
-    private TilesOverlay labels;
-
     private static final OnlineTileSourceBase CARTO_NOLABELS = new XYTileSource("CartoVoyagerNoLabels",
             0, 19, 256, ".png", new String[]{
             "https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/",
             "https://b.basemaps.cartocdn.com/rastertiles/voyager_nolabels/",
             "https://c.basemaps.cartocdn.com/rastertiles/voyager_nolabels/"});
 
+    private TilesOverlay labels;
     private int currentStyle = STYLE_SAT;
 
     private void applyStyle(int style) {
@@ -186,20 +298,17 @@ public class MapActivity extends Activity {
             labels = null;
         }
         boolean ru = labelsOn();
-        // спутник — без растягивания под плотность экрана (иначе размыто); схемы — с ним (крупнее подписи)
+        // спутник — без растягивания под плотность экрана (иначе размыто)
         map.setTilesScaledToDpi(style != STYLE_SAT);
-        updateImageryInfo();
         if (style == STYLE_SCHEME) {
-            // с русскими подписями — схема без своих подписей, чтобы не дублировать
             map.setTileSource(ru ? CARTO_NOLABELS : TileSourceFactory.MAPNIK);
-            attr.setText(ru ? "© OpenStreetMap, © CARTO" : "© участники OpenStreetMap");
+            attr.setText(ru ? "© OpenStreetMap, © CARTO" : "© OpenStreetMap");
         } else if (style == STYLE_TOPO) {
             map.setTileSource(TOPO);
             attr.setText("Esri, HERE, Garmin, USGS, © OpenStreetMap");
         } else {
             map.setTileSource(SAT);
             if (!ru) {
-                // английские подписи Esri, если русские выключены
                 MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), LABELS);
                 labels = new TilesOverlay(prov, getApplicationContext());
                 labels.setLoadingBackgroundColor(Color.TRANSPARENT);
@@ -212,88 +321,99 @@ public class MapActivity extends Activity {
         map.invalidate();
     }
 
-    // ---------- Дата спутникового снимка ----------
-
-    private final Handler infoHandler = new Handler(Looper.getMainLooper());
-    private final Runnable infoTask = this::queryImageryDate;
-    private int infoSeq = 0;
-
-    private void updateImageryInfo() {
-        infoHandler.removeCallbacks(infoTask);
-        TextView t = findViewById(R.id.imageryInfo);
-        if (currentStyle != STYLE_SAT) {
-            t.setVisibility(View.GONE);
-            return;
-        }
-        infoHandler.postDelayed(infoTask, 1200);
+    private void chooseStyle() {
+        new AlertDialog.Builder(this)
+                .setTitle("Подложка карты")
+                .setSingleChoiceItems(STYLE_NAMES, currentStyle, (d, which) -> {
+                    applyStyle(which);
+                    d.dismiss();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
     }
 
-    /** Спрашивает у Esri дату и разрешение снимка в центре экрана. */
-    private void queryImageryDate() {
-        TextView t = findViewById(R.id.imageryInfo);
+    // ---------- Информация: даты и легенда ----------
+
+    private void showInfo() {
+        final String head = "ЛБС (DeepState): " + lbsDate + "\n";
+        final String legend = "\n━  ЛБС — красная линия\n"
+                + (LbsCore.optDiff(this) ? "━  Изменения — жёлтая (новое), серая (прежнее)\n" : "")
+                + (LbsCore.optGray(this) ? "▮  Серая зона — статус неизвестен\n" : "")
+                + "\nПоворот: двумя пальцами. Компас — вернуть на север.";
+        final AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("О карте")
+                .setMessage(head + (currentStyle == STYLE_SAT ? "Спутник: загружаю дату снимка…\n" : "") + legend)
+                .setPositiveButton("OK", null)
+                .show();
+        if (currentStyle != STYLE_SAT) return;
+        queryImageryDate(text -> {
+            if (dlg.isShowing()) dlg.setMessage(head + text + "\n" + legend);
+        });
+    }
+
+    private interface TextCallback {
+        void on(String text);
+    }
+
+    /** Дата и разрешение спутникового снимка Esri в центре экрана. */
+    private void queryImageryDate(TextCallback cb) {
         if (map.getZoomLevelDouble() < 11) {
-            t.setVisibility(View.VISIBLE);
-            t.setText("Приблизьте карту, чтобы увидеть дату снимка");
+            cb.on("Спутник: приблизьте карту, чтобы узнать дату снимка");
             return;
         }
-        final int seq = ++infoSeq;
         final GeoPoint c = (GeoPoint) map.getMapCenter();
         final BoundingBox bb = map.getBoundingBox();
         final int w = Math.max(1, map.getWidth()), h = Math.max(1, map.getHeight());
         new Thread(() -> {
-            String text;
+            String text = null;
             try {
                 String url = ESRI + "World_Imagery/MapServer/identify?geometryType=esriGeometryPoint&sr=4326"
                         + "&layers=top&tolerance=1&returnGeometry=false&f=json"
                         + "&geometry=" + c.getLongitude() + "," + c.getLatitude()
                         + "&mapExtent=" + bb.getLonWest() + "," + bb.getLatSouth() + "," + bb.getLonEast() + "," + bb.getLatNorth()
                         + "&imageDisplay=" + w + "," + h + ",96";
-                HttpURLConnection con = (HttpURLConnection) new URL(url).openConnection();
-                con.setRequestProperty("User-Agent", getPackageName());
-                con.setConnectTimeout(10000);
-                con.setReadTimeout(15000);
-                String body;
-                try (InputStream in = con.getInputStream()) {
-                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                    byte[] buf = new byte[8192];
-                    int k;
-                    while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
-                    body = bo.toString("UTF-8");
-                }
-                JSONArray res = new JSONObject(body).optJSONArray("results");
-                text = null;
+                JSONArray res = new JSONObject(httpGet(url)).optJSONArray("results");
                 if (res != null) {
                     for (int i = 0; i < res.length() && text == null; i++) {
                         JSONObject a = res.getJSONObject(i).optJSONObject("attributes");
                         if (a == null) continue;
                         String d = a.optString("DATE (YYYYMMDD)", "");
                         if (d.length() != 8) continue;
-                        String date = d.substring(6, 8) + "." + d.substring(4, 6) + "." + d.substring(0, 4);
-                        String resM = a.optString("RESOLUTION (M)", "");
-                        String src = a.optString("SOURCE", "");
-                        StringBuilder sb = new StringBuilder("Спутниковый снимок: ").append(date);
-                        if (!resM.isEmpty()) {
-                            try {
-                                double m = Double.parseDouble(resM);
-                                sb.append(" · ").append(m < 1 ? Math.round(m * 100) + " см" : (Math.round(m * 10) / 10.0) + " м");
-                            } catch (NumberFormatException ignored) {
-                            }
+                        StringBuilder sb = new StringBuilder("Спутник (центр карты): ")
+                                .append(d.substring(6, 8)).append('.').append(d.substring(4, 6)).append('.').append(d.substring(0, 4));
+                        try {
+                            double m = Double.parseDouble(a.optString("RESOLUTION (M)", ""));
+                            sb.append(" · ").append(m < 1 ? Math.round(m * 100) + " см" : (Math.round(m * 10) / 10.0) + " м");
+                        } catch (NumberFormatException ignored) {
                         }
+                        String src = a.optString("SOURCE", "");
                         if (!src.isEmpty()) sb.append(" · ").append(src);
                         text = sb.toString();
                     }
                 }
-                if (text == null) text = "Дата снимка неизвестна";
+                if (text == null) text = "Спутник: дата снимка неизвестна";
             } catch (Exception e) {
-                text = "Дата снимка: нет связи";
+                text = "Спутник: нет связи, дата неизвестна";
             }
             final String out = text;
             runOnUiThread(() -> {
-                if (seq != infoSeq || isFinishing() || currentStyle != STYLE_SAT) return;
-                t.setVisibility(View.VISIBLE);
-                t.setText(out);
+                if (!isFinishing()) cb.on(out);
             });
         }).start();
+    }
+
+    private String httpGet(String url) throws Exception {
+        HttpURLConnection con = (HttpURLConnection) new URL(url).openConnection();
+        con.setRequestProperty("User-Agent", getPackageName() + " (https://github.com/TRO9II/lbs-kml)");
+        con.setConnectTimeout(12000);
+        con.setReadTimeout(20000);
+        try (InputStream in = con.getInputStream()) {
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int k;
+            while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+            return bo.toString("UTF-8");
+        }
     }
 
     // ---------- Русские подписи ----------
@@ -330,7 +450,7 @@ public class MapActivity extends Activity {
                     places = p;
                     placesOverlay.setPlaces(p);
                     map.invalidate();
-                    if (searchBox != null && searchBox.getText().length() > 0) runLocalSearch();
+                    if (searchBox.getVisibility() == View.VISIBLE && searchBox.getText().length() > 0) runLocalSearch();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> Toast.makeText(this, "Список населённых пунктов не загрузился",
@@ -351,7 +471,7 @@ public class MapActivity extends Activity {
         searchBox = findViewById(R.id.searchBox);
         results = findViewById(R.id.results);
         resultsScroll = findViewById(R.id.resultsScroll);
-        findViewById(R.id.btnSearch).setOnClickListener(v -> openSearch(true));
+        findViewById(R.id.searchHint).setOnClickListener(v -> openSearch(true));
         findViewById(R.id.btnSearchClose).setOnClickListener(v -> openSearch(false));
         searchBox.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
@@ -361,20 +481,23 @@ public class MapActivity extends Activity {
         searchBox.setOnEditorActionListener((v, actionId, ev) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
                 String q = searchBox.getText().toString().trim();
-                if (places != null && !places.search(q, 1).isEmpty()) {
-                    showPlace(places.search(q, 1).get(0));
-                } else if (!q.isEmpty()) {
-                    searchOnline(q);
-                }
+                List<Integer> hit = places != null ? places.search(q, 1) : new ArrayList<>();
+                if (!hit.isEmpty()) showPlace(hit.get(0));
+                else if (!q.isEmpty()) searchOnline(q);
                 return true;
             }
             return false;
         });
     }
 
+    private boolean searchOpen() {
+        return searchBox.getVisibility() == View.VISIBLE;
+    }
+
     private void openSearch(boolean open) {
-        findViewById(R.id.titleRow).setVisibility(open ? View.GONE : View.VISIBLE);
-        findViewById(R.id.searchRow).setVisibility(open ? View.VISIBLE : View.GONE);
+        findViewById(R.id.searchHint).setVisibility(open ? View.GONE : View.VISIBLE);
+        searchBox.setVisibility(open ? View.VISIBLE : View.GONE);
+        findViewById(R.id.btnSearchClose).setVisibility(open ? View.VISIBLE : View.GONE);
         InputMethodManager imm = getSystemService(InputMethodManager.class);
         if (open) {
             searchBox.requestFocus();
@@ -400,22 +523,23 @@ public class MapActivity extends Activity {
             addResultRow("Загружаю список…", "", null);
             return;
         }
-        List<Integer> hits = places.search(q, 30);
-        for (int i : hits) {
+        for (int i : places.search(q, 30)) {
             final int idx = i;
             addResultRow(places.name[i], places.subtitle(i), v -> showPlace(idx));
         }
         final String query = q;
-        addResultRow("🌐 Искать «" + q + "» в интернете", "OpenStreetMap Nominatim", v -> searchOnline(query));
+        addResultRow("🌐  Искать «" + q + "» в интернете", "OpenStreetMap Nominatim", v -> searchOnline(query));
     }
 
     private void addResultRow(String title, String sub, View.OnClickListener click) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
-        int ph = (int) dp(16), pv = (int) dp(10);
+        int ph = (int) dp(18), pv = (int) dp(11);
         row.setPadding(ph, pv, ph, pv);
         if (click != null) {
-            row.setBackgroundResource(resolveSelectable());
+            TypedValue tv = new TypedValue();
+            getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
+            row.setBackgroundResource(tv.resourceId);
             row.setOnClickListener(click);
         }
         TextView t = new TextView(this);
@@ -431,12 +555,6 @@ public class MapActivity extends Activity {
             row.addView(st);
         }
         results.addView(row);
-    }
-
-    private int resolveSelectable() {
-        TypedValue tv = new TypedValue();
-        getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
-        return tv.resourceId;
     }
 
     private void showPlace(int i) {
@@ -467,26 +585,15 @@ public class MapActivity extends Activity {
             List<String[]> out = new ArrayList<>();
             String err = null;
             try {
-                URL url = new URL("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=15"
-                        + "&accept-language=ru&countrycodes=ua,ru&q=" + URLEncoder.encode(q, "UTF-8"));
-                HttpURLConnection con = (HttpURLConnection) url.openConnection();
-                con.setRequestProperty("User-Agent", getPackageName() + " (https://github.com/TRO9II/lbs-kml)");
-                con.setConnectTimeout(15000);
-                con.setReadTimeout(20000);
-                try (InputStream in = con.getInputStream()) {
-                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                    byte[] buf = new byte[8192];
-                    int k;
-                    while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
-                    JSONArray arr = new JSONArray(bo.toString("UTF-8"));
-                    for (int j = 0; j < arr.length(); j++) {
-                        JSONObject o = arr.getJSONObject(j);
-                        String disp = o.optString("display_name");
-                        int comma = disp.indexOf(',');
-                        out.add(new String[]{comma > 0 ? disp.substring(0, comma) : disp,
-                                comma > 0 ? disp.substring(comma + 1).trim() : "",
-                                o.optString("lat"), o.optString("lon")});
-                    }
+                JSONArray arr = new JSONArray(httpGet("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=15"
+                        + "&accept-language=ru&countrycodes=ua,ru&q=" + URLEncoder.encode(q, "UTF-8")));
+                for (int j = 0; j < arr.length(); j++) {
+                    JSONObject o = arr.getJSONObject(j);
+                    String disp = o.optString("display_name");
+                    int comma = disp.indexOf(',');
+                    out.add(new String[]{comma > 0 ? disp.substring(0, comma) : disp,
+                            comma > 0 ? disp.substring(comma + 1).trim() : "",
+                            o.optString("lat"), o.optString("lon")});
                 }
             } catch (Exception e) {
                 err = "Нет связи с сервером поиска";
@@ -510,18 +617,6 @@ public class MapActivity extends Activity {
         onlineSearch.start();
     }
 
-    private void chooseStyle() {
-        int cur = LbsCore.prefs(this).getInt("mapStyle", STYLE_SAT);
-        new AlertDialog.Builder(this)
-                .setTitle("Подложка карты")
-                .setSingleChoiceItems(STYLE_NAMES, cur, (d, which) -> {
-                    applyStyle(which);
-                    d.dismiss();
-                })
-                .setNegativeButton("Отмена", null)
-                .show();
-    }
-
     // ---------- Скачивание области для офлайна ----------
 
     private static final int MAX_TILES = 25000;
@@ -536,7 +631,6 @@ public class MapActivity extends Activity {
         return m >= 1024 ? String.format(Locale.US, "%.1f ГБ", m / 1024) : Math.max(1, Math.round(m)) + " МБ";
     }
 
-    /** Примерный размер одного тайла, байт. */
     private int tileBytes() {
         return currentStyle == STYLE_SAT ? 20000 : currentStyle == STYLE_TOPO ? 16000 : 9000;
     }
@@ -561,17 +655,17 @@ public class MapActivity extends Activity {
         final BoundingBox bb = map.getBoundingBox();
         final int zMin = 8;
         final int[] zMaxes = {15, 16, 17, 18};
-        final String[] labels = new String[zMaxes.length];
+        final String[] items = new String[zMaxes.length];
         final int[] counts = new int[zMaxes.length];
         for (int i = 0; i < zMaxes.length; i++) {
             counts[i] = cm.possibleTilesInArea(bb, zMin, zMaxes[i]);
             String detail = zMaxes[i] <= 15 ? "обзор" : zMaxes[i] == 16 ? "сёла" : zMaxes[i] == 17 ? "улицы" : "максимум, дома";
-            labels[i] = "До уровня " + zMaxes[i] + " (" + detail + ") — " + mb((double) counts[i] * tileBytes())
+            items[i] = "До уровня " + zMaxes[i] + " (" + detail + ") — " + mb((double) counts[i] * tileBytes())
                     + (counts[i] > MAX_TILES ? " · слишком много, приблизьте" : "");
         }
         new AlertDialog.Builder(this)
                 .setTitle("Скачать видимую область")
-                .setItems(labels, (d, which) -> {
+                .setItems(items, (d, which) -> {
                     if (counts[which] > MAX_TILES) {
                         Toast.makeText(this, "Слишком большая область — приблизьте карту или выберите уровень ниже",
                                 Toast.LENGTH_LONG).show();
@@ -644,91 +738,7 @@ public class MapActivity extends Activity {
                 .show();
     }
 
-    private float dp(float v) {
-        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
-    }
-
-    private static List<GeoPoint> pts(double[][] l) {
-        List<GeoPoint> out = new ArrayList<>(l.length);
-        for (double[] p : l) out.add(new GeoPoint(p[1], p[0]));
-        return out;
-    }
-
-    private void addOverlays(KmlBuilder.Parsed d) {
-        boolean gray = LbsCore.optGray(this), diff = LbsCore.optDiff(this);
-        if (gray) {
-            for (double[][] g : d.gray) {
-                Polygon pg = new Polygon();
-                pg.setPoints(pts(g));
-                pg.getFillPaint().setColor(Color.argb(90, 120, 120, 120));
-                pg.getOutlinePaint().setColor(Color.argb(200, 110, 110, 110));
-                pg.getOutlinePaint().setStrokeWidth(dp(1));
-                map.getOverlays().add(pg);
-            }
-        }
-        if (diff) {
-            for (double[][] l : d.removed) map.getOverlays().add(line(l, Color.rgb(140, 140, 140), 3));
-        }
-        for (double[][] l : d.lines) map.getOverlays().add(line(l, Color.rgb(220, 0, 0), 3.5f));
-        if (diff) {
-            for (double[][] l : d.added) map.getOverlays().add(line(l, Color.rgb(255, 210, 0), 5));
-        }
-        findViewById(R.id.legendDiff).setVisibility(diff ? View.VISIBLE : View.GONE);
-        findViewById(R.id.legendGray).setVisibility(gray ? View.VISIBLE : View.GONE);
-    }
-
-    private Polyline line(double[][] l, int color, float widthDp) {
-        Polyline pl = new Polyline();
-        pl.setPoints(pts(l));
-        Paint p = pl.getOutlinePaint();
-        p.setColor(color);
-        p.setStrokeWidth(dp(widthDp));
-        p.setStrokeCap(Paint.Cap.ROUND);
-        p.setStrokeJoin(Paint.Join.ROUND);
-        p.setAntiAlias(true);
-        return pl;
-    }
-
-    private void buildChips() {
-        LinearLayout row = findViewById(R.id.chips);
-        for (int i = 0; i < NAMES.length; i++) {
-            Button b = new Button(this);
-            b.setText(NAMES[i]);
-            b.setAllCaps(false);
-            b.setTextSize(14);
-            b.setStateListAnimator(null);
-            b.setMinHeight(0);
-            b.setMinimumHeight(0);
-            b.setMinWidth(0);
-            b.setMinimumWidth(0);
-            int ph = (int) dp(14), pv = (int) dp(8);
-            b.setPadding(ph, pv, ph, pv);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.setMarginEnd((int) dp(8));
-            final int idx = i;
-            b.setOnClickListener(v -> zoomTo(idx, true));
-            row.addView(b, lp);
-            chips.add(b);
-        }
-        styleChips();
-    }
-
-    private void styleChips() {
-        for (int i = 0; i < chips.size(); i++) {
-            Button b = chips.get(i);
-            boolean on = i == selected;
-            b.setBackgroundResource(on ? R.drawable.bg_chip_on : R.drawable.bg_chip);
-            b.setTextColor(on ? Color.WHITE : getColor(R.color.text));
-        }
-    }
-
-    private void zoomTo(int i, boolean animated) {
-        selected = i;
-        styleChips();
-        double[] b = BOX[i];
-        map.zoomToBoundingBox(new BoundingBox(b[0], b[1], b[2], b[3]), animated, (int) dp(24));
-    }
+    // ---------- Отступы под системные панели ----------
 
     private void applyInsets(View root, View top, View bottom) {
         final int tp = top.getPaddingTop(), bp = bottom.getPaddingBottom();
@@ -750,7 +760,7 @@ public class MapActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (findViewById(R.id.searchRow).getVisibility() == View.VISIBLE) {
+        if (searchOpen()) {
             openSearch(false);
             return;
         }
@@ -777,7 +787,6 @@ public class MapActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        infoHandler.removeCallbacksAndMessages(null);
         if (dlTask != null) dlTask.cancel(true);
         if (map != null) map.onDetach();
         super.onDestroy();
