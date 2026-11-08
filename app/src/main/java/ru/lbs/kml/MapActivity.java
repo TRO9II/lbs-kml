@@ -3055,7 +3055,9 @@ public class MapActivity extends Activity {
         findViewById(R.id.dlRow).setVisibility(View.VISIBLE);
         t.setText("Скачиваю область: 0%");
         if (roadsOverlay != null && prefs.getBoolean(OV_KEYS[0], false)) {
-            final List<String> keys = RoadsOverlay.keysFor(bb, 13, 80);
+            final List<String> keys = new ArrayList<>(RoadsOverlay.keysFor(bb, 11, 60));
+            keys.addAll(RoadsOverlay.keysFor(bb, 13, 150));
+            keys.addAll(RoadsOverlay.keysFor(bb, 15, 300));
             final RoadsOverlay ro = roadsOverlay;
             new Thread(() -> {
                 int ok = 0;

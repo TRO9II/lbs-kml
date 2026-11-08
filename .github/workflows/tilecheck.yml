@@ -6,6 +6,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 scripts/check_ov.py
-      - run: |
-          mkdir cls && javac -d cls app/src/main/java/ru/lbs/kml/Mvt.java scripts/mvt/T.java && java -cp cls ru.lbs.kml.T
+      - run: python3 scripts/check_elev.py

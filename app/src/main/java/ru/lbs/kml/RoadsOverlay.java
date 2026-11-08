@@ -42,31 +42,22 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Только дороги — тонкими линиями поверх любой подложки (данные OpenStreetMap через Overpass).
- * Крупные дороги грузятся квадратами z9, все остальные — квадратами z12. Скачанное хранится на диске.
+ * Только дороги — тонкими линиями поверх любой подложки.
+ * Данные OpenStreetMap в виде векторных тайлов OpenFreeMap (быстрый CDN, без ключа). Скачанное хранится на диске.
  */
 public class RoadsOverlay extends Overlay {
-
-    static final class Way {
-        byte cls;
-        float[] lat, lon;
-        float n, s, e, w;
-    }
 
     interface Status {
         void on(String text);
     }
 
-    private static final String[] ENDPOINTS = {
-            "https://overpass-api.de/api/interpreter",
-            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"};
-    private static final String MAJOR = "motorway|trunk|primary|secondary|motorway_link|trunk_link|primary_link|secondary_link";
-    private static final String ALL = MAJOR + "|tertiary|tertiary_link|unclassified|residential|living_street|track";
+    private static final String TILEJSON = "https://tiles.openfreemap.org/planet";
+    private volatile String tpl;
 
     // классы: 0 магистраль, 1 главная, 2 второстепенная, 3 местная, 4 улица, 5 грунтовка
     private static final int[] COLOR = {0xFFFF6D00, 0xFFFFA000, 0xFFFFD54F, 0xFFFFF59D, 0xEEFFFFFF, 0xFFD7CCC8};
     private static final float[] WIDTH = {3.4f, 3.0f, 2.4f, 2.0f, 1.5f, 1.4f};
-    private static final int[] MIN_ZOOM = {7, 8, 10, 12, 13, 13};
+    private static final int[] MIN_ZOOM = {0, 0, 0, 0, 11, 12};
 
     private final Context app;
     private final float d;
@@ -75,9 +66,9 @@ public class RoadsOverlay extends Overlay {
     private final Path path = new Path();
     private final Point pt = new Point();
     private final GeoPoint gp = new GeoPoint(0.0, 0.0);
-    private final Map<String, List<Way>> mem = Collections.synchronizedMap(new LinkedHashMap<String, List<Way>>(32, 0.75f, true) {
+    private final Map<String, List<Mvt.Line>> mem = Collections.synchronizedMap(new LinkedHashMap<String, List<Mvt.Line>>(32, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(Map.Entry<String, List<Way>> e) {
+        protected boolean removeEldestEntry(Map.Entry<String, List<Mvt.Line>> e) {
             return size() > 40;
         }
     });
@@ -127,22 +118,22 @@ public class RoadsOverlay extends Overlay {
         return new double[]{south, w, north, e};
     }
 
+    /** Масштаб тайлов данных для масштаба карты (тайл на экране 512–1024 px). */
+    static int dataZoom(double zoom) {
+        return (int) Math.max(8, Math.min(14, Math.floor(zoom) - 1));
+    }
+
     /** Ключи квадратов, нужных для области bb и масштаба zoom. */
     static List<String> keysFor(BoundingBox bb, double zoom, int limit) {
         List<String> out = new ArrayList<>();
-        boolean detail = zoom >= 12.5;
-        int z = detail ? 12 : 9;
-        if (zoom < 7) return out;
+        if (zoom < 8) return out;
+        int z = dataZoom(zoom);
         int x0 = tx(bb.getLonWest(), z), x1 = tx(bb.getLonEast(), z), y0 = ty(bb.getLatNorth(), z), y1 = ty(bb.getLatSouth(), z);
         for (int x = x0; x <= x1; x++)
             for (int y = y0; y <= y1; y++) {
                 if (out.size() >= limit) return out;
-                out.add((detail ? "B_" : "A_") + x + "_" + y);
+                out.add("V" + z + "_" + x + "_" + y);
             }
-        if (detail) { // крупные дороги на подложке тоже нужны, если квадрат z12 ещё не загружен
-            for (int x = tx(bb.getLonWest(), 9); x <= tx(bb.getLonEast(), 9); x++)
-                for (int y = ty(bb.getLatNorth(), 9); y <= ty(bb.getLatSouth(), 9); y++) out.add("A_" + x + "_" + y);
-        }
         return out;
     }
 
@@ -183,8 +174,8 @@ public class RoadsOverlay extends Overlay {
         }
         net.execute(() -> {
             try {
-                say("Загружаю дороги…");
-                List<Way> ws = fetch(key);
+                if (pending.size() > 2) say("Загружаю дороги…");
+                List<Mvt.Line> ws = fetch(key);
                 write(fl, ws);
                 mem.put(key, ws);
                 failedAt.remove(key);
@@ -206,73 +197,61 @@ public class RoadsOverlay extends Overlay {
         write(file(key), fetch(key));
     }
 
-    private List<Way> fetch(String key) throws Exception {
-        String[] p = key.split("_");
-        boolean detail = p[0].equals("B");
-        double[] b = bbox(Integer.parseInt(p[1]), Integer.parseInt(p[2]), detail ? 12 : 9);
-        String q = String.format(java.util.Locale.US,
-                "[out:json][timeout:120];way[\"highway\"~\"^(%s)$\"](%.5f,%.5f,%.5f,%.5f);out geom qt;",
-                detail ? ALL : MAJOR, b[0], b[1], b[2], b[3]);
-        Exception last = null;
-        for (String ep : ENDPOINTS) {
-            try {
-                HttpURLConnection con = (HttpURLConnection) new URL(ep).openConnection();
-                con.setRequestProperty("User-Agent", app.getPackageName() + " (https://github.com/TRO9II/lbs-kml)");
-                con.setConnectTimeout(15000);
-                con.setReadTimeout(150000);
-                con.setDoOutput(true);
-                try (OutputStream os = con.getOutputStream()) {
-                    os.write(("data=" + URLEncoder.encode(q, "UTF-8")).getBytes(StandardCharsets.UTF_8));
-                }
-                if (con.getResponseCode() != 200) throw new Exception("сервер " + con.getResponseCode());
-                ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                try (InputStream in = con.getInputStream()) {
-                    byte[] buf = new byte[32768];
-                    int k;
-                    while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
-                }
-                return parse(new String(bo.toByteArray(), StandardCharsets.UTF_8));
-            } catch (Exception e) {
-                last = e;
+    private String template() throws Exception {
+        if (tpl != null) return tpl;
+        File f = new File(app.getFilesDir(), "roads/tilejson.txt");
+        if (f.exists() && System.currentTimeMillis() - f.lastModified() < 3L * 24 * 3600 * 1000) {
+            tpl = new String(java.nio.file.Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
+            if (!tpl.isEmpty()) return tpl;
+        }
+        try {
+            JSONObject o = new JSONObject(new String(get(TILEJSON), StandardCharsets.UTF_8));
+            tpl = o.getJSONArray("tiles").getString(0);
+            f.getParentFile().mkdirs();
+            java.nio.file.Files.write(f.toPath(), tpl.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            if (f.exists()) tpl = new String(java.nio.file.Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
+            else throw e;
+        }
+        return tpl;
+    }
+
+    private byte[] get(String url) throws Exception {
+        HttpURLConnection con = (HttpURLConnection) new URL(url).openConnection();
+        con.setRequestProperty("User-Agent", app.getPackageName() + " (https://github.com/TRO9II/lbs-kml)");
+        con.setConnectTimeout(12000);
+        con.setReadTimeout(20000);
+        int code = con.getResponseCode();
+        if (code == 204 || code == 404) return new byte[0]; // пустой квадрат
+        if (code != 200) throw new Exception("сервер " + code);
+        ByteArrayOutputStream bo = new ByteArrayOutputStream();
+        try (InputStream in = con.getInputStream()) {
+            byte[] buf = new byte[32768];
+            int k;
+            while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+        }
+        byte[] b = bo.toByteArray();
+        if (b.length > 2 && (b[0] & 0xFF) == 0x1F && (b[1] & 0xFF) == 0x8B) {
+            try (java.util.zip.GZIPInputStream gz = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(b))) {
+                ByteArrayOutputStream o2 = new ByteArrayOutputStream();
+                byte[] buf = new byte[32768];
+                int k;
+                while ((k = gz.read(buf)) > 0) o2.write(buf, 0, k);
+                b = o2.toByteArray();
             }
         }
-        throw last == null ? new Exception("нет связи") : last;
+        return b;
     }
 
-    private static byte cls(String h) {
-        if (h.startsWith("motorway") || h.startsWith("trunk")) return 0;
-        if (h.startsWith("primary")) return 1;
-        if (h.startsWith("secondary")) return 2;
-        if (h.startsWith("tertiary") || h.equals("unclassified")) return 3;
-        if (h.equals("track")) return 5;
-        return 4;
+    private List<Mvt.Line> fetch(String key) throws Exception {
+        String[] p = key.substring(1).split("_");
+        int z = Integer.parseInt(p[0]), x = Integer.parseInt(p[1]), y = Integer.parseInt(p[2]);
+        String url = template().replace("{z}", p[0]).replace("{x}", p[1]).replace("{y}", p[2]);
+        byte[] b = get(url);
+        return b.length == 0 ? new ArrayList<>() : Mvt.roads(b, z, x, y);
     }
 
-    private static List<Way> parse(String json) throws Exception {
-        JSONArray els = new JSONObject(json).getJSONArray("elements");
-        List<Way> out = new ArrayList<>(els.length());
-        for (int i = 0; i < els.length(); i++) {
-            JSONObject o = els.getJSONObject(i);
-            JSONArray g = o.optJSONArray("geometry");
-            JSONObject tags = o.optJSONObject("tags");
-            if (g == null || g.length() < 2 || tags == null) continue;
-            Way w = new Way();
-            w.cls = cls(tags.optString("highway"));
-            int n = g.length();
-            w.lat = new float[n];
-            w.lon = new float[n];
-            for (int k = 0; k < n; k++) {
-                JSONObject q = g.getJSONObject(k);
-                w.lat[k] = (float) q.getDouble("lat");
-                w.lon[k] = (float) q.getDouble("lon");
-            }
-            bounds(w);
-            out.add(w);
-        }
-        return out;
-    }
-
-    private static void bounds(Way w) {
+    private static void bounds(Mvt.Line w) {
         w.n = -90; w.s = 90; w.e = -180; w.w = 180;
         for (int k = 0; k < w.lat.length; k++) {
             w.n = Math.max(w.n, w.lat[k]); w.s = Math.min(w.s, w.lat[k]);
@@ -280,11 +259,11 @@ public class RoadsOverlay extends Overlay {
         }
     }
 
-    private static void write(File f, List<Way> ws) throws Exception {
+    private static void write(File f, List<Mvt.Line> ws) throws Exception {
         File tmp = new File(f.getPath() + ".tmp");
         try (DataOutputStream o = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(tmp)))) {
             o.writeInt(ws.size());
-            for (Way w : ws) {
+            for (Mvt.Line w : ws) {
                 o.writeByte(w.cls);
                 o.writeInt(w.lat.length);
                 for (int k = 0; k < w.lat.length; k++) {
@@ -296,12 +275,12 @@ public class RoadsOverlay extends Overlay {
         if (!tmp.renameTo(f)) tmp.delete();
     }
 
-    private static List<Way> read(File f) throws Exception {
+    private static List<Mvt.Line> read(File f) throws Exception {
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(f)))) {
             int n = in.readInt();
-            List<Way> out = new ArrayList<>(n);
+            List<Mvt.Line> out = new ArrayList<>(n);
             for (int i = 0; i < n; i++) {
-                Way w = new Way();
+                Mvt.Line w = new Mvt.Line();
                 w.cls = in.readByte();
                 int m = in.readInt();
                 w.lat = new float[m];
@@ -324,9 +303,9 @@ public class RoadsOverlay extends Overlay {
         if (shadow) return;
         view = mv;
         double zoom = mv.getZoomLevelDouble();
-        if (zoom < 7) return;
+        if (zoom < 8) return;
         BoundingBox bb = mv.getBoundingBox();
-        List<String> keys = keysFor(bb, zoom, 12);
+        List<String> keys = keysFor(bb, zoom, 24);
         Projection pj = mv.getProjection();
         float sN = (float) bb.getLatNorth(), sS = (float) bb.getLatSouth(), sE = (float) bb.getLonEast(), sW = (float) bb.getLonWest();
         float zf = (float) Math.max(0.75, Math.min(1.25, (zoom - 10) / 6 + 0.8));
@@ -338,12 +317,12 @@ public class RoadsOverlay extends Overlay {
                 if (pass == 1) p.setColor(COLOR[cl]);
                 p.setPathEffect(pass == 1 && cl == 5 ? dash : null);
                 for (String k : keys) {
-                    List<Way> ws = mem.get(k);
+                    List<Mvt.Line> ws = mem.get(k);
                     if (ws == null) {
                         request(k);
                         continue;
                     }
-                    for (Way w : ws) {
+                    for (Mvt.Line w : ws) {
                         if (w.cls != cl || w.n < sS || w.s > sN || w.e < sW || w.w > sE) continue;
                         path.reset();
                         for (int i = 0; i < w.lat.length; i++) {
