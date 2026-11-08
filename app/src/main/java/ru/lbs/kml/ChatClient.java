@@ -69,8 +69,20 @@ final class ChatClient {
         }
     }
 
+    /** Участник на карте: последняя присланная им метка. */
+    static final class Member {
+        String dev = "", name = "";
+        double lat, lon;
+        float acc, heading = Float.NaN;
+        long t;       // когда снята координата (часы телефона участника)
+        long recv;    // когда сервер её получил
+        boolean off;  // участник выключил показ
+    }
+
     interface Listener {
         void onMessages(List<Msg> added);
+
+        default void onMembers() {}
 
         void onStatus(String status, boolean ok);
     }
@@ -86,6 +98,38 @@ final class ChatClient {
     private byte[] key;
     private String room = "", server = "";
     private long lastSeq;
+    private final java.util.Map<String, Member> members = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Участники с меткой на карте (кроме меня и выключивших показ). */
+    List<Member> members() {
+        List<Member> out = new ArrayList<>();
+        for (Member m : members.values()) if (!m.off && !m.dev.equals(deviceId())) out.add(m);
+        return out;
+    }
+
+    /** Отправить свою метку (lat/lon) или сообщить, что показ выключен (off=true). */
+    void sendLoc(double lat, double lon, float acc, float heading, boolean off) {
+        if (!configured()) return;
+        final String srv = server, rm = room, dev = deviceId();
+        new Thread(() -> {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("k", "loc");
+                o.put("f", callsign());
+                o.put("d", dev);
+                o.put("t", System.currentTimeMillis());
+                if (off) o.put("off", true);
+                else {
+                    o.put("la", Math.round(lat * 1e6) / 1e6);
+                    o.put("lo", Math.round(lon * 1e6) / 1e6);
+                    o.put("ac", Math.round(acc));
+                    if (!Float.isNaN(heading)) o.put("hd", Math.round(heading));
+                }
+                http("POST", srv + "/api/loc?room=" + rm + "&dev=" + dev, encrypt(o.toString()), 15000);
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
 
     ChatClient(Context c) {
         app = c.getApplicationContext();
@@ -189,6 +233,7 @@ final class ChatClient {
         key = null;
         server = "";
         room = "";
+        members.clear();
         synchronized (history) {
             history.clear();
         }
@@ -196,6 +241,7 @@ final class ChatClient {
 
     private void apply(String srv, byte[] k, String name) {
         stop();
+        members.clear();
         prefs.edit().putString("chatServer", srv)
                 .putString("chatKey", Base64.encodeToString(k, Base64.NO_WRAP))
                 .putString("chatGroup", name == null || name.trim().isEmpty() ? "Группа" : name.trim())
@@ -363,10 +409,12 @@ final class ChatClient {
         poller = new Thread(() -> {
             int backoff = 2;
             boolean wasOk = false;
+            boolean firstLocs = true;
             while (running && gen == my) {
                 try {
-                    String r = http("GET", srv + "/api/poll?room=" + rm + "&since=" + lastSeq + "&wait=25", null, 35000);
+                    String r = http("GET", srv + "/api/poll?room=" + rm + "&since=" + lastSeq + (firstLocs ? "&lsince=0&wait=0" : "&wait=25"), null, 35000);
                     if (gen != my) break;
+                    firstLocs = false;
                     JSONObject o = new JSONObject(r);
                     JSONArray arr = o.getJSONArray("msgs");
                     List<Msg> added = new ArrayList<>();
@@ -384,6 +432,32 @@ final class ChatClient {
                             // чужой или повреждённый блок — пропускаем
                         }
                     }
+                    JSONArray la = o.optJSONArray("locs");
+                    boolean memChanged = false;
+                    if (la != null) {
+                        for (int i = 0; i < la.length(); i++) {
+                            JSONObject e = la.getJSONObject(i);
+                            lastSeq = Math.max(lastSeq, e.optLong("s"));
+                            try {
+                                JSONObject p = new JSONObject(decrypt(e.getString("b")));
+                                Member m = new Member();
+                                m.dev = p.optString("d", e.optString("d"));
+                                m.name = p.optString("f");
+                                m.off = p.optBoolean("off", false);
+                                m.lat = p.optDouble("la", 0);
+                                m.lon = p.optDouble("lo", 0);
+                                m.acc = (float) p.optDouble("ac", 0);
+                                m.heading = p.has("hd") ? (float) p.optDouble("hd") : Float.NaN;
+                                m.t = p.optLong("t");
+                                m.recv = e.optLong("t");
+                                members.put(m.dev, m);
+                                memChanged = true;
+                            } catch (Exception bad) {
+                                // не наш ключ — пропускаем
+                            }
+                        }
+                    }
+                    if (memChanged) ui.post(() -> { if (listener != null) listener.onMembers(); });
                     if (o.optLong("last") < lastSeq) lastSeq = o.optLong("last"); // сервер очищен
                     prefs.edit().putLong("chatSeq", lastSeq).apply();
                     if (!added.isEmpty()) {

@@ -27,6 +27,16 @@ const (
 )
 
 var roomRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
+var devRe = regexp.MustCompile(`^[0-9a-z]{1,16}$`)
+
+const locTTL = 24 * time.Hour // метки старше суток не раздаём
+
+type loc struct {
+	D string `json:"d"`
+	S int64  `json:"s"`
+	T int64  `json:"t"`
+	B string `json:"b"`
+}
 
 type msg struct {
 	S int64  `json:"s"`
@@ -39,6 +49,7 @@ type room struct {
 	msgs   []msg
 	last   int64
 	wake   chan struct{}
+	locs   map[string]loc // последняя метка каждого телефона (только в памяти)
 	file   *os.File
 	logged int
 }
@@ -55,7 +66,7 @@ func (h *hub) get(id string) (*room, error) {
 	if r, ok := h.rooms[id]; ok {
 		return r, nil
 	}
-	r := &room{wake: make(chan struct{})}
+	r := &room{wake: make(chan struct{}), locs: map[string]loc{}}
 	path := filepath.Join(h.dir, id+".log")
 	if f, err := os.Open(path); err == nil {
 		sc := bufio.NewScanner(f)
@@ -166,6 +177,35 @@ func main() {
 		fmt.Fprintf(w, `{"s":%d,"t":%d}`, m.S, m.T)
 	})
 
+	// Метка на карте: хранится только последняя от каждого телефона, без истории.
+	http.HandleFunc("/api/loc", func(w http.ResponseWriter, req *http.Request) {
+		cors(w)
+		q := req.URL.Query()
+		id, dev := q.Get("room"), q.Get("dev")
+		if req.Method != http.MethodPost || !roomRe.MatchString(id) || !devRe.MatchString(dev) {
+			http.Error(w, `{"error":"bad request"}`, 400)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(req.Body, 4097))
+		if err != nil || len(body) == 0 || len(body) > 4096 {
+			http.Error(w, `{"error":"bad body"}`, 400)
+			return
+		}
+		r, err := h.get(id)
+		if err != nil {
+			http.Error(w, `{"error":"storage"}`, 500)
+			return
+		}
+		r.mu.Lock()
+		r.last++
+		l := loc{dev, r.last, time.Now().UnixMilli(), strings.TrimSpace(string(body))}
+		r.locs[dev] = l
+		close(r.wake)
+		r.wake = make(chan struct{})
+		r.mu.Unlock()
+		fmt.Fprintf(w, `{"s":%d}`, l.S)
+	})
+
 	http.HandleFunc("/api/poll", func(w http.ResponseWriter, req *http.Request) {
 		cors(w)
 		q := req.URL.Query()
@@ -175,6 +215,10 @@ func main() {
 			return
 		}
 		since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
+		lsince := since // метки: при первом запросе клиент просит все (lsince=0)
+		if v := q.Get("lsince"); v != "" {
+			lsince, _ = strconv.ParseInt(v, 10, 64)
+		}
 		wait, _ := strconv.Atoi(q.Get("wait"))
 		if wait < 0 || wait > maxWait {
 			wait = maxWait
@@ -196,13 +240,24 @@ func main() {
 			if len(out) > 500 {
 				out = out[:500]
 			}
+			locs := []loc{}
+			old := time.Now().Add(-locTTL).UnixMilli()
+			for d, l := range r.locs {
+				if l.T < old {
+					delete(r.locs, d)
+					continue
+				}
+				if l.S > lsince {
+					locs = append(locs, l)
+				}
+			}
 			last, wake := r.last, r.wake
 			r.mu.Unlock()
-			if len(out) > 0 || wait == 0 {
+			if len(out) > 0 || len(locs) > 0 || wait == 0 {
 				if out == nil {
 					out = []msg{}
 				}
-				json.NewEncoder(w).Encode(map[string]interface{}{"msgs": out, "last": last})
+				json.NewEncoder(w).Encode(map[string]interface{}{"msgs": out, "locs": locs, "last": last})
 				return
 			}
 			select {

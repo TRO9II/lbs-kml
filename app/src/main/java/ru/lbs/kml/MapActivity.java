@@ -175,6 +175,9 @@ public class MapActivity extends Activity {
         map.getOverlays().add(pathOverlay);
         pointsOverlay = new PointsOverlay(d);
         map.getOverlays().add(pointsOverlay);
+        membersOverlay = new MembersOverlay(d);
+        membersOverlay.setListener(this::showMember);
+        map.getOverlays().add(membersOverlay);
         myLoc = new MyLocationOverlay(d);
         map.getOverlays().add(myLoc);
         reticleOverlay = new ReticleOverlay(d);
@@ -3398,6 +3401,7 @@ public class MapActivity extends Activity {
             sensors.unregisterListener(stepListener);
         }
         gHandler.removeCallbacksAndMessages(null);
+        ageHandler.removeCallbacksAndMessages(null);
         if (tts != null) tts.shutdown();
         if (map != null) map.onDetach();
         super.onDestroy();
@@ -3489,6 +3493,7 @@ public class MapActivity extends Activity {
         if (track != null) appendTrack(l);
         if (navOn()) updateNav(l);
         if (guideOn()) guideLocation(l);
+        maybeShare(l);
         updateCoords();
         map.invalidate();
     }
@@ -5539,6 +5544,17 @@ public class MapActivity extends Activity {
     // ================= Чат группы =================
 
     private ChatClient chat;
+    private MembersOverlay membersOverlay;
+    private long lastShareAt;
+    private double[] lastShared;
+    private final Runnable ageTick = new Runnable() {
+        @Override
+        public void run() {
+            if (membersOverlay != null && !chat.members().isEmpty()) map.invalidate();
+            ageHandler.postDelayed(this, 30_000);
+        }
+    };
+    private final android.os.Handler ageHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private boolean chatOpen;
     private int chatUnread;
     private LinearLayout chatList;
@@ -5570,6 +5586,12 @@ public class MapActivity extends Activity {
             }
 
             @Override
+            public void onMembers() {
+                membersOverlay.setMembers(chat.members());
+                map.invalidate();
+            }
+
+            @Override
             public void onStatus(String status, boolean ok) {
                 if (chatStatus != null) {
                     chatStatus.setText((ok ? "● " : "○ ") + status);
@@ -5578,6 +5600,92 @@ public class MapActivity extends Activity {
             }
         });
         if (chat.configured() && !offline()) chat.start();
+        membersOverlay.setMembers(chat.members());
+        ageHandler.postDelayed(ageTick, 30_000);
+        if (prefs.getBoolean("shareLoc", false) && chat.configured() && hasLocPerm() && !locOn) startLocation(false);
+    }
+
+    // ---------- метки группы ----------
+
+    private boolean sharing() {
+        return prefs.getBoolean("shareLoc", false) && chat != null && chat.configured() && !offline();
+    }
+
+    /** Вызывается при каждой новой координате GPS. */
+    private void maybeShare(android.location.Location l) {
+        if (!sharing()) return;
+        long every = prefs.getInt("shareEvery", 60) * 1000L, now = System.currentTimeMillis();
+        boolean moved = lastShared != null && Geo.inverse(lastShared[0], lastShared[1], l.getLatitude(), l.getLongitude())[0] > 100;
+        if (now - lastShareAt < every && !(moved && now - lastShareAt > 10_000)) return;
+        if (l.getAccuracy() > 150) return;
+        lastShareAt = now;
+        lastShared = new double[]{l.getLatitude(), l.getLongitude()};
+        chat.sendLoc(l.getLatitude(), l.getLongitude(), l.getAccuracy(),
+                l.hasBearing() && l.getSpeed() > 0.8f ? l.getBearing() : Float.NaN, false);
+    }
+
+    private void setSharing(boolean on) {
+        prefs.edit().putBoolean("shareLoc", on).apply();
+        if (on) {
+            lastShareAt = 0;
+            if (!locOn) startLocation(false);
+            android.location.Location l = myLoc.getLocation();
+            if (l != null) maybeShare(l);
+            Toast.makeText(this, "Группа видит вас на карте, пока приложение открыто", Toast.LENGTH_LONG).show();
+        } else {
+            chat.sendLoc(0, 0, 0, Float.NaN, true);
+            Toast.makeText(this, "Показ местоположения выключен", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showMembers() {
+        List<ChatClient.Member> ms = chat.members();
+        sheet("На карте · " + ms.size());
+        if (ms.isEmpty()) {
+            emptyState(R.drawable.ic_my_location, "Пока никого",
+                    "Участники появятся здесь, когда включат «Показывать меня» в настройках группы.");
+            return;
+        }
+        android.location.Location me = myLoc.getLocation();
+        Collections.sort(ms, (a, b) -> Long.compare(b.recv, a.recv));
+        for (ChatClient.Member m : ms) {
+            View dot = new View(this);
+            GradientDrawable g = new GradientDrawable();
+            g.setShape(GradientDrawable.OVAL);
+            g.setColor(MembersOverlay.color(m.name));
+            dot.setBackground(g);
+            dot.setLayoutParams(new LinearLayout.LayoutParams((int) dp(14), (int) dp(14)));
+            String sub = MembersOverlay.age(m.recv) + (MembersOverlay.age(m.recv).equals("сейчас") ? "" : " назад");
+            if (me != null) sub += " · " + Geo.dist(Geo.inverse(me.getLatitude(), me.getLongitude(), m.lat, m.lon)[0]) + " от вас";
+            hRow(dot, m.name.isEmpty() ? "без позывного" : m.name, sub, null, v -> {
+                closeSheet();
+                follow = false;
+                map.getController().animateTo(new GeoPoint(m.lat, m.lon), Math.max(14.0, map.getZoomLevelDouble()), 600L);
+            });
+        }
+    }
+
+    private void showMember(ChatClient.Member m) {
+        sheet(m.name.isEmpty() ? "Участник" : m.name);
+        LinearLayout card = hCard();
+        addKV(card, "Обновлено", MembersOverlay.age(m.recv) + (MembersOverlay.age(m.recv).equals("сейчас") ? "" : " назад")
+                + " (" + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(m.recv)) + ")");
+        if (m.acc > 0) addKV(card, "Точность GPS", "±" + Math.round(m.acc) + " м");
+        android.location.Location me = myLoc.getLocation();
+        if (me != null) {
+            double[] inv = Geo.inverse(me.getLatitude(), me.getLongitude(), m.lat, m.lon);
+            addKV(card, "От меня", Geo.dist(inv[0]) + " · " + String.format(Locale.US, "%.0f°", inv[1]));
+        }
+        sheetContent.addView(card);
+        coordsCard(m.lat, m.lon);
+        actionRow(
+                vAction(R.drawable.ic_nav, "Вести", true, v -> {
+                    closeSheet();
+                    startNav(Collections.singletonList(new double[]{m.lat, m.lon}), 0, m.name);
+                }),
+                vAction(R.drawable.ic_flag, "Навести", false, v -> { closeSheet(); setTarget(m.lat, m.lon, m.name); }),
+                vAction(R.drawable.ic_chat, "В чат", false, v -> openChat()),
+                vAction(R.drawable.ic_add, "В точки", false, v -> editPoint(null, m.lat, m.lon, m.name)));
     }
 
     private void showChatBadge() {
@@ -5617,8 +5725,20 @@ public class MapActivity extends Activity {
         me.setTextColor(getColor(R.color.hud_text2));
         me.setPadding((int) dp(8), 0, (int) dp(8), 0);
         head.addView(me);
+        TextView people = new TextView(this);
+        int nOn = chat.members().size();
+        people.setText((sharing() ? "📍 " : "") + "На карте: " + nOn);
+        people.setTextSize(12);
+        people.setTextColor(sharing() ? 0xFF66BB6A : getColor(R.color.hud_text));
+        people.setBackgroundResource(R.drawable.bg_sheet_chip);
+        int pp = (int) dp(10);
+        people.setPadding(pp, (int) dp(6), pp, (int) dp(6));
+        people.setOnClickListener(v -> { chatOpen = false; sheetFooter.setVisibility(View.GONE); showMembers(); });
+        head.addView(people);
         ImageView set = hIconButton(R.drawable.ic_menu, getColor(R.color.hud_text), v -> chatSettings());
-        head.addView(set);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams((int) dp(40), (int) dp(40));
+        slp.setMarginStart((int) dp(6));
+        head.addView(set, slp);
         sheetContent.addView(head);
 
         chatList = new LinearLayout(this);
@@ -5908,13 +6028,33 @@ public class MapActivity extends Activity {
         int tx = getColor(R.color.hud_text);
         hRow(hIcon(R.drawable.ic_qr, tx, 22), "Пригласить", "Показать QR-код с ключом группы", null, v -> showInvite());
         hRow(hIcon(R.drawable.ic_chat, tx, 22), "Позывной", chat.callsign(), null, v -> askCallsign(this::openChat));
+        hSection("МОЁ МЕСТОПОЛОЖЕНИЕ");
+        hToggle("Показывать меня на карте группы", "Только пока приложение открыто. Координаты шифруются",
+                prefs.getBoolean("shareLoc", false), this::setSharing);
+        final double[] ev = {prefs.getInt("shareEvery", 60)};
+        heightChipsUnits("Как часто отправлять", new double[]{30, 60, 300, 900}, ev, "",
+                v -> prefs.edit().putInt("shareEvery", (int) v).apply());
+        LinearLayout lastRow = (LinearLayout) sheetContent.getChildAt(sheetContent.getChildCount() - 1);
+        String[] evl = {"30 с", "1 мин", "5 мин", "15 мин"};
+        for (int i = 0; i < lastRow.getChildCount(); i++) ((TextView) lastRow.getChildAt(i)).setText(evl[i]);
+        TextView warn = new TextView(this);
+        warn.setText("Каждая отправка — выход телефона в сеть. Реже — меньше заметность и расход батареи.");
+        warn.setTextColor(getColor(R.color.hud_text2));
+        warn.setTextSize(12);
+        warn.setPadding((int) dp(4), (int) dp(6), (int) dp(4), (int) dp(4));
+        sheetContent.addView(warn);
+        hRow(hIcon(R.drawable.ic_my_location, tx, 22), "Кто на карте", chat.members().size() + " участн.", null, v -> showMembers());
+        hSection("ГРУППА");
         hRow(hIcon(R.drawable.ic_info, tx, 22), "Сервер", chat.server(), null, null);
         hRow(hIcon(R.drawable.ic_close, 0xFFFF6B60, 22), "Выйти из группы", "Переписка на этом телефоне удалится", null, v ->
                 new AlertDialog.Builder(this)
                         .setTitle("Выйти из группы?")
                         .setMessage("Чтобы вернуться, понадобится приглашение.")
                         .setPositiveButton("Выйти", (d, w) -> {
+                            if (prefs.getBoolean("shareLoc", false)) chat.sendLoc(0, 0, 0, Float.NaN, true);
+                            prefs.edit().putBoolean("shareLoc", false).apply();
                             chat.leave();
+                            membersOverlay.setMembers(new ArrayList<>());
                             closeSheet();
                             Toast.makeText(this, "Вы вышли из группы", Toast.LENGTH_SHORT).show();
                         })
