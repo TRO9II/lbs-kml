@@ -515,6 +515,29 @@ public class MapActivity extends Activity {
     }
 
     private static final OnlineTileSourceBase SAT = new EsriSource("EsriImagery", "World_Imagery", ".jpg");
+
+    /** Снимок из архива Esri Wayback (конкретный выпуск). */
+    private static final class WaybackSource extends OnlineTileSourceBase {
+        private final String tpl;
+
+        WaybackSource(int num, String tpl) {
+            super("Wayback" + num, 0, 18, 256, ".jpg", new String[]{tpl});
+            this.tpl = tpl;
+        }
+
+        @Override
+        public String getTileURLString(long idx) {
+            return tpl.replace("{level}", Integer.toString(MapTileIndex.getZoom(idx)))
+                    .replace("{row}", Integer.toString(MapTileIndex.getY(idx)))
+                    .replace("{col}", Integer.toString(MapTileIndex.getX(idx)));
+        }
+    }
+
+    private OnlineTileSourceBase satSource() {
+        int num = prefs.getInt("wbNum", 0);
+        String url = prefs.getString("wbUrl", "");
+        return num > 0 && !url.isEmpty() ? new WaybackSource(num, url) : SAT;
+    }
     private static final OnlineTileSourceBase TOPO = new EsriSource("EsriTopo", "World_Topo_Map", ".jpg");
     private static final OnlineTileSourceBase LABELS = new EsriSource("EsriLabels", "Reference/World_Boundaries_and_Places", ".png");
     private static final OnlineTileSourceBase CARTO_NOLABELS = new XYTileSource("CartoVoyagerNoLabels",
@@ -580,7 +603,7 @@ public class MapActivity extends Activity {
             map.setTileSource(RELIEF);
             attr.setText("© OpenTopoMap (CC-BY-SA), © OpenStreetMap, SRTM");
         } else {
-            map.setTileSource(SAT);
+            map.setTileSource(satSource());
             if (!ru) {
                 MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), LABELS);
                 esriLabels = new TilesOverlay(prov, getApplicationContext());
@@ -588,7 +611,9 @@ public class MapActivity extends Activity {
                 esriLabels.setLoadingLineColor(Color.TRANSPARENT);
                 map.getOverlays().add(2, esriLabels);
             }
-            attr.setText("Esri, Maxar, Earthstar Geographics");
+            attr.setText(prefs.getInt("wbNum", 0) > 0
+                    ? "Архив Esri Wayback · снимок " + prefs.getString("wbLabel", "")
+                    : "Esri, Maxar, Earthstar Geographics");
         }
         applyHillshade();
         placesOverlay.setEnabled(ru);
@@ -858,6 +883,9 @@ public class MapActivity extends Activity {
             styleSegHud(t, st == currentStyle);
         }
         sheetContent.addView(seg);
+        hRow(hIcon(R.drawable.ic_refresh, getColor(R.color.hud_text), 22), "Дата снимка",
+                prefs.getInt("wbNum", 0) > 0 ? "Архив: " + prefs.getString("wbLabel", "") : "Самый свежий (по умолчанию)",
+                null, v -> showWayback());
 
         hSection("ВЫСОТЫ");
         hToggle("Отмывка рельефа", "Тени холмов и балок поверх подложки", prefs.getBoolean("hillshade", false), on -> {
@@ -1020,6 +1048,10 @@ public class MapActivity extends Activity {
     }
 
     private void queryImageryDate(TextCallback cb) {
+        if (prefs.getInt("wbNum", 0) > 0) {
+            cb.on("Спутник: архивный снимок " + prefs.getString("wbLabel", ""));
+            return;
+        }
         if (offline()) {
             cb.on("Спутник: дата снимка недоступна без сети");
             return;
@@ -4707,6 +4739,68 @@ public class MapActivity extends Activity {
         if (!prefs.getBoolean("guideVoice", true)) return;
         if (tts != null && ttsOk) tts.speak(text, android.speech.tts.TextToSpeech.QUEUE_ADD, null, "g" + System.nanoTime());
         else if (tts == null) initTts();
+    }
+
+    // ================= Архив снимков (Esri Wayback) =================
+
+    private Thread wbThread;
+
+    private void showWayback() {
+        if (offline()) {
+            Toast.makeText(this, "Архив снимков доступен только с интернетом", Toast.LENGTH_LONG).show();
+            return;
+        }
+        GeoPoint c = (GeoPoint) map.getMapCenter();
+        final double lat = c.getLatitude(), lon = c.getLongitude();
+        sheet("Дата снимка");
+        TextView head = new TextView(this);
+        head.setText("Снимки, которые были в этом месте (центр карты) в разные годы. "
+                + "Выбранная дата применяется ко всей карте — в других местах будет снимок того же выпуска.");
+        head.setTextColor(getColor(R.color.hud_text2));
+        head.setTextSize(12.5f);
+        head.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
+        sheetContent.addView(head);
+        int cur = prefs.getInt("wbNum", 0);
+        hRow(hIcon(cur == 0 ? R.drawable.ic_check : R.drawable.ic_layers, cur == 0 ? getColor(R.color.hud_accent) : getColor(R.color.hud_text), 22),
+                "Самый свежий", "Обычная подложка «Спутник»", null, v -> chooseWayback(0, "", ""));
+        final TextView st = new TextView(this);
+        st.setText("Ищу снимки разных лет…");
+        st.setTextColor(getColor(R.color.hud_text2));
+        st.setTextSize(13);
+        st.setPadding((int) dp(4), (int) dp(12), (int) dp(4), (int) dp(4));
+        sheetContent.addView(st);
+        final LinearLayout host = sheetContent;
+        if (wbThread != null) wbThread.interrupt();
+        wbThread = new Thread(() -> {
+            try {
+                List<Wayback.Version> vs = Wayback.scan(getApplicationContext(), lat, lon,
+                        t -> runOnUiThread(() -> st.setText(t)));
+                runOnUiThread(() -> {
+                    if (sheetContent != host || !sheetOpen()) return;
+                    st.setText(vs.isEmpty() ? "Архивных снимков здесь не найдено." : "НАЙДЕНО СНИМКОВ: " + vs.size());
+                    int now = prefs.getInt("wbNum", 0);
+                    for (Wayback.Version v : vs) {
+                        String date = v.captured.isEmpty() ? "дата неизвестна" : v.captured;
+                        String sub = (v.res.isEmpty() ? "" : v.res + " · ") + (v.provider.isEmpty() ? "" : v.provider + " · ")
+                                + "выпуск " + v.rel.date;
+                        boolean on = v.rel.num == now;
+                        hRow(hIcon(on ? R.drawable.ic_check : R.drawable.ic_layers, on ? getColor(R.color.hud_accent) : getColor(R.color.hud_text), 22),
+                                "Снимок " + date, sub, null, x -> chooseWayback(v.rel.num, v.rel.url, date));
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> st.setText("Не удалось загрузить архив: " + e.getMessage()));
+            }
+        });
+        wbThread.start();
+    }
+
+    private void chooseWayback(int num, String url, String label) {
+        if (num == 0) prefs.edit().remove("wbNum").remove("wbUrl").remove("wbLabel").apply();
+        else prefs.edit().putInt("wbNum", num).putString("wbUrl", url).putString("wbLabel", label).apply();
+        closeSheet();
+        applyStyle(STYLE_SAT);
+        Toast.makeText(this, num == 0 ? "Самый свежий снимок" : "Снимок " + label, Toast.LENGTH_SHORT).show();
     }
 
     @SuppressWarnings("unused")

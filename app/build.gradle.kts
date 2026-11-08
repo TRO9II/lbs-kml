@@ -10,8 +10,8 @@ android {
         applicationId = "ru.lbs.kml"
         minSdk = 29
         targetSdk = 35
-        versionCode = 30
-        versionName = "3.9.2"
+        versionCode = 31
+        versionName = "3.10"
     }
 
     buildTypes {
