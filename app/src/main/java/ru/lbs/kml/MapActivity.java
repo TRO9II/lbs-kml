@@ -6072,37 +6072,53 @@ public class MapActivity extends Activity {
         sheetFooter.removeAllViews();
         sheetFooter.setVisibility(View.VISIBLE);
         sheetFooter.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        ImageView attach = hIconButton(R.drawable.ic_attach, getColor(R.color.hud_text), v -> chatAttach());
-        sheetFooter.addView(attach);
-        ImageView status = hIconButton(R.drawable.ic_flag, 0xFFFF8A80, v -> showStatuses());
-        status.setContentDescription("Статус и SOS");
-        LinearLayout.LayoutParams stl = new LinearLayout.LayoutParams((int) dp(40), (int) dp(40));
-        stl.setMarginStart((int) dp(4));
-        sheetFooter.addView(status, stl);
+        // «+» — вложения, статусы и SOS; поле ввода на всю ширину; справа микрофон, а при наборе текста — «отправить»
+        ImageView plus = hIconButton(R.drawable.ic_add, getColor(R.color.hud_text), v -> chatAttach());
+        plus.setContentDescription("Вложения, статус, SOS");
+        sheetFooter.addView(plus, new LinearLayout.LayoutParams((int) dp(42), (int) dp(42)));
         final EditText input = hInput("Сообщение", "");
-        input.setMaxLines(4);
+        input.setMinHeight((int) dp(48));
+        input.setMaxLines(6);
+        input.setTextSize(16);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        GradientDrawable ib = new GradientDrawable();
+        ib.setCornerRadius(dp(22));
+        ib.setColor(0xFF22262C);
+        ib.setStroke((int) dp(1), getColor(R.color.hud_line));
+        input.setBackground(ib);
+        input.setPadding((int) dp(16), (int) dp(10), (int) dp(16), (int) dp(10));
         LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        il.setMarginStart((int) dp(8));
+        il.setMarginStart((int) dp(6));
         il.setMarginEnd((int) dp(8));
         sheetFooter.addView(input, il);
-        ImageView mic = hIconButton(R.drawable.ic_mic, getColor(R.color.hud_text), v -> chatVoiceStart());
-        mic.setContentDescription("Голосовое сообщение");
-        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams((int) dp(40), (int) dp(40));
-        ml.setMarginEnd((int) dp(6));
-        sheetFooter.addView(mic, ml);
-        ImageView send = new ImageView(this);
-        send.setImageResource(R.drawable.ic_send);
-        send.setImageTintList(ColorStateList.valueOf(Color.WHITE));
-        int p = (int) dp(10);
-        send.setPadding(p, p, p, p);
+        final ImageView act = new ImageView(this);
+        act.setImageTintList(ColorStateList.valueOf(Color.WHITE));
+        int p = (int) dp(11);
+        act.setPadding(p, p, p, p);
         GradientDrawable sb = new GradientDrawable();
         sb.setShape(GradientDrawable.OVAL);
         sb.setColor(getColor(R.color.hud_accent));
-        send.setBackground(sb);
-        sheetFooter.addView(send, new LinearLayout.LayoutParams((int) dp(44), (int) dp(44)));
-        send.setOnClickListener(v -> {
+        act.setBackground(sb);
+        act.setImageResource(R.drawable.ic_mic);
+        act.setContentDescription("Голосовое сообщение");
+        sheetFooter.addView(act, new LinearLayout.LayoutParams((int) dp(48), (int) dp(48)));
+        input.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence c, int a1, int a2, int a3) {}
+            @Override public void onTextChanged(CharSequence c, int a1, int a2, int a3) {}
+            @Override
+            public void afterTextChanged(Editable e) {
+                boolean has = e.toString().trim().length() > 0;
+                act.setImageResource(has ? R.drawable.ic_send : R.drawable.ic_mic);
+                act.setContentDescription(has ? "Отправить" : "Голосовое сообщение");
+            }
+        });
+        act.setOnClickListener(v -> {
             String txt = input.getText().toString().trim();
-            if (txt.isEmpty()) return;
+            if (txt.isEmpty()) {
+                chatVoiceStart();
+                return;
+            }
             ChatClient.Msg m = new ChatClient.Msg();
             m.text = txt;
             input.setText("");
@@ -6131,6 +6147,7 @@ public class MapActivity extends Activity {
         chatStatus.setSingleLine(true);
         chatStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
         head.addView(chatStatus, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        chatStatus.setOnClickListener(v -> Toast.makeText(this, chat.lastStatus() + "\nСервер: " + chat.server(), Toast.LENGTH_LONG).show());
         head.addView(headChip((sharing() ? "📍 " : "") + "Люди " + chat.members().size(), sharing() ? 0xFF66BB6A : getColor(R.color.hud_text),
                 v -> { chatOpen = false; sheetFooter.setVisibility(View.GONE); showMembers(); }));
         head.addView(headChip("Карта группы " + chat.objects().size(), getColor(R.color.hud_text),
@@ -6458,6 +6475,7 @@ public class MapActivity extends Activity {
         chatOpen = false;
         sheet("Отправить в чат");
         int tx = getColor(R.color.hud_text);
+        hRow(hIcon(R.drawable.ic_flag, 0xFFFF8A80, 22), "Статус или SOS", "«На месте», «Выдвигаюсь», «Нужна помощь»… и тревога", null, v -> showStatuses());
         hRow(hIcon(R.drawable.ic_add, tx, 22), "Сфотографировать", "Фото уйдёт зашифрованным, с местом съёмки", null, v -> takePhoto());
         hRow(hIcon(R.drawable.ic_layers, tx, 22), "Фото из галереи", "Координаты возьмутся из снимка, если они в нём есть", null, v -> pickPhoto());
         android.location.Location me = myLoc.getLocation();
