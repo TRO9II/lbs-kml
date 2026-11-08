@@ -6,6 +6,8 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.WindowInsets;
@@ -18,6 +20,9 @@ import android.widget.EditText;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.osmdroid.tileprovider.tilesource.XYTileSource;
+import org.osmdroid.events.MapListener;
+import org.osmdroid.events.ScrollEvent;
+import org.osmdroid.events.ZoomEvent;
 import org.osmdroid.views.overlay.Marker;
 
 import java.io.ByteArrayOutputStream;
@@ -89,7 +94,7 @@ public class MapActivity extends Activity {
         map.setMultiTouchControls(true);
         map.setTilesScaledToDpi(true);
         map.setMinZoomLevel(5.0);
-        map.setMaxZoomLevel(18.0);
+        map.setMaxZoomLevel(19.5);
         map.getZoomController().setVisibility(CustomZoomButtonsController.Visibility.NEVER);
 
         findViewById(R.id.btnZoomIn).setOnClickListener(v -> map.getController().zoomIn());
@@ -98,6 +103,10 @@ public class MapActivity extends Activity {
         findViewById(R.id.btnLabels).setOnClickListener(v -> toggleLabels());
         styleLabelsButton();
         setupSearch();
+        map.addMapListener(new MapListener() {
+            @Override public boolean onScroll(ScrollEvent e) { updateImageryInfo(); return false; }
+            @Override public boolean onZoom(ZoomEvent e) { updateImageryInfo(); return false; }
+        });
 
         KmlBuilder.Parsed data;
         try {
@@ -129,7 +138,8 @@ public class MapActivity extends Activity {
     /** Тайлы Esri: порядок в адресе z/y/x. */
     private static final class EsriSource extends OnlineTileSourceBase {
         EsriSource(String name, String service, String ext) {
-            super(name, 0, 19, 256, ext, new String[]{ESRI + service + "/MapServer/tile/"});
+            // у Esri в Украине детальные снимки до 18 уровня; дальше карта увеличивает 18-й
+            super(name, 0, 18, 256, ext, new String[]{ESRI + service + "/MapServer/tile/"});
         }
 
         @Override
@@ -163,6 +173,9 @@ public class MapActivity extends Activity {
             labels = null;
         }
         boolean ru = labelsOn();
+        // спутник — без растягивания под плотность экрана (иначе размыто); схемы — с ним (крупнее подписи)
+        map.setTilesScaledToDpi(style != STYLE_SAT);
+        updateImageryInfo();
         if (style == STYLE_SCHEME) {
             // с русскими подписями — схема без своих подписей, чтобы не дублировать
             map.setTileSource(ru ? CARTO_NOLABELS : TileSourceFactory.MAPNIK);
@@ -184,6 +197,90 @@ public class MapActivity extends Activity {
         }
         if (placesOverlay != null) placesOverlay.setEnabled(ru);
         map.invalidate();
+    }
+
+    // ---------- Дата спутникового снимка ----------
+
+    private final Handler infoHandler = new Handler(Looper.getMainLooper());
+    private final Runnable infoTask = this::queryImageryDate;
+    private int infoSeq = 0;
+
+    private void updateImageryInfo() {
+        infoHandler.removeCallbacks(infoTask);
+        TextView t = findViewById(R.id.imageryInfo);
+        if (currentStyle != STYLE_SAT) {
+            t.setVisibility(View.GONE);
+            return;
+        }
+        infoHandler.postDelayed(infoTask, 1200);
+    }
+
+    /** Спрашивает у Esri дату и разрешение снимка в центре экрана. */
+    private void queryImageryDate() {
+        TextView t = findViewById(R.id.imageryInfo);
+        if (map.getZoomLevelDouble() < 11) {
+            t.setVisibility(View.VISIBLE);
+            t.setText("Приблизьте карту, чтобы увидеть дату снимка");
+            return;
+        }
+        final int seq = ++infoSeq;
+        final GeoPoint c = (GeoPoint) map.getMapCenter();
+        final BoundingBox bb = map.getBoundingBox();
+        final int w = Math.max(1, map.getWidth()), h = Math.max(1, map.getHeight());
+        new Thread(() -> {
+            String text;
+            try {
+                String url = ESRI + "World_Imagery/MapServer/identify?geometryType=esriGeometryPoint&sr=4326"
+                        + "&layers=top&tolerance=1&returnGeometry=false&f=json"
+                        + "&geometry=" + c.getLongitude() + "," + c.getLatitude()
+                        + "&mapExtent=" + bb.getLonWest() + "," + bb.getLatSouth() + "," + bb.getLonEast() + "," + bb.getLatNorth()
+                        + "&imageDisplay=" + w + "," + h + ",96";
+                HttpURLConnection con = (HttpURLConnection) new URL(url).openConnection();
+                con.setRequestProperty("User-Agent", getPackageName());
+                con.setConnectTimeout(10000);
+                con.setReadTimeout(15000);
+                String body;
+                try (InputStream in = con.getInputStream()) {
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int k;
+                    while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+                    body = bo.toString("UTF-8");
+                }
+                JSONArray res = new JSONObject(body).optJSONArray("results");
+                text = null;
+                if (res != null) {
+                    for (int i = 0; i < res.length() && text == null; i++) {
+                        JSONObject a = res.getJSONObject(i).optJSONObject("attributes");
+                        if (a == null) continue;
+                        String d = a.optString("DATE (YYYYMMDD)", "");
+                        if (d.length() != 8) continue;
+                        String date = d.substring(6, 8) + "." + d.substring(4, 6) + "." + d.substring(0, 4);
+                        String resM = a.optString("RESOLUTION (M)", "");
+                        String src = a.optString("SOURCE", "");
+                        StringBuilder sb = new StringBuilder("Спутниковый снимок: ").append(date);
+                        if (!resM.isEmpty()) {
+                            try {
+                                double m = Double.parseDouble(resM);
+                                sb.append(" · ").append(m < 1 ? Math.round(m * 100) + " см" : (Math.round(m * 10) / 10.0) + " м");
+                            } catch (NumberFormatException ignored) {
+                            }
+                        }
+                        if (!src.isEmpty()) sb.append(" · ").append(src);
+                        text = sb.toString();
+                    }
+                }
+                if (text == null) text = "Дата снимка неизвестна";
+            } catch (Exception e) {
+                text = "Дата снимка: нет связи";
+            }
+            final String out = text;
+            runOnUiThread(() -> {
+                if (seq != infoSeq || isFinishing() || currentStyle != STYLE_SAT) return;
+                t.setVisibility(View.VISIBLE);
+                t.setText(out);
+            });
+        }).start();
     }
 
     // ---------- Русские подписи ----------
@@ -545,6 +642,7 @@ public class MapActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        infoHandler.removeCallbacksAndMessages(null);
         if (map != null) map.onDetach();
         super.onDestroy();
     }

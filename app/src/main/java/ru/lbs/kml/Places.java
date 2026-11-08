@@ -44,8 +44,14 @@ final class Places {
 
     private static Places load(Context c) throws Exception {
         List<String[]> rows = new ArrayList<>(30000);
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(
-                new GZIPInputStream(c.getAssets().open("places.tsv.gz")), StandardCharsets.UTF_8))) {
+        // при сборке APK .gz может распаковаться в places.tsv — поддерживаем оба варианта
+        java.io.InputStream raw;
+        try {
+            raw = c.getAssets().open("places.tsv");
+        } catch (java.io.IOException e) {
+            raw = new GZIPInputStream(c.getAssets().open("places.tsv.gz"));
+        }
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(raw, StandardCharsets.UTF_8))) {
             String line;
             while ((line = br.readLine()) != null) {
                 String[] f = line.split("\t", -1);
