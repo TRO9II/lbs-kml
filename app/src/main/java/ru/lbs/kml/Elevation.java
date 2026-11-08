@@ -27,6 +27,7 @@ final class Elevation {
         void on(double meters); // NaN — неизвестно
     }
 
+    static volatile boolean offline;
     private static final int Z = 14;
     private static final String URL_TPL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/%d/%d/%d.png";
     private static final ExecutorService EXEC = Executors.newFixedThreadPool(2);
@@ -89,6 +90,7 @@ final class Elevation {
         if (f.exists() && f.length() > 0) {
             bytes = java.nio.file.Files.readAllBytes(f.toPath());
         } else {
+            if (offline) throw new Exception("offline");
             HttpURLConnection con = (HttpURLConnection) new URL(String.format(java.util.Locale.US, URL_TPL, Z, x, y)).openConnection();
             con.setRequestProperty("User-Agent", c.getPackageName());
             con.setConnectTimeout(10000);

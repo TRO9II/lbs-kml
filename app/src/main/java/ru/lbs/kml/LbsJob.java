@@ -31,6 +31,7 @@ public class LbsJob extends JobService {
 
     @Override
     public boolean onStartJob(JobParameters p) {
+        if (LbsCore.prefs(this).getBoolean("offline", false)) return false;
         try {
             return start(p);
         } catch (Throwable e) {

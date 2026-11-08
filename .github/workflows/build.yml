@@ -38,4 +38,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest LbsKml.apk --title "ЛБС KML" --notes "Сборка ${GITHUB_SHA::7}"
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          gh release create latest LbsKml.apk --title "ЛБС KML v$VERSION" --notes "v$VERSION · сборка ${GITHUB_SHA::7}"

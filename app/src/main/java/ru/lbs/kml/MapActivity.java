@@ -160,6 +160,8 @@ public class MapActivity extends Activity {
         map.getOverlays().add(pathOverlay);
         pointsOverlay = new PointsOverlay(d);
         map.getOverlays().add(pointsOverlay);
+        myLoc = new MyLocationOverlay(d);
+        map.getOverlays().add(myLoc);
         reticleOverlay = new ReticleOverlay(d);
         map.getOverlays().add(reticleOverlay);
         map.getOverlays().add(new CompassSync());
@@ -198,6 +200,13 @@ public class MapActivity extends Activity {
             updateCoords();
         });
 
+        applyOffline();
+        applyNight();
+        setupLock();
+        if (prefs.getBoolean("locOn", false) && hasLocPerm()) startLocation(false);
+        checkUpdates();
+        if (savedInstanceState == null) handleViewIntent(getIntent());
+
         // автопроверка ЛБС и разрешение на уведомления
         try {
             boolean auto = LbsCore.autoEnabled(this);
@@ -223,6 +232,24 @@ public class MapActivity extends Activity {
             return true;
         });
         findViewById(R.id.btnGrid).setOnClickListener(v -> toggleGrid());
+        findViewById(R.id.btnMyLoc).setOnClickListener(v -> onMyLocClick());
+        findViewById(R.id.btnMyLoc).setOnLongClickListener(v -> {
+            if (locOn) stopLocation();
+            else startLocation(true);
+            return true;
+        });
+        map.setOnTouchListener(new View.OnTouchListener() {
+            float dx, dy;
+            @Override
+            public boolean onTouch(View v, android.view.MotionEvent e) {
+                if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) { dx = e.getX(); dy = e.getY(); }
+                else if (follow && e.getActionMasked() == android.view.MotionEvent.ACTION_MOVE
+                        && Math.hypot(e.getX() - dx, e.getY() - dy) > dp(24)) { follow = false; styleMyLoc(); }
+                return false;
+            }
+        });
+        findViewById(R.id.offlineChip).setOnClickListener(v -> openMenu(true));
+        findViewById(R.id.toolProfile).setOnClickListener(v -> showProfile(toolPts, tool == TOOL_RULER ? "линейка" : "маршрут"));
         findViewById(R.id.dlCancel).setOnClickListener(v -> cancelDownload());
         findViewById(R.id.coordCard).setOnClickListener(v -> copyCenterCoords());
         findViewById(R.id.targetClear).setOnClickListener(v -> clearTarget());
@@ -973,6 +1000,10 @@ public class MapActivity extends Activity {
     }
 
     private void queryImageryDate(TextCallback cb) {
+        if (offline()) {
+            cb.on("Спутник: дата снимка недоступна без сети");
+            return;
+        }
         if (map.getZoomLevelDouble() < 11) {
             cb.on("Спутник: приблизьте карту, чтобы узнать дату снимка");
             return;
@@ -1202,6 +1233,10 @@ public class MapActivity extends Activity {
 
     private void searchOnline(String q) {
         if (onlineSearch != null && onlineSearch.isAlive()) return;
+        if (offline()) {
+            Toast.makeText(this, "Режим «Без сети»: поиск только по встроенному списку", Toast.LENGTH_LONG).show();
+            return;
+        }
         results.removeAllViews();
         showResults(true);
         addResultRow("Ищу в интернете…", "", null);
@@ -1378,8 +1413,15 @@ public class MapActivity extends Activity {
         }
         ((TextView) findViewById(R.id.targetMain)).setText(
                 "→ " + Geo.dist(inv[0]) + "   " + String.format(Locale.US, "%.1f°", inv[1]) + dh);
+        String fromMe = "";
+        android.location.Location me = myLoc == null ? null : myLoc.getLocation();
+        if (me != null) {
+            double[] mi = Geo.inverse(me.getLatitude(), me.getLongitude(), tLat, tLon);
+            fromMe = "\nот меня: " + Geo.dist(mi[0]) + " · " + String.format(Locale.US, "%.1f°", mi[1])
+                    + " · " + Geo.mils(Geo.gridBearing(me.getLatitude(), me.getLongitude(), tLat, tLon));
+        }
         ((TextView) findViewById(R.id.targetSub)).setText(
-                prefs.getString("targetName", "") + " · д.у. " + Geo.mils(Geo.gridBearing(lat, lon, tLat, tLon)));
+                prefs.getString("targetName", "") + " · д.у. " + Geo.mils(Geo.gridBearing(lat, lon, tLat, tLon)) + fromMe);
     }
 
     private void copyCenterCoords() {
@@ -1610,6 +1652,10 @@ public class MapActivity extends Activity {
                     closeSheet();
                     startTool(TOOL_RULER, null);
                     toolAdd(lat, lon);
+                }),
+                hChip("Поделиться", R.drawable.ic_share, false, v -> {
+                    String nm = name.getText().toString().trim();
+                    sharePointText(nm.isEmpty() ? "Точка" : nm, lat, lon);
                 }));
         if (existing != null) {
             hChipRow(hChip("Удалить точку", R.drawable.ic_delete, false, v -> new AlertDialog.Builder(this)
@@ -2031,6 +2077,7 @@ public class MapActivity extends Activity {
             toolPts.clear();
             toolPts.addAll(keep);
         });
+        hRow(hIcon(R.drawable.ic_mountain, tx, 22), "Профиль высот", "Подъёмы, спуски, перепад", null, v -> showProfile(r.pts, r.name));
         hRow(hIcon(R.drawable.ic_share, tx, 22), "Экспорт в KML", "Для AlpineQuest", null, v -> {
             closeSheet();
             saveAndShare(r.name.replaceAll("[^A-Za-z0-9А-Яа-яЁё_-]", "_") + ".kml", Routes.toKml(r), "Отправить маршрут");
@@ -2068,6 +2115,23 @@ public class MapActivity extends Activity {
         findViewById(R.id.lbsOpen).setOnClickListener(v -> openLbsFile(false));
         findViewById(R.id.lbsShare).setOnClickListener(v -> openLbsFile(true));
         findViewById(R.id.tileLayers).setOnClickListener(v -> { openMenu(false); showLayers(); });
+        findViewById(R.id.tileImport).setOnClickListener(v -> { openMenu(false); pickFile(REQ_IMPORT); });
+        findViewById(R.id.tileBackup).setOnClickListener(v -> { openMenu(false); makeBackup(); });
+        findViewById(R.id.tileRestore).setOnClickListener(v -> { openMenu(false); pickFile(REQ_RESTORE); });
+        findViewById(R.id.updateRow).setOnClickListener(v -> downloadUpdate());
+        findViewById(R.id.pinRow).setOnClickListener(v -> { openMenu(false); showPinSettings(); });
+        updatePinRow();
+        Switch swOff = findViewById(R.id.swOffline), swNight = findViewById(R.id.swNight), swTrack = findViewById(R.id.swTrack);
+        swOff.setChecked(offline());
+        swNight.setChecked(prefs.getBoolean("night", false));
+        swTrack.setChecked(false);
+        swOff.setOnCheckedChangeListener((b, on) -> {
+            prefs.edit().putBoolean("offline", on).apply();
+            applyOffline();
+            Toast.makeText(this, on ? "Без сети: только сохранённые карты и высоты" : "Сеть включена", Toast.LENGTH_SHORT).show();
+        });
+        swNight.setOnCheckedChangeListener((b, on) -> { prefs.edit().putBoolean("night", on).apply(); applyNight(); });
+        swTrack.setOnCheckedChangeListener((b, on) -> setTracking(on));
         findViewById(R.id.tileOffline).setOnClickListener(v -> { openMenu(false); chooseDownload(); });
         findViewById(R.id.tileRoutes).setOnClickListener(v -> { openMenu(false); showRoutes(); });
         findViewById(R.id.tilePoints).setOnClickListener(v -> { openMenu(false); showExport(); });
@@ -2216,6 +2280,10 @@ public class MapActivity extends Activity {
 
     private void startLbsUpdate() {
         if (lbsRunning || lbsScript == null) return;
+        if (offline()) {
+            Toast.makeText(this, "Включён режим «Без сети» — выключите его в меню", Toast.LENGTH_LONG).show();
+            return;
+        }
         lbsRunning = true;
         lbsTries = 0;
         lbsProgress = "Загружаю данные…";
@@ -2382,6 +2450,8 @@ public class MapActivity extends Activity {
 
     private void cancelDownload() {
         if (dlTask != null) dlTask.cancel(true);
+        if (locMgr != null) locMgr.removeUpdates(locListener);
+        if (track != null) setTracking(false);
         finishDownload("Загрузка остановлена. Уже скачанное сохранено");
     }
 
@@ -2441,6 +2511,10 @@ public class MapActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (findViewById(R.id.lockView).getVisibility() == View.VISIBLE) {
+            moveTaskToBack(true);
+            return;
+        }
         if (sheetOpen()) {
             closeSheet();
             return;
@@ -2476,6 +2550,14 @@ public class MapActivity extends Activity {
         }
         reloadLbs();
         showSavedCrash();
+        maybeLock();
+    }
+
+    @Override
+    protected void onStop() {
+        lastStop = System.currentTimeMillis();
+        if (track != null) saveRoutes();
+        super.onStop();
     }
 
     @Override
@@ -2498,6 +2580,724 @@ public class MapActivity extends Activity {
         if (dlTask != null) dlTask.cancel(true);
         if (map != null) map.onDetach();
         super.onDestroy();
+    }
+
+    // ================= Моё местоположение (GPS) и трек =================
+
+    private static final int REQ_LOC = 21, REQ_IMPORT = 31, REQ_RESTORE = 32;
+    private MyLocationOverlay myLoc;
+    private android.location.LocationManager locMgr;
+    private boolean locOn, follow, pendingCenter;
+    private Routes.Route track;
+
+    private final android.location.LocationListener locListener = new android.location.LocationListener() {
+        @Override public void onLocationChanged(android.location.Location l) { onLocation(l); }
+        @Override public void onStatusChanged(String p, int s, Bundle b) {}
+        @Override public void onProviderEnabled(String p) {}
+        @Override public void onProviderDisabled(String p) {
+            Toast.makeText(MapActivity.this, "GPS выключен в настройках телефона", Toast.LENGTH_SHORT).show();
+        }
+    };
+
+    private boolean hasLocPerm() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void onMyLocClick() {
+        if (!locOn) {
+            startLocation(true);
+            return;
+        }
+        android.location.Location l = myLoc.getLocation();
+        if (l == null) {
+            Toast.makeText(this, "Ищу спутники… Выйдите на открытое место", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        follow = true;
+        styleMyLoc();
+        map.getController().animateTo(new GeoPoint(l.getLatitude(), l.getLongitude()), Math.max(15.0, map.getZoomLevelDouble()), 600L);
+    }
+
+    private void startLocation(boolean center) {
+        if (!hasLocPerm()) {
+            pendingCenter = center;
+            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOC);
+            return;
+        }
+        locMgr = getSystemService(android.location.LocationManager.class);
+        if (locMgr == null) return;
+        if (!locMgr.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER))
+            Toast.makeText(this, "Включите геолокацию (GPS) в настройках телефона", Toast.LENGTH_LONG).show();
+        try {
+            locMgr.requestLocationUpdates(android.location.LocationManager.GPS_PROVIDER, 1000, 1f, locListener, android.os.Looper.getMainLooper());
+            android.location.Location last = locMgr.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER);
+            locOn = true;
+            follow = center;
+            prefs.edit().putBoolean("locOn", true).apply();
+            if (last != null && System.currentTimeMillis() - last.getTime() < 10 * 60 * 1000) onLocation(last);
+            else Toast.makeText(this, "Ищу спутники…", Toast.LENGTH_SHORT).show();
+        } catch (SecurityException e) {
+            Toast.makeText(this, "Нет разрешения на геолокацию", Toast.LENGTH_LONG).show();
+        }
+        styleMyLoc();
+    }
+
+    private void stopLocation() {
+        if (track != null) setTracking(false);
+        if (locMgr != null) locMgr.removeUpdates(locListener);
+        locOn = false;
+        follow = false;
+        myLoc.setLocation(null);
+        prefs.edit().putBoolean("locOn", false).apply();
+        styleMyLoc();
+        updateCoords();
+        map.invalidate();
+        Toast.makeText(this, "Местоположение выключено", Toast.LENGTH_SHORT).show();
+    }
+
+    private void styleMyLoc() {
+        int c = !locOn ? getColor(R.color.hud_text) : follow ? 0xFF42A5F5 : 0xFF90CAF9;
+        ((ImageView) findViewById(R.id.btnMyLoc)).setImageTintList(ColorStateList.valueOf(c));
+        findViewById(R.id.btnMyLoc).setBackgroundResource(locOn && follow ? R.drawable.bg_round_blue : R.drawable.bg_round_hud);
+    }
+
+    private void onLocation(android.location.Location l) {
+        myLoc.setLocation(l);
+        if (follow) map.getController().animateTo(new GeoPoint(l.getLatitude(), l.getLongitude()));
+        if (track != null) appendTrack(l);
+        updateCoords();
+        map.invalidate();
+    }
+
+    private void setTracking(boolean on) {
+        if (on) {
+            if (!locOn) startLocation(false);
+            track = new Routes.Route();
+            track.id = Long.toString(System.currentTimeMillis(), 36);
+            track.created = System.currentTimeMillis();
+            track.name = "Трек " + new SimpleDateFormat("dd.MM HH:mm", Locale.US).format(new Date());
+            track.color = 0xFFFF4081;
+            routes.add(track);
+            saveRoutes();
+            findViewById(R.id.trackDot).setVisibility(View.VISIBLE);
+            Toast.makeText(this, "Запись трека идёт, пока приложение открыто", Toast.LENGTH_LONG).show();
+        } else {
+            if (track != null) {
+                if (track.pts.size() < 2) {
+                    routes.remove(track);
+                    Toast.makeText(this, "Трек слишком короткий — не сохранён", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "Трек сохранён: " + Geo.dist(Routes.length(track.pts)), Toast.LENGTH_LONG).show();
+                }
+                saveRoutes();
+            }
+            track = null;
+            findViewById(R.id.trackDot).setVisibility(View.GONE);
+        }
+        Switch sw = findViewById(R.id.swTrack);
+        if (sw.isChecked() != on) {
+            sw.setOnCheckedChangeListener(null);
+            sw.setChecked(on);
+            sw.setOnCheckedChangeListener((b, v) -> setTracking(v));
+        }
+    }
+
+    private void appendTrack(android.location.Location l) {
+        if (l.getAccuracy() > 40) return;
+        if (!track.pts.isEmpty()) {
+            double[] p = track.pts.get(track.pts.size() - 1);
+            if (Geo.inverse(p[0], p[1], l.getLatitude(), l.getLongitude())[0] < 8) return;
+        }
+        track.pts.add(new double[]{l.getLatitude(), l.getLongitude()});
+        if (track.pts.size() % 5 == 0) saveRoutes();
+        else pathOverlay.setSaved(routes);
+    }
+
+    // ================= Профиль высот =================
+
+    private void showProfile(List<double[]> pts, String title) {
+        if (pts.size() < 2) {
+            Toast.makeText(this, "Нужно минимум 2 точки", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        sheet("Профиль высот · " + title);
+        final ProfileView pv = new ProfileView(this);
+        sheetContent.addView(pv);
+        LinearLayout card = hCard();
+        final TextView st = new TextView(this);
+        st.setText(offline() ? "Считаю по сохранённым высотам…" : "Загружаю высоты…");
+        st.setTextColor(getColor(R.color.hud_text));
+        st.setTextSize(13.5f);
+        st.setLineSpacing(dp(3), 1f);
+        card.addView(st);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) dp(10);
+        sheetContent.addView(card, lp);
+        TextView hint = new TextView(this);
+        hint.setText("Проведите пальцем по графику — высота и расстояние в этом месте.");
+        hint.setTextColor(getColor(R.color.hud_text2));
+        hint.setTextSize(12);
+        hint.setPadding((int) dp(4), (int) dp(8), (int) dp(4), 0);
+        sheetContent.addView(hint);
+
+        final List<double[]> copy = new ArrayList<>(pts);
+        new Thread(() -> {
+            int n = copy.size();
+            double[] cum = new double[n];
+            for (int i = 1; i < n; i++)
+                cum[i] = cum[i - 1] + Geo.inverse(copy.get(i - 1)[0], copy.get(i - 1)[1], copy.get(i)[0], copy.get(i)[1])[0];
+            double total = cum[n - 1];
+            int samples = 160;
+            double[] d = new double[samples], e = new double[samples];
+            int seg = 1;
+            for (int k = 0; k < samples; k++) {
+                double at = total * k / (samples - 1);
+                while (seg < n - 1 && cum[seg] < at) seg++;
+                double span = cum[seg] - cum[seg - 1];
+                double t = span <= 0 ? 0 : (at - cum[seg - 1]) / span;
+                double lat = copy.get(seg - 1)[0] + (copy.get(seg)[0] - copy.get(seg - 1)[0]) * t;
+                double lon = copy.get(seg - 1)[1] + (copy.get(seg)[1] - copy.get(seg - 1)[1]) * t;
+                d[k] = at;
+                e[k] = Elevation.sync(getApplicationContext(), lat, lon);
+            }
+            double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, up = 0, down = 0, ref = Double.NaN;
+            int known = 0;
+            for (double v : e) {
+                if (Double.isNaN(v)) continue;
+                known++;
+                min = Math.min(min, v);
+                max = Math.max(max, v);
+                if (Double.isNaN(ref)) ref = v;
+                else if (v - ref > 3) { up += v - ref; ref = v; }
+                else if (ref - v > 3) { down += ref - v; ref = v; }
+            }
+            final String text;
+            if (known == 0) {
+                text = offline() ? "Высоты для этого района не сохранены. Выключите режим «Без сети» и откройте профиль ещё раз."
+                        : "Не удалось загрузить высоты. Проверьте интернет.";
+            } else {
+                double first = Double.NaN, last = Double.NaN;
+                for (double v : e) if (!Double.isNaN(v)) { if (Double.isNaN(first)) first = v; last = v; }
+                text = "Длина: " + Geo.dist(total) + "\n"
+                        + "Начало " + Math.round(first) + " м → конец " + Math.round(last) + " м  ("
+                        + (last - first >= 0 ? "+" : "") + Math.round(last - first) + " м)\n"
+                        + "Мин " + Math.round(min) + " м · макс " + Math.round(max) + " м · перепад " + Math.round(max - min) + " м\n"
+                        + "Набор ↑ " + Math.round(up) + " м · сброс ↓ " + Math.round(down) + " м";
+            }
+            runOnUiThread(() -> {
+                pv.setData(d, e);
+                st.setText(text);
+            });
+        }).start();
+    }
+
+    // ================= Поделиться точкой текстом =================
+
+    private void sharePointText(String name, double lat, double lon) {
+        Elevation.get(this, lat, lon, h -> {
+            double[] r = Sk42.fromWgs(lat, lon);
+            String txt = name + "\n"
+                    + "СК-42: X " + Math.round(r[0]) + "  Y " + Math.round(r[1]) + " (зона " + (int) r[2] + ")\n"
+                    + String.format(Locale.US, "WGS-84: %.6f, %.6f", lat, lon)
+                    + (Double.isNaN(h) ? "" : "\nВысота: " + Math.round(h) + " м");
+            Intent i = new Intent(Intent.ACTION_SEND);
+            i.setType("text/plain");
+            i.putExtra(Intent.EXTRA_TEXT, txt);
+            startActivity(Intent.createChooser(i, "Поделиться точкой"));
+        });
+    }
+
+    // ================= Режимы: без сети, ночь =================
+
+    private boolean offline() {
+        return prefs.getBoolean("offline", false);
+    }
+
+    private void applyOffline() {
+        boolean off = offline();
+        map.setUseDataConnection(!off);
+        Elevation.offline = off;
+        findViewById(R.id.offlineChip).setVisibility(off ? View.VISIBLE : View.GONE);
+        map.invalidate();
+    }
+
+    private void applyNight() {
+        boolean on = prefs.getBoolean("night", false);
+        findViewById(R.id.nightFilter).setVisibility(on ? View.VISIBLE : View.GONE);
+        android.graphics.ColorMatrix cm = null;
+        if (on) {
+            cm = new android.graphics.ColorMatrix(new float[]{
+                    0.40f, 0.40f, 0.12f, 0, 0,
+                    0.06f, 0.10f, 0.02f, 0, 0,
+                    0.02f, 0.04f, 0.02f, 0, 0,
+                    0, 0, 0, 1, 0});
+        }
+        map.getOverlayManager().getTilesOverlay().setColorFilter(cm == null ? null : new android.graphics.ColorMatrixColorFilter(cm));
+        android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = on ? 0.12f : android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+        getWindow().setAttributes(lp);
+        map.invalidate();
+    }
+
+    // ================= Защита ПИН-кодом =================
+
+    private long lastStop = 0;
+    private boolean unlocked = false;
+    private final StringBuilder pinInput = new StringBuilder();
+    private int pinFails = 0;
+    private long pinBlockedUntil = 0;
+
+    private boolean pinSet() {
+        return prefs.contains("pinHash");
+    }
+
+    private static String sha(String s) {
+        try {
+            byte[] h = java.security.MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : h) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private void setupLock() {
+        int[] ids = {R.id.key0, R.id.key1, R.id.key2, R.id.key3, R.id.key4, R.id.key5, R.id.key6, R.id.key7, R.id.key8, R.id.key9};
+        for (int i = 0; i < ids.length; i++) {
+            final String digit = Integer.toString(i);
+            findViewById(ids[i]).setOnClickListener(v -> pinKey(digit));
+        }
+        findViewById(R.id.keyDel).setOnClickListener(v -> {
+            if (pinInput.length() > 0) pinInput.setLength(pinInput.length() - 1);
+            showPinDots();
+        });
+        findViewById(R.id.keyBio).setOnClickListener(v -> askBiometric());
+    }
+
+    private void maybeLock() {
+        if (!pinSet()) {
+            findViewById(R.id.lockView).setVisibility(View.GONE);
+            return;
+        }
+        if (unlocked && (lastStop == 0 || System.currentTimeMillis() - lastStop < 30_000)) return;
+        if (!unlocked && findViewById(R.id.lockView).getVisibility() == View.VISIBLE) return;
+        unlocked = false;
+        pinInput.setLength(0);
+        ((TextView) findViewById(R.id.lockTitle)).setText("Введите ПИН-код");
+        showPinDots();
+        boolean bio = prefs.getBoolean("pinBio", false) && bioAvailable();
+        findViewById(R.id.keyBio).setVisibility(bio ? View.VISIBLE : View.INVISIBLE);
+        findViewById(R.id.lockView).setVisibility(View.VISIBLE);
+        hideKeyboard();
+        if (bio) askBiometric();
+    }
+
+    private void showPinDots() {
+        int len = prefs.getInt("pinLen", 4);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len; i++) sb.append(i < pinInput.length() ? "●" : "○");
+        ((TextView) findViewById(R.id.lockDots)).setText(sb);
+    }
+
+    private void pinKey(String d) {
+        if (System.currentTimeMillis() < pinBlockedUntil) {
+            ((TextView) findViewById(R.id.lockTitle)).setText("Подождите " + (pinBlockedUntil - System.currentTimeMillis()) / 1000 + " с");
+            return;
+        }
+        int len = prefs.getInt("pinLen", 4);
+        if (pinInput.length() >= len) return;
+        pinInput.append(d);
+        showPinDots();
+        if (pinInput.length() == len) {
+            if (sha(prefs.getString("pinSalt", "") + pinInput).equals(prefs.getString("pinHash", ""))) {
+                unlock();
+            } else {
+                pinFails++;
+                pinInput.setLength(0);
+                if (pinFails >= 5) {
+                    pinBlockedUntil = System.currentTimeMillis() + 30_000;
+                    pinFails = 0;
+                    ((TextView) findViewById(R.id.lockTitle)).setText("Слишком много попыток — 30 с");
+                } else {
+                    ((TextView) findViewById(R.id.lockTitle)).setText("Неверный ПИН-код");
+                }
+                findViewById(R.id.lockDots).animate().translationX(dp(12)).setDuration(60).withEndAction(() ->
+                        findViewById(R.id.lockDots).animate().translationX(-dp(12)).setDuration(60).withEndAction(() ->
+                                findViewById(R.id.lockDots).animate().translationX(0).setDuration(60).start()).start()).start();
+                showPinDots();
+            }
+        }
+    }
+
+    private void unlock() {
+        unlocked = true;
+        lastStop = 0;
+        pinFails = 0;
+        pinInput.setLength(0);
+        findViewById(R.id.lockView).animate().alpha(0f).setDuration(160).withEndAction(() -> {
+            findViewById(R.id.lockView).setVisibility(View.GONE);
+            findViewById(R.id.lockView).setAlpha(1f);
+        }).start();
+    }
+
+    private boolean bioAvailable() {
+        if (Build.VERSION.SDK_INT < 29) return false;
+        android.hardware.biometrics.BiometricManager bm = getSystemService(android.hardware.biometrics.BiometricManager.class);
+        return bm != null && bm.canAuthenticate() == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS;
+    }
+
+    private void askBiometric() {
+        if (!bioAvailable()) return;
+        java.util.concurrent.Executor ex = getMainExecutor();
+        android.hardware.biometrics.BiometricPrompt p = new android.hardware.biometrics.BiometricPrompt.Builder(this)
+                .setTitle("Вход в ЛБС KML")
+                .setNegativeButton("ПИН-код", ex, (d, w) -> { })
+                .build();
+        p.authenticate(new android.os.CancellationSignal(), ex, new android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+            @Override
+            public void onAuthenticationSucceeded(android.hardware.biometrics.BiometricPrompt.AuthenticationResult r) {
+                unlock();
+            }
+        });
+    }
+
+    private void updatePinRow() {
+        TextView t = findViewById(R.id.pinRow);
+        t.setText(pinSet() ? "ПИН-код включён · изменить или выключить" : "Защита ПИН-кодом · выключена");
+        android.graphics.drawable.Drawable dr = getDrawable(R.drawable.ic_lock).mutate();
+        dr.setTint(pinSet() ? 0xFF66BB6A : getColor(R.color.hud_text2));
+        int s = (int) dp(20);
+        dr.setBounds(0, 0, s, s);
+        t.setCompoundDrawables(dr, null, null, null);
+    }
+
+    private void showPinSettings() {
+        sheet(pinSet() ? "Защита" : "Включить ПИН-код");
+        final EditText p1 = hInput("Новый ПИН (4–8 цифр)", "");
+        p1.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        final EditText p2 = hInput("Повторите ПИН", "");
+        p2.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        sheetContent.addView(p1);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) dp(8);
+        sheetContent.addView(p2, lp);
+        if (bioAvailable()) {
+            hToggle("Отпечаток пальца", "Разблокировка без ввода ПИН-кода", prefs.getBoolean("pinBio", false),
+                    on -> prefs.edit().putBoolean("pinBio", on).apply());
+        }
+        TextView note = new TextView(this);
+        note.setText("ПИН-код запрашивается при запуске и при возврате в приложение через 30 секунд. "
+                + "Если забудете ПИН — придётся переустановить приложение (точки пропадут, сделайте резервную копию).");
+        note.setTextColor(getColor(R.color.hud_text2));
+        note.setTextSize(12);
+        note.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        sheetContent.addView(note);
+        if (pinSet()) {
+            hChipRow(hChip("Выключить защиту", R.drawable.ic_close, false, v -> {
+                prefs.edit().remove("pinHash").remove("pinSalt").remove("pinLen").apply();
+                updatePinRow();
+                closeSheet();
+                Toast.makeText(this, "Защита выключена", Toast.LENGTH_SHORT).show();
+            }));
+        }
+        footer("Отмена", pinSet() ? "Сменить ПИН" : "Включить", v -> {
+            String a = p1.getText().toString(), b = p2.getText().toString();
+            if (a.length() < 4 || a.length() > 8) {
+                Toast.makeText(this, "ПИН — от 4 до 8 цифр", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (!a.equals(b)) {
+                Toast.makeText(this, "ПИН-коды не совпадают", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            String salt = Long.toString(new java.security.SecureRandom().nextLong(), 36);
+            prefs.edit().putString("pinSalt", salt).putString("pinHash", sha(salt + a)).putInt("pinLen", a.length()).apply();
+            unlocked = true;
+            updatePinRow();
+            closeSheet();
+            Toast.makeText(this, "ПИН-код установлен", Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    // ================= Проверка обновлений =================
+
+    private void checkUpdates() {
+        if (offline()) return;
+        long last = prefs.getLong("updCheckedAt", 0);
+        if (System.currentTimeMillis() - last < 6L * 3600 * 1000) {
+            showUpdateRow();
+            return;
+        }
+        new Thread(() -> {
+            try {
+                JSONObject o = new JSONObject(httpGet("https://api.github.com/repos/TRO9II/lbs-kml/releases/tags/latest"));
+                String name = o.optString("name", "") + " " + o.optString("body", "");
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("v(\\d+(?:\\.\\d+)+)").matcher(name);
+                String ver = m.find() ? m.group(1) : "";
+                prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).putString("updVer", ver).apply();
+                runOnUiThread(this::showUpdateRow);
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
+    private static int cmpVer(String a, String b) {
+        String[] x = a.split("\\."), y = b.split("\\.");
+        for (int i = 0; i < Math.max(x.length, y.length); i++) {
+            int p = i < x.length ? parseIntSafe(x[i]) : 0, q = i < y.length ? parseIntSafe(y[i]) : 0;
+            if (p != q) return Integer.compare(p, q);
+        }
+        return 0;
+    }
+
+    private static int parseIntSafe(String s) {
+        try {
+            return Integer.parseInt(s.replaceAll("\\D", ""));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private boolean updateAvailable() {
+        String v = prefs.getString("updVer", "");
+        String mine = "";
+        try {
+            mine = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+        }
+        return !v.isEmpty() && !mine.isEmpty() && cmpVer(v, mine) > 0;
+    }
+
+    private void showUpdateRow() {
+        boolean av = updateAvailable();
+        View row = findViewById(R.id.updateRow);
+        row.setVisibility(av ? View.VISIBLE : View.GONE);
+        if (av) {
+            ((TextView) findViewById(R.id.updateText)).setText("Доступна версия v" + prefs.getString("updVer", "") + " — скачать");
+            findViewById(R.id.menuBadge).setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void downloadUpdate() {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://github.com/TRO9II/lbs-kml/releases/download/latest/LbsKml.apk")));
+        } catch (Exception e) {
+            Toast.makeText(this, "Нет браузера для скачивания", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // ================= Импорт и резервная копия =================
+
+    private void pickFile(int req) {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        try {
+            startActivityForResult(i, req);
+        } catch (Exception e) {
+            Toast.makeText(this, "Нет приложения для выбора файла", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (res != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        if (req == REQ_IMPORT) importFrom(uri);
+        else if (req == REQ_RESTORE) restoreFrom(uri);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int req, String[] perms, int[] grants) {
+        super.onRequestPermissionsResult(req, perms, grants);
+        if (req == REQ_LOC) {
+            if (hasLocPerm()) startLocation(pendingCenter);
+            else Toast.makeText(this, "Без разрешения на геолокацию «Моё местоположение» не работает", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private byte[] readUri(Uri uri) throws Exception {
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new Exception("файл не открылся");
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[16384];
+            int k;
+            while ((k = in.read(buf)) > 0) {
+                bo.write(buf, 0, k);
+                if (bo.size() > 40 * 1024 * 1024) throw new Exception("файл слишком большой");
+            }
+            return bo.toByteArray();
+        }
+    }
+
+    private void handleViewIntent(Intent i) {
+        if (i != null && Intent.ACTION_VIEW.equals(i.getAction()) && i.getData() != null) importFrom(i.getData());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        handleViewIntent(intent);
+    }
+
+    private void importFrom(Uri uri) {
+        new Thread(() -> {
+            try {
+                Importer.Result r = Importer.parse(readUri(uri), uri.getLastPathSegment());
+                runOnUiThread(() -> showImport(r));
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this, "Не удалось прочитать файл (нужен KML или GPX): "
+                        + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    private void showImport(Importer.Result r) {
+        sheet("Импорт");
+        LinearLayout card = hCard();
+        addKV(card, "Точек", Integer.toString(r.points.size()));
+        addKV(card, "Линий и маршрутов", Integer.toString(r.routes.size()));
+        sheetContent.addView(card);
+        if (r.points.isEmpty() && r.routes.isEmpty()) {
+            TextView t = new TextView(this);
+            t.setText("В файле не найдено точек или линий.");
+            t.setTextColor(getColor(R.color.hud_text2));
+            t.setPadding((int) dp(4), (int) dp(12), 0, 0);
+            sheetContent.addView(t);
+            return;
+        }
+        int shown = 0;
+        hSection("СОДЕРЖИМОЕ");
+        for (UserPoints.Point p : r.points) {
+            if (shown++ >= 8) break;
+            hRow(hIcon(R.drawable.ic_place, 0xFF29B6F6, 20), p.name, Sk42.format(p.lat, p.lon), null, null);
+        }
+        for (Routes.Route rt : r.routes) {
+            if (shown++ >= 12) break;
+            hRow(routeSwatch(rt.color), rt.name, Geo.dist(Routes.length(rt.pts)), null, null);
+        }
+        footer("Отмена", "Добавить на карту", v -> {
+            long now = System.currentTimeMillis();
+            int k = 0;
+            for (UserPoints.Point p : r.points) {
+                p.id = Long.toString(now + k++, 36);
+                p.created = now;
+            }
+            for (Routes.Route rt : r.routes) {
+                rt.id = Long.toString(now + k++, 36);
+                rt.created = now;
+            }
+            userPoints.addAll(r.points);
+            routes.addAll(r.routes);
+            savePoints();
+            saveRoutes();
+            closeSheet();
+            fitAll(r);
+            Toast.makeText(this, "Добавлено: " + r.points.size() + " точек, " + r.routes.size() + " маршрутов", Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void fitAll(Importer.Result r) {
+        double n = -90, s = 90, e = -180, w = 180;
+        for (UserPoints.Point p : r.points) { n = Math.max(n, p.lat); s = Math.min(s, p.lat); e = Math.max(e, p.lon); w = Math.min(w, p.lon); }
+        for (Routes.Route rt : r.routes) for (double[] p : rt.pts) { n = Math.max(n, p[0]); s = Math.min(s, p[0]); e = Math.max(e, p[1]); w = Math.min(w, p[1]); }
+        if (n < s) return;
+        double pl = Math.max(0.01, (n - s) * 0.15), pn = Math.max(0.01, (e - w) * 0.15);
+        map.zoomToBoundingBox(new BoundingBox(n + pl, e + pn, s - pl, w - pn), true, (int) dp(40));
+    }
+
+    private void makeBackup() {
+        try {
+            savePoints();
+            saveRoutes();
+            JSONObject o = new JSONObject();
+            o.put("app", "lbs-kml");
+            o.put("version", 1);
+            o.put("created", System.currentTimeMillis());
+            File pf = new File(getFilesDir(), "points.json"), rf = new File(getFilesDir(), "routes.json");
+            o.put("points", pf.exists() ? new JSONArray(new String(java.nio.file.Files.readAllBytes(pf.toPath()), StandardCharsets.UTF_8)) : new JSONArray());
+            o.put("routes", rf.exists() ? new JSONArray(new String(java.nio.file.Files.readAllBytes(rf.toPath()), StandardCharsets.UTF_8)) : new JSONArray());
+            String name = "LBS_backup_" + new SimpleDateFormat("dd_MM_yyyy_HHmm", Locale.US).format(new Date()) + ".json";
+            saveAndShare(name, o.toString(), "Сохранить резервную копию", "application/json");
+        } catch (Exception e) {
+            Toast.makeText(this, "Не удалось сделать копию: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void restoreFrom(Uri uri) {
+        new Thread(() -> {
+            try {
+                JSONObject o = new JSONObject(new String(readUri(uri), StandardCharsets.UTF_8));
+                if (!o.has("points") && !o.has("routes")) throw new Exception("это не резервная копия ЛБС KML");
+                final JSONArray pts = o.optJSONArray("points"), rts = o.optJSONArray("routes");
+                runOnUiThread(() -> {
+                    sheet("Восстановление");
+                    LinearLayout card = hCard();
+                    addKV(card, "В копии точек", Integer.toString(pts == null ? 0 : pts.length()));
+                    addKV(card, "В копии маршрутов", Integer.toString(rts == null ? 0 : rts.length()));
+                    addKV(card, "Сейчас на телефоне", userPoints.size() + " точек, " + routes.size() + " маршрутов");
+                    sheetContent.addView(card);
+                    hChipRow(hChip("Добавить к текущим", R.drawable.ic_add, false, v -> applyRestore(pts, rts, false)));
+                    footer("Отмена", "Заменить всё", v -> applyRestore(pts, rts, true));
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this, "Не удалось восстановить: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    private void applyRestore(JSONArray pts, JSONArray rts, boolean replace) {
+        try {
+            List<UserPoints.Point> np = new ArrayList<>();
+            List<Routes.Route> nr = new ArrayList<>();
+            if (pts != null) {
+                for (int i = 0; i < pts.length(); i++) {
+                    JSONObject o = pts.getJSONObject(i);
+                    UserPoints.Point p = new UserPoints.Point();
+                    p.id = o.optString("id");
+                    p.name = o.optString("name");
+                    p.note = o.optString("note");
+                    p.color = o.optInt("color", UserPoints.COLORS[0]);
+                    p.icon = o.optString("icon", "");
+                    p.lat = o.getDouble("lat");
+                    p.lon = o.getDouble("lon");
+                    p.created = o.optLong("created");
+                    np.add(p);
+                }
+            }
+            if (rts != null) {
+                for (int i = 0; i < rts.length(); i++) {
+                    JSONObject o = rts.getJSONObject(i);
+                    Routes.Route r = new Routes.Route();
+                    r.id = o.optString("id");
+                    r.name = o.optString("name");
+                    r.color = o.optInt("color", Routes.COLORS[0]);
+                    r.visible = o.optBoolean("visible", true);
+                    r.created = o.optLong("created");
+                    JSONArray p = o.getJSONArray("pts");
+                    for (int j = 0; j < p.length(); j++)
+                        r.pts.add(new double[]{p.getJSONArray(j).getDouble(0), p.getJSONArray(j).getDouble(1)});
+                    nr.add(r);
+                }
+            }
+            if (replace) {
+                userPoints.clear();
+                routes.clear();
+            }
+            userPoints.addAll(np);
+            routes.addAll(nr);
+            savePoints();
+            saveRoutes();
+            closeSheet();
+            Toast.makeText(this, "Восстановлено: " + np.size() + " точек, " + nr.size() + " маршрутов", Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "Ошибка восстановления: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     @SuppressWarnings("unused")
