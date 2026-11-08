@@ -149,6 +149,13 @@
                     android:text="Поделиться" />
             </LinearLayout>
 
+            <Button
+                android:id="@+id/btnMap"
+                style="@style/BtnSecondary"
+                android:layout_marginTop="12dp"
+                android:enabled="false"
+                android:text="🗺  Карта по направлениям" />
+
             <!-- Содержимое файла -->
             <LinearLayout
                 style="@style/Card"

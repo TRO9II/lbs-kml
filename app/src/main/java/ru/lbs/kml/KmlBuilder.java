@@ -19,6 +19,8 @@ final class KmlBuilder {
         String date = "", id = "";
         final List<double[][]> lines = new ArrayList<>();
         final List<double[][]> gray = new ArrayList<>();
+        final List<double[][]> added = new ArrayList<>();
+        final List<double[][]> removed = new ArrayList<>();
     }
 
     /** Формат: "DATE дата|id", затем строки "L x,y x,y …" (линии) и "G x,y …" (серая зона). */
@@ -43,6 +45,12 @@ final class KmlBuilder {
             if (row.startsWith("G ")) {
                 double[][] c = coords(row.substring(2));
                 if (c.length >= 3) p.gray.add(c);
+            } else if (row.startsWith("A ")) {
+                double[][] c = coords(row.substring(2));
+                if (c.length >= 2) p.added.add(c);
+            } else if (row.startsWith("R ")) {
+                double[][] c = coords(row.substring(2));
+                if (c.length >= 2) p.removed.add(c);
             } else {
                 double[][] c = coords(row.startsWith("L ") ? row.substring(2) : row);
                 if (c.length >= 2) p.lines.add(c);
@@ -66,9 +74,14 @@ final class KmlBuilder {
     }
 
     static String serializeLines(List<double[][]> lines) {
+        return serialize("L ", lines);
+    }
+
+    static String serialize(String prefix, List<double[][]> list) {
         StringBuilder sb = new StringBuilder();
-        for (double[][] l : lines) {
-            sb.append("L ");
+        if (list == null) return "";
+        for (double[][] l : list) {
+            sb.append(prefix);
             appendCoords(sb, l, false);
             sb.append('\n');
         }

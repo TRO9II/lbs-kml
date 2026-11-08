@@ -22,6 +22,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".MapActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
         <service
             android:name=".LbsJob"
             android:exported="false"

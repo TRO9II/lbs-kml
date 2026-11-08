@@ -10,8 +10,8 @@ android {
         applicationId = "ru.lbs.kml"
         minSdk = 29
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.7"
+        versionCode = 9
+        versionName = "1.8"
     }
 
     buildTypes {
@@ -24,4 +24,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
 }

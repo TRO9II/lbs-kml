@@ -100,6 +100,13 @@ final class LbsCore {
         String name = fileName(p.date);
         Uri uri = saveToDownloads(c, name, kml.getBytes(StandardCharsets.UTF_8));
 
+        // данные для карты в приложении
+        writeText(mapFile(c), "DATE " + p.date + "|" + p.id + "\n"
+                + KmlBuilder.serialize("L ", p.lines)
+                + KmlBuilder.serialize("G ", p.gray)
+                + KmlBuilder.serialize("A ", added)
+                + KmlBuilder.serialize("R ", removed));
+
         Result r = new Result();
         r.name = name;
         r.date = p.date;
@@ -127,6 +134,15 @@ final class LbsCore {
         String text = readText(base);
         int nl = text.indexOf('\n');
         return KmlBuilder.parse(nl >= 0 ? text.substring(nl + 1) : "").lines;
+    }
+
+    static File mapFile(Context c) {
+        return new File(c.getFilesDir(), "map.txt");
+    }
+
+    static KmlBuilder.Parsed loadMapData(Context c) throws Exception {
+        File f = mapFile(c);
+        return f.exists() ? KmlBuilder.parse(readText(f)) : null;
     }
 
     private static String firstLine(File f) throws Exception {
