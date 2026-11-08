@@ -23,13 +23,21 @@ import java.util.Map;
 /** Свои точки на карте: хранение, цвета, значки, экспорт в KML. */
 final class UserPoints {
 
-    static final String[] COLOR_NAMES = {"Красный", "Оранжевый", "Жёлтый", "Зелёный", "Голубой", "Синий", "Фиолетовый", "Чёрный"};
+    static final String[] COLOR_NAMES = {"Красный", "Тёмно-красный", "Оранжевый", "Янтарный", "Жёлтый", "Салатовый",
+            "Зелёный", "Тёмно-зелёный", "Бирюзовый", "Голубой", "Синий", "Фиолетовый", "Розовый", "Коричневый",
+            "Серый", "Чёрный"};
     static final int[] COLORS = {
-            0xFFE53935, 0xFFFB8C00, 0xFFFDD835, 0xFF43A047,
-            0xFF00ACC1, 0xFF1E88E5, 0xFF8E24AA, 0xFF212121};
+            0xFFE53935, 0xFF8E0000, 0xFFFB8C00, 0xFFFFB300, 0xFFFDD835, 0xFF9CCC65,
+            0xFF43A047, 0xFF1B5E20, 0xFF00897B, 0xFF29B6F6, 0xFF1E88E5, 0xFF7E57C2, 0xFFEC407A, 0xFF6D4C41,
+            0xFF78909C, 0xFF212121};
+
+    /** Значки внутри булавки (символ, название). Пустой — белая точка. */
+    static final String[] ICONS = {"", "★", "⚑", "✚", "!", "✕", "▲", "■", "◆", "⌂", "≈", "?", "⊕", "▼", "●", "1", "2", "3"};
+    static final String[] ICON_NAMES = {"Точка", "Звезда", "Флаг", "Медицина", "Внимание", "Цель", "Высота",
+            "Квадрат", "Ромб", "Строение", "Вода", "Неизвестно", "Ориентир", "Спуск", "Круг", "1", "2", "3"};
 
     static final class Point {
-        String id, name, note;
+        String id, name, note, icon = "";
         int color;
         double lat, lon;
         long created;
@@ -57,6 +65,7 @@ final class UserPoints {
                 p.name = o.optString("name");
                 p.note = o.optString("note");
                 p.color = o.optInt("color", COLORS[0]);
+                p.icon = o.optString("icon", "");
                 p.lat = o.getDouble("lat");
                 p.lon = o.getDouble("lon");
                 p.created = o.optLong("created");
@@ -75,6 +84,7 @@ final class UserPoints {
             o.put("name", p.name);
             o.put("note", p.note == null ? "" : p.note);
             o.put("color", p.color);
+            o.put("icon", p.icon == null ? "" : p.icon);
             o.put("lat", p.lat);
             o.put("lon", p.lon);
             o.put("created", p.created);
@@ -94,14 +104,19 @@ final class UserPoints {
 
     // ---------- значок-булавка ----------
 
-    private static final Map<Integer, Bitmap> PIN_CACHE = new HashMap<>();
+    private static final Map<String, Bitmap> PIN_CACHE = new HashMap<>();
 
-    /** Булавка заданного цвета с белой обводкой и точкой; острие — в центре низа картинки. */
-    static synchronized Bitmap pin(int color, float density) {
-        int key = color ^ Float.floatToIntBits(density);
+    static Bitmap pin(int color, float density) {
+        return pin(color, density, "");
+    }
+
+    /** Булавка заданного цвета с белой обводкой и значком (или точкой); острие — в центре низа картинки. */
+    static synchronized Bitmap pin(int color, float density, String icon) {
+        if (icon == null) icon = "";
+        String key = color + "|" + density + "|" + icon;
         Bitmap b = PIN_CACHE.get(key);
         if (b != null) return b;
-        int w = Math.round(28 * density), h = Math.round(38 * density);
+        int w = Math.round(26 * density), h = Math.round(35 * density);
         b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         float cx = w / 2f, r = w / 2f - 2 * density, cy = r + 2 * density;
@@ -131,7 +146,16 @@ final class UserPoints {
         c.drawPath(p, stroke);
         Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
         dot.setColor(Color.WHITE);
-        c.drawCircle(cx, cy, r * 0.36f, dot);
+        if (icon.isEmpty()) {
+            c.drawCircle(cx, cy, r * 0.36f, dot);
+        } else {
+            dot.setTextAlign(Paint.Align.CENTER);
+            dot.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            dot.setTextSize(r * 1.15f);
+            android.graphics.Rect bounds = new android.graphics.Rect();
+            dot.getTextBounds(icon, 0, icon.length(), bounds);
+            c.drawText(icon, cx, cy - bounds.exactCenterY(), dot);
+        }
         PIN_CACHE.put(key, b);
         return b;
     }

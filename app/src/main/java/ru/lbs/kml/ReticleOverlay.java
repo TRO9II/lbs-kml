@@ -46,18 +46,18 @@ public class ReticleOverlay extends Overlay {
     public ReticleOverlay(float density) {
         this.density = density;
         ring.setStyle(Paint.Style.STROKE);
-        ring.setStrokeWidth(1.4f * density);
+        ring.setStrokeWidth(0.9f * density);
         ring.setColor(Color.WHITE);
         ringHalo.set(ring);
-        ringHalo.setStrokeWidth(3.4f * density);
+        ringHalo.setStrokeWidth(2.2f * density);
         ringHalo.setColor(Color.argb(150, 0, 0, 0));
         text.setColor(Color.WHITE);
-        text.setTextSize(12 * density);
+        text.setTextSize(10.5f * density);
         text.setTypeface(Typeface.DEFAULT_BOLD);
         text.setTextAlign(Paint.Align.CENTER);
         halo.set(text);
         halo.setStyle(Paint.Style.STROKE);
-        halo.setStrokeWidth(3f * density);
+        halo.setStrokeWidth(2.4f * density);
         halo.setColor(Color.argb(210, 0, 0, 0));
         north.setColor(Color.rgb(229, 57, 53));
         tLine.setStyle(Paint.Style.STROKE);
@@ -125,7 +125,7 @@ public class ReticleOverlay extends Overlay {
         // риски по внутреннему кольцу (холст уже повёрнут вместе с картой: «вверх» = север)
         for (int deg = 0; deg < 360; deg += 10) {
             double a = Math.toRadians(deg);
-            float len = (deg % 30 == 0 ? 8 : 4.5f) * density;
+            float len = (deg % 30 == 0 ? 6.5f : 3.5f) * density;
             float sx = (float) Math.sin(a), sy = (float) -Math.cos(a);
             float x0 = cx + sx * r1, y0 = cy + sy * r1, x1 = cx + sx * (r1 - len), y1 = cy + sy * (r1 - len);
             c.drawLine(x0, y0, x1, y1, ringHalo);
@@ -143,14 +143,14 @@ public class ReticleOverlay extends Overlay {
 
         // север — красный треугольник
         tri.reset();
-        tri.moveTo(cx, cy - r1 - 9 * density);
-        tri.lineTo(cx - 6 * density, cy - r1 + 2 * density);
-        tri.lineTo(cx + 6 * density, cy - r1 + 2 * density);
+        tri.moveTo(cx, cy - r1 - 7 * density);
+        tri.lineTo(cx - 4.5f * density, cy - r1 + 1.5f * density);
+        tri.lineTo(cx + 4.5f * density, cy - r1 + 1.5f * density);
         tri.close();
         c.drawPath(tri, north);
 
         // стороны света (буквы ровно, как бы ни была повёрнута карта)
-        float rl = r1 - 19 * density;
+        float rl = r1 - 15 * density;
         for (int i = 0; i < 8; i++) {
             if (i % 2 == 1 && r1 < 80 * density) continue; // на маленьком круге — только С/В/Ю/З
             double a = Math.toRadians(i * 45);
@@ -164,8 +164,8 @@ public class ReticleOverlay extends Overlay {
         uprightText(c, Geo.dist(ringM * 2), cx + (float) Math.sin(a) * r2, cy - (float) Math.cos(a) * r2 + 14 * density, orient, cx, cy);
 
         // центр
-        c.drawCircle(cx, cy, 4.2f * density, halo);
-        c.drawCircle(cx, cy, 3.2f * density, dot);
+        c.drawCircle(cx, cy, 3.2f * density, halo);
+        c.drawCircle(cx, cy, 2.4f * density, dot);
     }
 
     private void drawTarget(Canvas c, Projection pj, float orient, float cx, float cy, IGeoPoint center) {

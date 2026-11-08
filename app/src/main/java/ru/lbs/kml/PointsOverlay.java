@@ -74,7 +74,7 @@ public class PointsOverlay extends Overlay {
     private void drawPin(Canvas c, Projection pj, float orient, UserPoints.Point p, boolean withName) {
         gp.setCoords(p.lat, p.lon);
         pj.toPixels(gp, pt);
-        Bitmap b = UserPoints.pin(p.color, density);
+        Bitmap b = UserPoints.pin(p.color, density, p.icon);
         c.save();
         if (orient != 0f) c.rotate(-orient, pt.x, pt.y);
         c.drawBitmap(b, pt.x - b.getWidth() / 2f, pt.y - b.getHeight(), bmp);
@@ -99,7 +99,7 @@ public class PointsOverlay extends Overlay {
     private UserPoints.Point hitTest(MotionEvent e, MapView mv) {
         Projection pj = mv.getProjection();
         float orient = mv.getMapOrientation();
-        float w = 28 * density, h = 38 * density, slop = 8 * density;
+        float w = 26 * density, h = 35 * density, slop = 10 * density;
         UserPoints.Point best = null;
         float bestD = Float.MAX_VALUE;
         List<UserPoints.Point> all = new ArrayList<>(points);

@@ -180,6 +180,7 @@ final class LbsCore {
                 .putInt("lastLines", r.lines)
                 .putInt("lastChanges", r.changes)
                 .putLong("lastCheck", System.currentTimeMillis())
+                .remove("lastError")
                 .apply();
         return isNew;
     }

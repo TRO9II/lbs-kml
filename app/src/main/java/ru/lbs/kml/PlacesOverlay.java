@@ -12,36 +12,99 @@ import org.osmdroid.views.MapView;
 import org.osmdroid.views.Projection;
 import org.osmdroid.views.overlay.Overlay;
 
-/** Подписи населённых пунктов на русском поверх карты, без наложений друг на друга. */
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * Подписи населённых пунктов на русском. Какие подписи показывать, решается один раз
+ * для каждого уровня масштаба в «мировых» координатах — поэтому при прокрутке они не мигают.
+ */
 public class PlacesOverlay extends Overlay {
 
-    /** С какого масштаба показывать: город, посёлок, село, хутор. */
+    /** С какого масштаба показывать: город, город (town), село, хутор. */
     private static final double[] MIN_ZOOM = {6.5, 9, 11, 13};
-    private static final float[] SIZE_DP = {15, 13, 12, 11};
-    private static final int MAX_LABELS = 350;
+    private static final float[] SIZE_DP = {14, 12.5f, 11.5f, 10.5f};
 
     private final float density;
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint measure = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Point pt = new Point();
-    private final Point sp = new Point();
     private final GeoPoint gp = new GeoPoint(0.0, 0.0);
     private Places places;
-    private boolean[] occ = new boolean[0];
+    private float[] widths; // ширина подписи каждого пункта в его размере шрифта
+
+    /** Выбранные подписи по уровню масштаба (целому). */
+    private final Map<Integer, int[]> chosen = new HashMap<>();
+    private double worldAtLevelCached = -1;
 
     public PlacesOverlay(float density) {
         this.density = density;
         fill.setColor(Color.WHITE);
         halo.setColor(Color.argb(220, 20, 20, 20));
         halo.setStyle(Paint.Style.STROKE);
-        halo.setStrokeWidth(3.2f * density);
+        halo.setStrokeWidth(3f * density);
         halo.setStrokeJoin(Paint.Join.ROUND);
         dot.setColor(Color.WHITE);
     }
 
     public void setPlaces(Places p) {
         places = p;
+        widths = null;
+        chosen.clear();
+    }
+
+    /** Ширина мира в пикселях экрана при текущем масштабе (через проекцию: учитывает растягивание тайлов). */
+    private static double worldPx(Projection pj, double lat) {
+        Point a = pj.toPixels(new GeoPoint(lat, 0.0), null);
+        Point b = pj.toPixels(new GeoPoint(lat, 1.0), null);
+        return Math.hypot(b.x - a.x, b.y - a.y) * 360.0;
+    }
+
+    /** Жадный отбор подписей без наложений в мировых пикселях уровня level. */
+    private int[] select(int level, double world) {
+        Places p = places;
+        if (widths == null) {
+            widths = new float[p.n];
+            for (int i = 0; i < p.n; i++) {
+                int r = p.rank[i];
+                measure.setTextSize(SIZE_DP[r] * density);
+                measure.setTypeface(r == 0 ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+                widths[i] = measure.measureText(p.name[i]);
+            }
+        }
+        float cell = 14 * density;
+        Set<Long> occ = new HashSet<>();
+        int[] tmp = new int[p.n];
+        int cnt = 0;
+        float pad = 3 * density;
+        for (int i = 0; i < p.n; i++) {
+            int r = p.rank[i];
+            if (level + 0.999 < MIN_ZOOM[r]) break; // отсортировано по рангу
+            double x = (p.lon[i] + 180) / 360 * world;
+            double sy = Math.sin(Math.toRadians(p.lat[i]));
+            double y = (0.5 - Math.log((1 + sy) / (1 - sy)) / (4 * Math.PI)) * world;
+            float size = SIZE_DP[r] * density;
+            float tw = widths[i];
+            double x0 = x - 4 * density - pad, x1 = x + 6 * density + tw + pad;
+            double y0 = y - size * 0.8 - pad, y1 = y + size * 0.45 + pad;
+            long cx0 = (long) Math.floor(x0 / cell), cx1 = (long) Math.floor(x1 / cell);
+            long cy0 = (long) Math.floor(y0 / cell), cy1 = (long) Math.floor(y1 / cell);
+            boolean busy = false;
+            for (long yy = cy0; yy <= cy1 && !busy; yy++)
+                for (long xx = cx0; xx <= cx1; xx++)
+                    if (occ.contains((xx << 32) ^ (yy & 0xffffffffL))) { busy = true; break; }
+            if (busy) continue;
+            for (long yy = cy0; yy <= cy1; yy++)
+                for (long xx = cx0; xx <= cx1; xx++) occ.add((xx << 32) ^ (yy & 0xffffffffL));
+            tmp[cnt++] = i;
+        }
+        int[] out = new int[cnt];
+        System.arraycopy(tmp, 0, out, 0, cnt);
+        return out;
     }
 
     @Override
@@ -49,69 +112,46 @@ public class PlacesOverlay extends Overlay {
         if (shadow || places == null) return;
         double z = mv.getZoomLevelDouble();
         if (z < MIN_ZOOM[0]) return;
-
-        int w = c.getWidth(), h = c.getHeight();
-        int cell = (int) (12 * density);
-        int cols = w / cell + 2, rows = h / cell + 2;
-        if (occ.length < cols * rows) occ = new boolean[cols * rows];
-        else java.util.Arrays.fill(occ, 0, cols * rows, false);
-
-        BoundingBox bb = mv.getBoundingBox();
-        double n = bb.getLatNorth(), s = bb.getLatSouth(), e = bb.getLonEast(), wst = bb.getLonWest();
+        int level = (int) Math.floor(z);
         Projection pj = mv.getProjection();
-        Places p = places;
-        int drawn = 0;
-        float pad = 2 * density;
+        BoundingBox bb = mv.getBoundingBox();
+
+        // мир на целом уровне (при смене подложки/растягивания — пересчитать)
+        double world = worldPx(pj, 0) / Math.pow(2, z - level);
+        if (worldAtLevelCached < 0 || Math.abs(world / Math.pow(2, level) - worldAtLevelCached) / worldAtLevelCached > 0.02) {
+            chosen.clear();
+            worldAtLevelCached = world / Math.pow(2, level);
+        }
+        int[] sel = chosen.get(level);
+        if (sel == null) {
+            sel = select(level, world);
+            chosen.put(level, sel);
+        }
+
+        double n = bb.getLatNorth(), s = bb.getLatSouth(), e = bb.getLonEast(), w = bb.getLonWest();
         float orient = mv.getMapOrientation();
-
-        for (int i = 0; i < p.n && drawn < MAX_LABELS; i++) {
-            int r = p.rank[i];
-            if (z < MIN_ZOOM[r]) break; // список отсортирован по рангу
-            double la = p.lat[i], lo = p.lon[i];
-            if (la > n || la < s || lo > e || lo < wst) continue;
-
+        Places p = places;
+        for (int k : sel) {
+            double la = p.lat[k], lo = p.lon[k];
+            if (la > n || la < s || lo > e || lo < w) continue;
+            int r = p.rank[k];
             gp.setCoords(la, lo);
             pj.toPixels(gp, pt);
-            // экранная точка с учётом поворота карты — для проверки наложений
-            if (orient != 0f) pj.rotateAndScalePoint(pt.x, pt.y, sp);
-            else sp.set(pt.x, pt.y);
-
             float size = SIZE_DP[r] * density;
+            Typeface tf = r == 0 ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT;
             fill.setTextSize(size);
             halo.setTextSize(size);
-            Typeface tf = r == 0 ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT;
             fill.setTypeface(tf);
             halo.setTypeface(tf);
-
-            String label = p.name[i];
-            float tw = fill.measureText(label);
-            float dotR = (r == 0 ? 3.5f : r == 1 ? 3f : 2.2f) * density;
-            float x0 = sp.x - dotR - pad, x1 = sp.x + dotR + 4 * density + tw + pad;
-            float y0 = sp.y - size * 0.75f - pad, y1 = sp.y + size * 0.45f + pad;
-
-            int cx0 = (int) Math.floor(x0 / cell) + 1, cx1 = (int) Math.floor(x1 / cell) + 1;
-            int cy0 = (int) Math.floor(y0 / cell) + 1, cy1 = (int) Math.floor(y1 / cell) + 1;
-            if (cx1 < 0 || cy1 < 0 || cx0 >= cols || cy0 >= rows) continue;
-            cx0 = Math.max(0, cx0); cy0 = Math.max(0, cy0);
-            cx1 = Math.min(cols - 1, cx1); cy1 = Math.min(rows - 1, cy1);
-
-            boolean busy = false;
-            for (int yy = cy0; yy <= cy1 && !busy; yy++)
-                for (int xx = cx0; xx <= cx1; xx++)
-                    if (occ[yy * cols + xx]) { busy = true; break; }
-            if (busy) continue;
-            for (int yy = cy0; yy <= cy1; yy++)
-                for (int xx = cx0; xx <= cx1; xx++) occ[yy * cols + xx] = true;
-
+            float dotR = (r == 0 ? 3.2f : r == 1 ? 2.8f : 2f) * density;
             c.save();
-            if (orient != 0f) c.rotate(-orient, pt.x, pt.y); // подпись всегда ровно, как бы ни повернули карту
-            c.drawCircle(pt.x, pt.y, dotR + 1.2f * density, halo);
+            if (orient != 0f) c.rotate(-orient, pt.x, pt.y); // подпись всегда ровно
+            c.drawCircle(pt.x, pt.y, dotR + 1.1f * density, halo);
             c.drawCircle(pt.x, pt.y, dotR, dot);
             float tx = pt.x + dotR + 4 * density, ty = pt.y + size * 0.35f;
-            c.drawText(label, tx, ty, halo);
-            c.drawText(label, tx, ty, fill);
+            c.drawText(p.name[k], tx, ty, halo);
+            c.drawText(p.name[k], tx, ty, fill);
             c.restore();
-            drawn++;
         }
     }
 }

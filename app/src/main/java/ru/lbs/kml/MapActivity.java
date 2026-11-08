@@ -227,7 +227,10 @@ public class MapActivity extends Activity {
         findViewById(R.id.dockRuler).setOnClickListener(v -> startTool(TOOL_RULER, null));
         findViewById(R.id.dockRoute).setOnClickListener(v -> showRoutes());
         findViewById(R.id.dockPoints).setOnClickListener(v -> showPointsList());
-        findViewById(R.id.dockMenu).setOnClickListener(v -> showMenu());
+        findViewById(R.id.dockMenu).setOnClickListener(v -> openMenu(true));
+        findViewById(R.id.btnSearch).setOnClickListener(v -> openSearch(true));
+        setupMenu();
+        setupLbsWeb();
 
         findViewById(R.id.toolUndo).setOnClickListener(v -> toolUndo());
         findViewById(R.id.toolClear).setOnClickListener(v -> toolClear());
@@ -747,6 +750,8 @@ public class MapActivity extends Activity {
     }
 
     private void openSearch(boolean open) {
+        findViewById(R.id.topRow).setVisibility(open ? View.GONE : View.VISIBLE);
+        findViewById(R.id.searchPill).setVisibility(open ? View.VISIBLE : View.GONE);
         findViewById(R.id.searchHint).setVisibility(open ? View.GONE : View.VISIBLE);
         searchBox.setVisibility(open ? View.VISIBLE : View.GONE);
         findViewById(R.id.btnSearchClose).setVisibility(open ? View.VISIBLE : View.GONE);
@@ -907,7 +912,7 @@ public class MapActivity extends Activity {
         boolean on = gridOn();
         gridOverlay.setEnabled(on);
         reticleOverlay.setReticle(on && tool == TOOL_NONE);
-        findViewById(R.id.coordCard).setVisibility(on || tool != TOOL_NONE ? View.VISIBLE : View.GONE);
+        findViewById(R.id.coordCard).setVisibility(View.VISIBLE);
         findViewById(R.id.scaleRow).setVisibility(on ? View.VISIBLE : View.GONE);
         ((ImageView) findViewById(R.id.btnGrid)).setImageTintList(ColorStateList.valueOf(
                 on ? getColor(R.color.hud_accent) : getColor(R.color.hud_text)));
@@ -1023,7 +1028,24 @@ public class MapActivity extends Activity {
             toolAdd(p.getLatitude(), p.getLongitude());
             return true;
         }
+        // нажатие на центр (прицел) — новая точка в центре
+        Projection pj = map.getProjection();
+        android.graphics.Point a = pj.toPixels(p, null), b = pj.toPixels(map.getMapCenter(), null);
+        if (Math.hypot(a.x - b.x, a.y - b.y) < dp(26)) {
+            newPointAtCenter();
+            return true;
+        }
         return false;
+    }
+
+    private void newPointAtCenter() {
+        if (tool != TOOL_NONE) {
+            GeoPoint c = (GeoPoint) map.getMapCenter();
+            toolAdd(c.getLatitude(), c.getLongitude());
+            return;
+        }
+        GeoPoint c = (GeoPoint) map.getMapCenter();
+        editPoint(null, c.getLatitude(), c.getLongitude(), null);
     }
 
     private boolean onMapLongPress(GeoPoint p) {
@@ -1092,12 +1114,19 @@ public class MapActivity extends Activity {
         box.addView(note);
 
         box.addView(sectionTitle("ЦВЕТ"));
-        final int[] chosen = {existing != null ? existing.color : UserPoints.COLORS[0]};
-        LinearLayout colors = new LinearLayout(this);
-        colors.setOrientation(LinearLayout.HORIZONTAL);
+        final int[] chosen = {existing != null ? existing.color : prefs.getInt("lastColor", UserPoints.COLORS[0])};
         final List<View> swatches = new ArrayList<>();
-        int sz = (int) dp(30);
+        int sz = (int) dp(28);
+        LinearLayout colRow = null;
         for (int i = 0; i < UserPoints.COLORS.length; i++) {
+            if (i % 8 == 0) {
+                colRow = new LinearLayout(this);
+                colRow.setOrientation(LinearLayout.HORIZONTAL);
+                LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                rl.bottomMargin = (int) dp(7);
+                box.addView(colRow, rl);
+            }
             final int col = UserPoints.COLORS[i];
             View sw = new View(this);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(sz, sz);
@@ -1111,11 +1140,39 @@ public class MapActivity extends Activity {
             });
             sw.setBackground(swatch(col, col == chosen[0]));
             swatches.add(sw);
-            colors.addView(sw);
+            colRow.addView(sw);
         }
-        HorizontalScrollView hs = new HorizontalScrollView(this);
-        hs.addView(colors);
-        box.addView(hs);
+
+        box.addView(sectionTitle("ЗНАЧОК"));
+        final String[] icon = {existing != null && existing.icon != null ? existing.icon : ""};
+        final List<TextView> iconViews = new ArrayList<>();
+        LinearLayout icRow = null;
+        for (int i = 0; i < UserPoints.ICONS.length; i++) {
+            if (i % 6 == 0) {
+                icRow = new LinearLayout(this);
+                icRow.setOrientation(LinearLayout.HORIZONTAL);
+                LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                rl.bottomMargin = (int) dp(6);
+                box.addView(icRow, rl);
+            }
+            final String ic = UserPoints.ICONS[i];
+            TextView t = new TextView(this);
+            t.setText(ic.isEmpty() ? "•" : ic);
+            t.setTextSize(17);
+            t.setGravity(android.view.Gravity.CENTER);
+            t.setContentDescription(UserPoints.ICON_NAMES[i]);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(38), 1);
+            lp.setMarginEnd((int) dp(6));
+            t.setOnClickListener(v -> {
+                icon[0] = ic;
+                for (TextView tv : iconViews) styleIcon(tv, tv == v);
+                Toast.makeText(this, UserPoints.ICON_NAMES[iconViews.indexOf((TextView) v)], Toast.LENGTH_SHORT).show();
+            });
+            iconViews.add(t);
+            icRow.addView(t, lp);
+            styleIcon(t, ic.equals(icon[0]));
+        }
 
         TextView coords = new TextView(this);
         coords.setText(coordsText(lat, lon));
@@ -1170,6 +1227,8 @@ public class MapActivity extends Activity {
                     p.name = nm.isEmpty() ? "Точка" : nm;
                     p.note = note.getText().toString().trim();
                     p.color = chosen[0];
+                    p.icon = icon[0];
+                    prefs.edit().putInt("lastColor", chosen[0]).apply();
                     savePoints();
                 })
                 .setNegativeButton("Отмена", null);
@@ -1186,6 +1245,15 @@ public class MapActivity extends Activity {
         dlgRef[0] = b.show();
     }
 
+    private void styleIcon(TextView t, boolean on) {
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(10));
+        g.setColor(on ? getColor(R.color.accent) : Color.TRANSPARENT);
+        g.setStroke((int) dp(1), on ? getColor(R.color.accent) : getColor(R.color.divider));
+        t.setBackground(g);
+        t.setTextColor(on ? Color.WHITE : getColor(R.color.text));
+    }
+
     private GradientDrawable swatch(int color, boolean sel) {
         GradientDrawable g = new GradientDrawable();
         g.setShape(GradientDrawable.OVAL);
@@ -1198,31 +1266,35 @@ public class MapActivity extends Activity {
         if (userPoints.isEmpty()) {
             new AlertDialog.Builder(this)
                     .setTitle("Мои точки")
-                    .setMessage("Пока нет точек.\n\nЧтобы поставить точку, нажмите и подержите палец на карте.")
-                    .setPositiveButton("Понятно", null)
+                    .setMessage("Пока нет точек.\n\nНажмите на прицел в центре карты — точка встанет туда. "
+                            + "Или подержите палец на нужном месте.")
+                    .setPositiveButton("Точка в центре", (d, w) -> newPointAtCenter())
+                    .setNegativeButton("Закрыть", null)
                     .show();
             return;
         }
         final List<UserPoints.Point> sorted = new ArrayList<>(userPoints);
         Collections.sort(sorted, (a, b) -> Long.compare(b.created, a.created));
         GeoPoint c = (GeoPoint) map.getMapCenter();
-        CharSequence[] items = new CharSequence[sorted.size()];
+        CharSequence[] items = new CharSequence[sorted.size() + 1];
+        items[0] = "＋  Новая точка в центре карты";
         for (int i = 0; i < sorted.size(); i++) {
             UserPoints.Point p = sorted.get(i);
             double[] inv = Geo.inverse(c.getLatitude(), c.getLongitude(), p.lat, p.lon);
-            SpannableStringBuilder sb = new SpannableStringBuilder("● ");
+            SpannableStringBuilder sb = new SpannableStringBuilder((p.icon == null || p.icon.isEmpty() ? "●" : p.icon) + " ");
             sb.setSpan(new ForegroundColorSpan(p.color), 0, 1, 0);
             sb.append(p.name).append("\n");
             int st = sb.length();
             sb.append(Geo.dist(inv[0])).append(" от центра · ").append(Sk42.format(p.lat, p.lon));
             sb.setSpan(new RelativeSizeSpan(0.8f), st, sb.length(), 0);
             sb.setSpan(new ForegroundColorSpan(getColor(R.color.text2)), st, sb.length(), 0);
-            items[i] = sb;
+            items[i + 1] = sb;
         }
         new AlertDialog.Builder(this)
                 .setTitle("Мои точки (" + sorted.size() + ")")
                 .setItems(items, (d, which) -> {
-                    UserPoints.Point p = sorted.get(which);
+                    if (which == 0) { newPointAtCenter(); return; }
+                    UserPoints.Point p = sorted.get(which - 1);
                     map.getController().animateTo(new GeoPoint(p.lat, p.lon), Math.max(13.0, map.getZoomLevelDouble()), 800L);
                 })
                 .setPositiveButton("Экспорт KML", (d, w) -> exportPoints())
@@ -1278,6 +1350,7 @@ public class MapActivity extends Activity {
         findViewById(R.id.dock).setVisibility(View.GONE);
         findViewById(R.id.toolPanel).setVisibility(View.VISIBLE);
         findViewById(R.id.toolCross).setVisibility(View.VISIBLE);
+        findViewById(R.id.centerMark).setVisibility(View.GONE);
         findViewById(R.id.toolSave).setVisibility(which == TOOL_ROUTE ? View.VISIBLE : View.GONE);
         ((TextView) findViewById(R.id.toolTitle)).setText(which == TOOL_RULER ? "ЛИНЕЙКА"
                 : "МАРШРУТ" + (route != null ? " · " + route.name : ""));
@@ -1310,6 +1383,7 @@ public class MapActivity extends Activity {
         findViewById(R.id.dock).setVisibility(View.VISIBLE);
         findViewById(R.id.toolPanel).setVisibility(View.GONE);
         findViewById(R.id.toolCross).setVisibility(View.GONE);
+        findViewById(R.id.centerMark).setVisibility(View.VISIBLE);
         applyGrid();
         map.invalidate();
     }
@@ -1528,6 +1602,223 @@ public class MapActivity extends Activity {
         map.zoomToBoundingBox(new BoundingBox(n + padLat, e + padLon, s - padLat, w - padLon), true, (int) dp(40));
     }
 
+    // ================= Меню (выезжающая панель) =================
+
+    private void setupMenu() {
+        findViewById(R.id.menuScrim).setOnClickListener(v -> openMenu(false));
+        findViewById(R.id.menuClose).setOnClickListener(v -> openMenu(false));
+        findViewById(R.id.lbsUpdate).setOnClickListener(v -> startLbsUpdate());
+        findViewById(R.id.lbsOpen).setOnClickListener(v -> openLbsFile(false));
+        findViewById(R.id.lbsShare).setOnClickListener(v -> openLbsFile(true));
+        findViewById(R.id.tileLayers).setOnClickListener(v -> { openMenu(false); showLayers(); });
+        findViewById(R.id.tileOffline).setOnClickListener(v -> { openMenu(false); chooseDownload(); });
+        findViewById(R.id.tileRoutes).setOnClickListener(v -> { openMenu(false); showRoutes(); });
+        findViewById(R.id.tilePoints).setOnClickListener(v -> { openMenu(false); exportPoints(); });
+        findViewById(R.id.tileInfo).setOnClickListener(v -> { openMenu(false); showInfo(); });
+        findViewById(R.id.tileAbout).setOnClickListener(v -> { openMenu(false); showAbout(); });
+
+        Switch swAuto = findViewById(R.id.swAuto), swDiff = findViewById(R.id.swDiff), swGray = findViewById(R.id.swGray);
+        swAuto.setChecked(LbsCore.autoEnabled(this));
+        swDiff.setChecked(LbsCore.optDiff(this));
+        swGray.setChecked(LbsCore.optGray(this));
+        swAuto.setOnCheckedChangeListener((b, on) -> {
+            try {
+                LbsCore.schedule(this, on);
+            } catch (Throwable e) {
+                Toast.makeText(this, "Автопроверка не включилась", Toast.LENGTH_LONG).show();
+            }
+        });
+        swDiff.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("optDiff", on).apply());
+        swGray.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("optGray", on).apply());
+        try {
+            ((TextView) findViewById(R.id.menuVersion)).setText("v"
+                    + getPackageManager().getPackageInfo(getPackageName(), 0).versionName + " · разработчик TRO9II");
+        } catch (Exception ignored) {
+        }
+    }
+
+    private boolean menuOpen() {
+        return findViewById(R.id.menuSheet).getVisibility() == View.VISIBLE;
+    }
+
+    private void openMenu(boolean open) {
+        View sheet = findViewById(R.id.menuSheet), panel = findViewById(R.id.menuPanel), scrim = findViewById(R.id.menuScrim);
+        if (open) {
+            updateLbsCard();
+            sheet.setVisibility(View.VISIBLE);
+            panel.setTranslationY(dp(500));
+            scrim.setAlpha(0f);
+            panel.animate().translationY(0).setDuration(220).start();
+            scrim.animate().alpha(1f).setDuration(220).start();
+        } else {
+            panel.animate().translationY(dp(600)).setDuration(180).withEndAction(() -> sheet.setVisibility(View.GONE)).start();
+            scrim.animate().alpha(0f).setDuration(180).start();
+        }
+    }
+
+    /** Лампочка и статус ЛБС: зелёная — свежая, жёлтая — обновляется/давно, красная — нет данных/ошибка. */
+    private void updateLbsCard() {
+        View lamp = findViewById(R.id.lbsLamp);
+        TextView st = findViewById(R.id.lbsStatus);
+        TextView btn = findViewById(R.id.lbsUpdate);
+        String err = prefs.getString("lastError", null);
+        long checked = prefs.getLong("lastCheck", 0);
+        int color;
+        String text;
+        if (lbsRunning) {
+            color = 0xFFFFB300;
+            text = lbsProgress;
+        } else if (lbsDate.isEmpty()) {
+            color = 0xFFE53935;
+            text = err != null ? "Ошибка: " + err : "Не загружена — нажмите «Обновить»";
+        } else if (err != null) {
+            color = 0xFFE53935;
+            text = "Снимок " + lbsDate + " · ошибка обновления";
+        } else if (System.currentTimeMillis() - checked > 24L * 3600 * 1000) {
+            color = 0xFFFFB300;
+            text = "Снимок " + lbsDate + " · давно не проверялась";
+        } else {
+            color = 0xFF43A047;
+            text = "Снимок " + lbsDate + " · проверено "
+                    + android.text.format.DateFormat.format("dd.MM HH:mm", checked);
+        }
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(color);
+        g.setStroke((int) dp(3), (color & 0x00FFFFFF) | 0x55000000);
+        lamp.setBackground(g);
+        lamp.animate().cancel();
+        lamp.setAlpha(1f);
+        if (lbsRunning) pulse(lamp);
+        st.setText(text);
+        btn.setEnabled(!lbsRunning);
+        btn.setAlpha(lbsRunning ? 0.5f : 1f);
+        btn.setText(lbsRunning ? "Обновляю…" : "Обновить");
+        boolean has = prefs.getString("lastUri", null) != null;
+        findViewById(R.id.lbsOpen).setEnabled(has);
+        findViewById(R.id.lbsShare).setEnabled(has);
+        findViewById(R.id.lbsOpen).setAlpha(has ? 1f : 0.4f);
+        findViewById(R.id.lbsShare).setAlpha(has ? 1f : 0.4f);
+        findViewById(R.id.menuBadge).setVisibility(color == 0xFFE53935 ? View.VISIBLE : View.GONE);
+    }
+
+    private void pulse(View v) {
+        v.animate().alpha(0.25f).setDuration(500).withEndAction(() ->
+                v.animate().alpha(1f).setDuration(500).withEndAction(() -> {
+                    if (lbsRunning) pulse(v);
+                }).start()).start();
+    }
+
+    private void openLbsFile(boolean share) {
+        String u = prefs.getString("lastUri", null);
+        if (u == null) return;
+        Uri uri = Uri.parse(u);
+        Intent i = new Intent(share ? Intent.ACTION_SEND : Intent.ACTION_VIEW);
+        if (share) {
+            i.setType(LbsCore.KML_MIME);
+            i.putExtra(Intent.EXTRA_STREAM, uri);
+        } else {
+            i.setDataAndType(uri, LbsCore.KML_MIME);
+        }
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(Intent.createChooser(i, share ? "Отправить файл ЛБС" : "Открыть в…"));
+        } catch (Exception e) {
+            Toast.makeText(this, "Нет приложения для KML (установите AlpineQuest)", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // ---- загрузка ЛБС прямо с карты (скрытый браузер)
+
+    private android.webkit.WebView lbsWeb;
+    private String lbsScript;
+    private boolean lbsRunning;
+    private int lbsTries;
+    private String lbsProgress = "";
+    private final android.os.Handler lbsHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+
+    private void setupLbsWeb() {
+        lbsWeb = findViewById(R.id.lbsWeb);
+        try {
+            lbsScript = LbsCore.readAsset(this, "lbs.js");
+        } catch (Exception e) {
+            lbsScript = null;
+        }
+        android.webkit.WebSettings ws = lbsWeb.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setDomStorageEnabled(true);
+        ws.setCacheMode(android.webkit.WebSettings.LOAD_NO_CACHE);
+        ws.setUserAgentString(ws.getUserAgentString().replace("; wv", ""));
+        lbsWeb.setWebViewClient(new android.webkit.WebViewClient() {
+            @Override
+            public void onPageFinished(android.webkit.WebView view, String url) {
+                if (lbsRunning) lbsHandler.postDelayed(MapActivity.this::lbsExtract, 1500);
+            }
+        });
+    }
+
+    private void startLbsUpdate() {
+        if (lbsRunning || lbsScript == null) return;
+        lbsRunning = true;
+        lbsTries = 0;
+        lbsProgress = "Загружаю данные DeepStateMap…";
+        updateLbsCard();
+        lbsWeb.loadUrl(LbsCore.SOURCE_URL);
+        lbsHandler.postDelayed(() -> {
+            if (lbsRunning) lbsFail("сайт не ответил");
+        }, 90_000);
+    }
+
+    private void lbsExtract() {
+        if (!lbsRunning) return;
+        lbsWeb.evaluateJavascript(lbsScript, raw -> {
+            if (!lbsRunning) return;
+            String res = LbsCore.decode(raw);
+            if (res == null || res.startsWith("WAIT")) {
+                if (++lbsTries < 20) {
+                    lbsProgress = "Жду ответа сайта…";
+                    updateLbsCard();
+                    lbsHandler.postDelayed(this::lbsExtract, 2000);
+                } else {
+                    lbsFail("сайт не отдал данные");
+                }
+                return;
+            }
+            if (res.startsWith("ERR")) {
+                lbsFail(res.substring(3).trim());
+                return;
+            }
+            lbsProgress = "Строю линию фронта…";
+            updateLbsCard();
+            final String data = res;
+            new Thread(() -> {
+                try {
+                    LbsCore.Result r = LbsCore.buildAndSave(getApplicationContext(), data);
+                    boolean isNew = LbsCore.remember(getApplicationContext(), r);
+                    runOnUiThread(() -> {
+                        lbsRunning = false;
+                        lbsHandler.removeCallbacksAndMessages(null);
+                        prefs.edit().remove("lastError").apply();
+                        forceReloadLbs();
+                        updateLbsCard();
+                        Toast.makeText(this, isNew ? "ЛБС обновлена: снимок " + r.date.replace(" o ", ", ")
+                                : "Новых данных нет — ЛБС актуальна", Toast.LENGTH_LONG).show();
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> lbsFail("не удалось сохранить файл"));
+                }
+            }).start();
+        });
+    }
+
+    private void lbsFail(String why) {
+        lbsRunning = false;
+        lbsHandler.removeCallbacksAndMessages(null);
+        prefs.edit().putString("lastError", why).apply();
+        updateLbsCard();
+        Toast.makeText(this, "ЛБС не обновилась: " + why, Toast.LENGTH_LONG).show();
+    }
+
     // ================= Офлайн =================
 
     private static final int MAX_TILES = 25000;
@@ -1651,6 +1942,8 @@ public class MapActivity extends Activity {
             }
             top.setPadding(top.getPaddingLeft(), tp + t, top.getPaddingRight(), top.getPaddingBottom());
             bottom.setPadding(bottom.getPaddingLeft(), bottom.getPaddingTop(), bottom.getPaddingRight(), bp + b);
+            View mp = findViewById(R.id.menuPanel);
+            mp.setPadding(mp.getPaddingLeft(), mp.getPaddingTop(), mp.getPaddingRight(), (int) dp(16) + b);
             return insets;
         });
         root.requestApplyInsets();
@@ -1670,6 +1963,10 @@ public class MapActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (menuOpen()) {
+            openMenu(false);
+            return;
+        }
         if (searchOpen()) {
             openSearch(false);
             return;
@@ -1709,6 +2006,8 @@ public class MapActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        lbsHandler.removeCallbacksAndMessages(null);
+        if (lbsWeb != null) lbsWeb.destroy();
         if (dlTask != null) dlTask.cancel(true);
         if (map != null) map.onDetach();
         super.onDestroy();

@@ -51,7 +51,7 @@ public class PathOverlay extends Overlay {
         lineHalo.setColor(Color.argb(150, 0, 0, 0));
         vStroke.setStyle(Paint.Style.STROKE);
         vStroke.setColor(Color.WHITE);
-        vStroke.setStrokeWidth(2 * density);
+        vStroke.setStrokeWidth(1.5f * density);
         num.setColor(Color.BLACK);
         num.setTextSize(10.5f * density);
         num.setTypeface(Typeface.DEFAULT_BOLD);
@@ -142,7 +142,7 @@ public class PathOverlay extends Overlay {
             ys[i] = pt.y;
             if (i == 0) path.moveTo(pt.x, pt.y); else path.lineTo(pt.x, pt.y);
         }
-        float w = (editing ? 3.4f : 3f) * density;
+        float w = (editing ? 2.6f : 2.4f) * density;
         lineHalo.setStrokeWidth(w + 2.6f * density);
         line.setStrokeWidth(w);
         line.setColor(color);
@@ -163,7 +163,7 @@ public class PathOverlay extends Overlay {
         }
 
         // вершины
-        float r = (editing ? 9 : 6.5f) * density;
+        float r = (editing ? 5.5f : 4.5f) * density;
         vFill.setColor(color);
         for (int i = 0; i < n; i++) {
             c.drawCircle(xs[i], ys[i], r, vFill);
@@ -171,7 +171,7 @@ public class PathOverlay extends Overlay {
             if (editing || i == 0 || i == n - 1) {
                 c.save();
                 if (orient != 0f) c.rotate(-orient, xs[i], ys[i]);
-                num.setTextSize((editing ? 10.5f : 8.5f) * density);
+                num.setTextSize((editing ? 7.5f : 6.5f) * density);
                 c.drawText(Integer.toString(i + 1), xs[i], ys[i] + num.getTextSize() * 0.36f, num);
                 c.restore();
             }

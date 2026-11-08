@@ -23,13 +23,14 @@ import java.util.List;
 public class GridOverlay extends Overlay {
 
     private static final double[] STEPS = {1000, 2000, 5000, 10000, 20000, 50000, 100000};
-    private static final int SAMPLES = 32;
+    private static final int SAMPLES = 16;
 
     private static final class GLine {
         final double[] lat = new double[SAMPLES + 1], lon = new double[SAMPLES + 1];
         final boolean[] ok = new boolean[SAMPLES + 1];
         boolean major;
         String label;
+        double minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
     }
 
     private final float density;
@@ -60,11 +61,11 @@ public class GridOverlay extends Overlay {
         zoneLine.setStrokeWidth(1.8f * density);
         zoneLine.setColor(Color.argb(200, 255, 64, 129));
         text.setColor(Color.argb(235, 15, 15, 15));
-        text.setTextSize(9.5f * density);
+        text.setTextSize(8.5f * density);
         text.setTextAlign(Paint.Align.CENTER);
         halo.set(text);
         halo.setStyle(Paint.Style.STROKE);
-        halo.setStrokeWidth(2.6f * density);
+        halo.setStrokeWidth(2.2f * density);
         halo.setColor(Color.argb(190, 255, 255, 255));
     }
 
@@ -94,7 +95,11 @@ public class GridOverlay extends Overlay {
 
         Projection pj = mv.getProjection();
         float orient = mv.getMapOrientation();
-        for (GLine l : cache) drawLine(c, pj, orient, l);
+        for (GLine l : cache) {
+            // только линии, которые проходят через экран
+            if (l.maxLat < s || l.minLat > n || l.maxLon < w || l.minLon > e) continue;
+            drawLine(c, pj, orient, l);
+        }
 
         // границы зон
         int zFrom = Sk42.zoneOf(w - 0.01), zTo = Sk42.zoneOf(e + 0.01);
@@ -160,6 +165,10 @@ public class GridOverlay extends Overlay {
             l.lat[i] = ll[0];
             l.lon[i] = ll[1];
             l.ok[i] = ll[1] >= zW - 0.02 && ll[1] <= zE + 0.02;
+            if (l.ok[i]) {
+                l.minLat = Math.min(l.minLat, ll[0]); l.maxLat = Math.max(l.maxLat, ll[0]);
+                l.minLon = Math.min(l.minLon, ll[1]); l.maxLon = Math.max(l.maxLon, ll[1]);
+            }
         }
         return l;
     }
