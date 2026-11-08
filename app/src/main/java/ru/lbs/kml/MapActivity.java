@@ -1,6 +1,7 @@
 package ru.lbs.kml;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.os.Build;
@@ -15,12 +16,17 @@ import android.widget.Toast;
 
 import org.osmdroid.config.Configuration;
 import org.osmdroid.config.IConfigurationProvider;
+import org.osmdroid.tileprovider.MapTileProviderBasic;
+import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase;
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory;
+import org.osmdroid.util.MapTileIndex;
 import org.osmdroid.util.BoundingBox;
 import org.osmdroid.util.GeoPoint;
+import org.osmdroid.views.CustomZoomButtonsController;
 import org.osmdroid.views.MapView;
 import org.osmdroid.views.overlay.Polygon;
 import org.osmdroid.views.overlay.Polyline;
+import org.osmdroid.views.overlay.TilesOverlay;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -64,11 +70,15 @@ public class MapActivity extends Activity {
         findViewById(R.id.btnBack).setOnClickListener(v -> finish());
 
         map = findViewById(R.id.map);
-        map.setTileSource(TileSourceFactory.MAPNIK);
         map.setMultiTouchControls(true);
         map.setTilesScaledToDpi(true);
         map.setMinZoomLevel(5.0);
         map.setMaxZoomLevel(18.0);
+        map.getZoomController().setVisibility(CustomZoomButtonsController.Visibility.NEVER);
+
+        findViewById(R.id.btnZoomIn).setOnClickListener(v -> map.getController().zoomIn());
+        findViewById(R.id.btnZoomOut).setOnClickListener(v -> map.getController().zoomOut());
+        findViewById(R.id.btnLayers).setOnClickListener(v -> chooseStyle());
 
         KmlBuilder.Parsed data;
         try {
@@ -83,10 +93,75 @@ public class MapActivity extends Activity {
         }
         ((TextView) findViewById(R.id.mapDate)).setText("Снимок DeepState: " + data.date.replace(" o ", ", "));
         addOverlays(data);
+        applyStyle(LbsCore.prefs(this).getInt("mapStyle", STYLE_SAT));
         buildChips();
 
         if (savedInstanceState != null) selected = savedInstanceState.getInt("sel", 0);
         map.addOnFirstLayoutListener((v, l, t, r, b) -> zoomTo(selected, false));
+    }
+
+    // ---------- Подложка ----------
+
+    private static final int STYLE_SCHEME = 0, STYLE_SAT = 1, STYLE_TOPO = 2;
+    private static final String[] STYLE_NAMES = {"Схема (OpenStreetMap)", "Спутник (Esri)", "Топокарта (Esri)"};
+    private static final String ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
+
+    /** Тайлы Esri: порядок в адресе z/y/x. */
+    private static final class EsriSource extends OnlineTileSourceBase {
+        EsriSource(String name, String service, String ext) {
+            super(name, 0, 19, 256, ext, new String[]{ESRI + service + "/MapServer/tile/"});
+        }
+
+        @Override
+        public String getTileURLString(long idx) {
+            return getBaseUrl() + MapTileIndex.getZoom(idx) + "/" + MapTileIndex.getY(idx) + "/" + MapTileIndex.getX(idx);
+        }
+    }
+
+    private static final OnlineTileSourceBase SAT = new EsriSource("EsriImagery", "World_Imagery", ".jpg");
+    private static final OnlineTileSourceBase TOPO = new EsriSource("EsriTopo", "World_Topo_Map", ".jpg");
+    private static final OnlineTileSourceBase LABELS = new EsriSource("EsriLabels", "Reference/World_Boundaries_and_Places", ".png");
+
+    private TilesOverlay labels;
+
+    private void applyStyle(int style) {
+        if (style < 0 || style > 2) style = STYLE_SAT;
+        LbsCore.prefs(this).edit().putInt("mapStyle", style).apply();
+        TextView attr = findViewById(R.id.attribution);
+        if (labels != null) {
+            map.getOverlays().remove(labels);
+            labels.onDetach(map);
+            labels = null;
+        }
+        if (style == STYLE_SCHEME) {
+            map.setTileSource(TileSourceFactory.MAPNIK);
+            attr.setText("© участники OpenStreetMap");
+        } else if (style == STYLE_TOPO) {
+            map.setTileSource(TOPO);
+            attr.setText("Esri, HERE, Garmin, USGS, © OpenStreetMap");
+        } else {
+            map.setTileSource(SAT);
+            // подписи городов и границы поверх спутника, под линиями
+            MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), LABELS);
+            labels = new TilesOverlay(prov, getApplicationContext());
+            labels.setLoadingBackgroundColor(Color.TRANSPARENT);
+            labels.setLoadingLineColor(Color.TRANSPARENT);
+            map.getOverlays().add(0, labels);
+            attr.setText("Esri, Maxar, Earthstar Geographics");
+        }
+        map.invalidate();
+    }
+
+    private void chooseStyle() {
+        int cur = LbsCore.prefs(this).getInt("mapStyle", STYLE_SAT);
+        new AlertDialog.Builder(this)
+                .setTitle("Подложка карты")
+                .setSingleChoiceItems(STYLE_NAMES, cur, (d, which) -> {
+                    applyStyle(which);
+                    d.dismiss();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
     }
 
     private float dp(float v) {
