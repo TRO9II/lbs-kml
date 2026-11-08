@@ -295,7 +295,7 @@ public class MainActivity extends Activity {
         try {
             startActivity(Intent.createChooser(i, "Открыть в…"));
         } catch (ActivityNotFoundException e) {
-            Toast.makeText(this, "Нет приложения для KML (установите Google Earth)", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Нет приложения для KML (установите AlpineQuest)", Toast.LENGTH_LONG).show();
         }
     }
 
