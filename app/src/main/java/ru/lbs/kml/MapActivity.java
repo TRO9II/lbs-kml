@@ -6859,66 +6859,139 @@ public class MapActivity extends Activity {
     private void chatSettings() {
         chatOpen = false;
         sheetFooter.setVisibility(View.GONE);
-        sheet("Группа «" + chat.groupName() + "»");
-        int tx = getColor(R.color.hud_text);
+        sheet(chat.groupName());
         int pend = 0, act = 0;
         for (ChatClient.Person p : chat.people()) { if (p.role.equals("pending")) pend++; if (p.active()) act++; }
-        hRow(hIcon(R.drawable.ic_my_location, tx, 22), "Участники", act + " в группе" + (chat.isAdmin() && pend > 0 ? " · " + pend + " ждут подтверждения" : "")
-                + " · вы " + chat.role().replace("owner", "создатель").replace("admin", "администратор").replace("member", "участник"),
-                null, v -> showPeople());
-        if (chat.isAdmin()) hRow(hIcon(R.drawable.ic_qr, tx, 22), "Пригласить", "QR со сроком действия", null, v -> showInvite());
-        hRow(hIcon(R.drawable.ic_chat, tx, 22), "Позывной", chat.callsign(), null, v -> askCallsign(this::openChat));
-        hSection("МОЁ МЕСТОПОЛОЖЕНИЕ");
-        hToggle("Показывать меня на карте группы", prefs.getBoolean("groupBg", true)
-                        ? "И когда приложение свёрнуто. Координаты шифруются" : "Только пока приложение открыто. Координаты шифруются",
-                prefs.getBoolean("shareLoc", false), this::setSharing);
-        final double[] ev = {prefs.getInt("shareEvery", 60)};
-        heightChipsUnits("Как часто отправлять", new double[]{30, 60, 300, 900}, ev, "",
-                v -> prefs.edit().putInt("shareEvery", (int) v).apply());
-        LinearLayout lastRow = (LinearLayout) sheetContent.getChildAt(sheetContent.getChildCount() - 1);
-        String[] evl = {"30 с", "1 мин", "5 мин", "15 мин"};
-        for (int i = 0; i < lastRow.getChildCount(); i++) ((TextView) lastRow.getChildAt(i)).setText(evl[i]);
-        TextView warn = new TextView(this);
-        warn.setText("Каждая отправка — выход телефона в сеть. Реже — меньше заметность и расход батареи.");
-        warn.setTextColor(getColor(R.color.hud_text2));
-        warn.setTextSize(12);
-        warn.setPadding((int) dp(4), (int) dp(6), (int) dp(4), (int) dp(4));
-        sheetContent.addView(warn);
-        hToggle("Показывать мой след", "Путь за последний час — пунктиром за меткой", prefs.getBoolean("shareTrail", false),
-                on -> prefs.edit().putBoolean("shareTrail", on).apply());
-        hRow(hIcon(R.drawable.ic_my_location, tx, 22), "Кто на карте", chat.members().size() + " участн.", null, v -> showMembers());
-        hSection("ФОН И СООБЩЕНИЯ");
-        hToggle("Работать в фоне", "Сообщения, SOS и ваша метка — даже когда приложение свёрнуто. В шторке будет значок",
-                prefs.getBoolean("groupBg", true), on -> {
-                    prefs.edit().putBoolean("groupBg", on).apply();
-                    if (on) askNotifPermission();
-                    restartGroupService();
-                });
-        final double[] tt = {chat.ttl()};
-        heightChipsUnits("Исчезающие сообщения (для новых сообщений от вас)", new double[]{0, 3600, 86400, 604800}, tt, "", v -> chat.setTtl((int) v));
-        LinearLayout ttr = (LinearLayout) sheetContent.getChildAt(sheetContent.getChildCount() - 1);
-        String[] ttl = {"Выкл", "1 час", "24 часа", "7 дней"};
-        for (int i = 0; i < ttr.getChildCount(); i++) ((TextView) ttr.getChildAt(i)).setText(ttl[i]);
-        hSection("ГРУППА");
-        hRow(hIcon(R.drawable.ic_info, tx, 22), "Сервер", (chat.lastOk() ? "в работе" : "нет связи — переподключаюсь")
-                + (chat.role().equals("owner") ? " · " + chat.server().replace("http://", "") : ""), null, null);
-        hRow(hIcon(R.drawable.ic_close, 0xFFFF6B60, 22), "Выйти из группы", "Переписка на этом телефоне удалится", null, v ->
-                new AlertDialog.Builder(this)
-                        .setTitle("Выйти из группы?")
-                        .setMessage(chat.role().equals("owner")
-                                ? "Вы создатель. Группа продолжит работать, но управлять ею смогут только назначенные вами администраторы. Вернуться можно по приглашению."
-                                : "Чтобы вернуться, понадобится новое приглашение.")
-                        .setPositiveButton("Выйти", (d, w) -> {
-                            if (prefs.getBoolean("shareLoc", false)) chat.sendLoc(0, 0, 0, Float.NaN, true);
-                            prefs.edit().putBoolean("shareLoc", false).apply();
-                            chat.leave(null);
-                            membersOverlay.setMembers(new ArrayList<>());
-                            closeSheet();
-                            Toast.makeText(this, "Вы вышли из группы", Toast.LENGTH_SHORT).show();
-                        })
-                        .setNegativeButton("Отмена", null)
-                        .show());
-        hChipRow(hChip("Назад в чат", R.drawable.ic_back, true, v -> openChat()));
+        String roleName = chat.role().equals("owner") ? "создатель" : chat.role().equals("admin") ? "администратор" : "участник";
+
+        LinearLayout g1 = layerBox();
+        layerLink(g1, R.drawable.ic_my_location, "Участники",
+                act + (chat.isAdmin() && pend > 0 ? " · ждут " + pend : ""), v -> showPeople());
+        if (chat.isAdmin()) {
+            layerDivider(g1);
+            layerLink(g1, R.drawable.ic_qr, "Пригласить", "QR", v -> showInvite());
+        }
+        layerDivider(g1);
+        layerLink(g1, R.drawable.ic_chat, "Позывной", chat.callsign(), v -> askCallsign(this::openChat));
+        setBlock("ГРУППА · вы " + roleName, g1);
+
+        LinearLayout g2 = layerBox();
+        setSwitch(g2, "Показывать меня на карте", prefs.getBoolean("shareLoc", false), on -> { setSharing(on); chatSettings(); });
+        if (prefs.getBoolean("shareLoc", false)) {
+            setSeg(g2, "Отправлять раз в", new String[]{"30 с", "1 мин", "5 мин", "15 мин"}, new int[]{30, 60, 300, 900},
+                    prefs.getInt("shareEvery", 60), v -> prefs.edit().putInt("shareEvery", v).apply());
+            layerDivider(g2);
+            setSwitch(g2, "След за последний час", prefs.getBoolean("shareTrail", false), on -> prefs.edit().putBoolean("shareTrail", on).apply());
+        }
+        layerDivider(g2);
+        layerLink(g2, R.drawable.ic_place, "Кто на карте", Integer.toString(chat.members().size()), v -> showMembers());
+        setBlock("МЕСТОПОЛОЖЕНИЕ", g2);
+
+        LinearLayout g3 = layerBox();
+        setSwitch(g3, "Работать в фоне", prefs.getBoolean("groupBg", true), on -> {
+            prefs.edit().putBoolean("groupBg", on).apply();
+            if (on) askNotifPermission();
+            restartGroupService();
+        });
+        setSeg(g3, "Исчезающие сообщения", new String[]{"Выкл", "1 ч", "24 ч", "7 дн"}, new int[]{0, 3600, 86400, 604800},
+                chat.ttl(), chat::setTtl);
+        setBlock("СООБЩЕНИЯ", g3);
+
+        LinearLayout foot = new LinearLayout(this);
+        foot.setOrientation(LinearLayout.HORIZONTAL);
+        foot.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        foot.setPadding((int) dp(6), (int) dp(14), (int) dp(6), 0);
+        TextView srv = new TextView(this);
+        srv.setText((chat.lastOk() ? "● Сервер в работе" : "○ Нет связи — переподключаюсь")
+                + (chat.role().equals("owner") ? "\n" + chat.server().replace("http://", "") : ""));
+        srv.setTextSize(12);
+        srv.setTextColor(chat.lastOk() ? 0xFF66BB6A : 0xFFFFB74D);
+        foot.addView(srv, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        TextView leave = new TextView(this);
+        leave.setText("Выйти из группы");
+        leave.setTextSize(13);
+        leave.setTextColor(0xFFFF6B60);
+        leave.setPadding((int) dp(10), (int) dp(8), (int) dp(4), (int) dp(8));
+        leave.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("Выйти из группы?")
+                .setMessage(chat.role().equals("owner")
+                        ? "Вы создатель. Группа продолжит работать, но управлять ею смогут только назначенные вами администраторы. Вернуться можно по приглашению."
+                        : "Переписка на этом телефоне удалится. Чтобы вернуться, понадобится новое приглашение.")
+                .setPositiveButton("Выйти", (d, w) -> {
+                    if (prefs.getBoolean("shareLoc", false)) chat.sendLoc(0, 0, 0, Float.NaN, true);
+                    prefs.edit().putBoolean("shareLoc", false).apply();
+                    chat.leave(null);
+                    membersOverlay.setMembers(new ArrayList<>());
+                    closeSheet();
+                    Toast.makeText(this, "Вы вышли из группы", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Отмена", null)
+                .show());
+        foot.addView(leave);
+        sheetContent.addView(foot);
+        hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
+    }
+
+    private void setBlock(String title, LinearLayout box) {
+        TextView h = hSection(title);
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sheetContent.addView(box, bl);
+    }
+
+    /** Строка с переключателем внутри блока. */
+    private void setSwitch(LinearLayout box, String title, boolean value, Toggle cb) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding((int) dp(14), (int) dp(6), (int) dp(10), (int) dp(6));
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(14.5f);
+        t.setTextColor(getColor(R.color.hud_text));
+        row.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        Switch sw = new Switch(this);
+        sw.setChecked(value);
+        sw.setOnCheckedChangeListener((b, on) -> cb.on(on));
+        row.addView(sw);
+        row.setOnClickListener(v -> sw.toggle());
+        box.addView(row);
+    }
+
+    /** Подпись и сегменты выбора внутри блока. */
+    private void setSeg(LinearLayout box, String title, String[] labels, int[] values, int cur, java.util.function.IntConsumer cb) {
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(12);
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setPadding((int) dp(14), (int) dp(4), (int) dp(14), (int) dp(6));
+        box.addView(t);
+        LinearLayout seg = new LinearLayout(this);
+        seg.setOrientation(LinearLayout.HORIZONTAL);
+        seg.setPadding((int) dp(3), (int) dp(3), (int) dp(3), (int) dp(3));
+        GradientDrawable sg = new GradientDrawable();
+        sg.setCornerRadius(dp(10));
+        sg.setColor(0xFF15181D);
+        seg.setBackground(sg);
+        final List<TextView> bs = new ArrayList<>();
+        for (int i = 0; i < labels.length; i++) {
+            final int v = values[i];
+            TextView b = new TextView(this);
+            b.setText(labels[i]);
+            b.setTextSize(13);
+            b.setGravity(android.view.Gravity.CENTER);
+            b.setPadding(0, (int) dp(7), 0, (int) dp(7));
+            b.setTag(v);
+            b.setOnClickListener(x -> {
+                cb.accept(v);
+                for (TextView o : bs) styleSeg(o, (int) o.getTag() == v);
+            });
+            bs.add(b);
+            seg.addView(b, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            styleSeg(b, v == cur);
+        }
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sl.setMargins((int) dp(10), 0, (int) dp(10), (int) dp(10));
+        box.addView(seg, sl);
     }
 
 
