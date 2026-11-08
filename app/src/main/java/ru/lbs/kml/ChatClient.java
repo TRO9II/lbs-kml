@@ -508,6 +508,12 @@ final class ChatClient {
 
     // ---------- хранение ----------
 
+    /** Перечитать настройки (после восстановления из резервной копии). */
+    void reload() {
+        stop();
+        load();
+    }
+
     private void load() {
         server = prefs.getString("c2Server", "");
         room = prefs.getString("c2Room", "");

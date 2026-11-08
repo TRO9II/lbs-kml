@@ -22,6 +22,12 @@ jobs:
         with:
           gradle-version: '8.14.3'
 
+      - name: Signing key
+        env:
+          KS: ${{ secrets.SIGN_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then echo "$KS" | base64 -d > app/rubezh.jks; echo "Подпись: постоянный ключ"; else echo "::warning::Секрет SIGN_KEYSTORE_B64 не задан — подпись случайным ключом"; fi
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 

@@ -1294,6 +1294,15 @@ public class MapActivity extends Activity {
         } catch (Exception ignored) {
         }
         sheet("О приложении");
+        hChipRow(hChip("Проверить обновления", R.drawable.ic_refresh, true, v -> {
+            prefs.edit().putLong("updCheckedAt", 0).apply();
+            checkUpdates();
+            Toast.makeText(this, "Проверяю…", Toast.LENGTH_SHORT).show();
+            map.postDelayed(() -> {
+                if (updateAvailable()) downloadUpdate();
+                else Toast.makeText(this, "У вас последняя версия", Toast.LENGTH_SHORT).show();
+            }, 2500);
+        }));
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -3424,6 +3433,7 @@ public class MapActivity extends Activity {
         showSavedCrash();
         maybeLock();
         visible = true;
+        checkUpdates();
         if (chat != null && chat.configured() && !offline()) {
             chat.start();
             GroupService.start(this);
@@ -4108,7 +4118,7 @@ public class MapActivity extends Activity {
     private void checkUpdates() {
         if (offline()) return;
         long last = prefs.getLong("updCheckedAt", 0);
-        if (System.currentTimeMillis() - last < 6L * 3600 * 1000) {
+        if (System.currentTimeMillis() - last < 20L * 60 * 1000) {
             showUpdateRow();
             return;
         }
@@ -4162,13 +4172,53 @@ public class MapActivity extends Activity {
         }
     }
 
+    private boolean updBusy;
+
+    /** Обновление прямо из приложения: скачать и поставить поверх. */
     private void downloadUpdate() {
+        openMenu(false);
+        sheet("Обновление");
+        String mine = "";
         try {
-            startActivity(new Intent(Intent.ACTION_VIEW,
-                    Uri.parse("https://github.com/TRO9II/lbs-kml/releases/download/latest/LbsKml.apk")));
-        } catch (Exception e) {
-            Toast.makeText(this, "Нет браузера для скачивания", Toast.LENGTH_LONG).show();
+            mine = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
         }
+        LinearLayout card = hCard();
+        addKV(card, "Установлена", "v" + mine);
+        addKV(card, "Доступна", prefs.getString("updVer", "").isEmpty() ? "проверяю…" : "v" + prefs.getString("updVer", ""));
+        sheetContent.addView(card);
+        final TextView st = new TextView(this);
+        st.setTextColor(getColor(R.color.hud_text2));
+        st.setTextSize(13);
+        st.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        String err = prefs.getString("updError", "");
+        st.setText(err.isEmpty() ? "Новая версия скачается и встанет поверх — точки, маршруты и группа сохранятся." : err);
+        sheetContent.addView(st);
+        footer("Позже", "Скачать и установить", v -> {
+            if (updBusy) return;
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                Toast.makeText(this, "Разрешите «Рубежу» устанавливать приложения и вернитесь сюда", Toast.LENGTH_LONG).show();
+                try {
+                    startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+                } catch (Exception ignored) {
+                }
+                return;
+            }
+            updBusy = true;
+            prefs.edit().remove("updError").apply();
+            new Thread(() -> {
+                try {
+                    File apk = Updater.download(this, (done, total) -> runOnUiThread(() -> st.setText(
+                            "Скачиваю: " + (total > 0 ? (done * 100 / total) + "% · " : "") + String.format(Locale.US, "%.1f МБ", done / 1048576.0))));
+                    runOnUiThread(() -> st.setText("Устанавливаю… подтвердите в окне системы"));
+                    Updater.install(this, apk);
+                } catch (Exception e) {
+                    runOnUiThread(() -> st.setText("Не удалось: " + e.getMessage()));
+                } finally {
+                    updBusy = false;
+                }
+            }).start();
+        });
     }
 
     // ================= Импорт и резервная копия =================
@@ -4355,7 +4405,20 @@ public class MapActivity extends Activity {
             File pf = new File(getFilesDir(), "points.json"), rf = new File(getFilesDir(), "routes.json");
             o.put("points", pf.exists() ? new JSONArray(new String(java.nio.file.Files.readAllBytes(pf.toPath()), StandardCharsets.UTF_8)) : new JSONArray());
             o.put("routes", rf.exists() ? new JSONArray(new String(java.nio.file.Files.readAllBytes(rf.toPath()), StandardCharsets.UTF_8)) : new JSONArray());
-            String name = "LBS_backup_" + new SimpleDateFormat("dd_MM_yyyy_HHmm", Locale.US).format(new Date()) + ".json";
+            if (chat != null && chat.configured()) {
+                JSONObject g = new JSONObject();
+                for (java.util.Map.Entry<String, ?> e : prefs.getAll().entrySet())
+                    if (e.getKey().startsWith("c2") || e.getKey().equals("chatCall") || e.getKey().startsWith("share"))
+                        g.put(e.getKey(), e.getValue() instanceof Boolean ? e.getValue() : e.getValue() instanceof Integer ? e.getValue()
+                                : e.getValue() instanceof Long ? e.getValue() : String.valueOf(e.getValue()));
+                JSONObject types = new JSONObject();
+                for (java.util.Map.Entry<String, ?> e : prefs.getAll().entrySet())
+                    if (g.has(e.getKey())) types.put(e.getKey(), e.getValue() instanceof Long ? "l" : e.getValue() instanceof Integer ? "i"
+                            : e.getValue() instanceof Boolean ? "b" : "s");
+                o.put("group", g);
+                o.put("groupTypes", types);
+            }
+            String name = "Rubezh_backup_" + new SimpleDateFormat("dd_MM_yyyy_HHmm", Locale.US).format(new Date()) + ".json";
             saveAndShare(name, o.toString(), "Сохранить резервную копию", "application/json");
         } catch (Exception e) {
             Toast.makeText(this, "Не удалось сделать копию: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -4368,13 +4431,20 @@ public class MapActivity extends Activity {
                 JSONObject o = new JSONObject(new String(readUri(uri), StandardCharsets.UTF_8));
                 if (!o.has("points") && !o.has("routes")) throw new Exception("это не резервная копия Рубежа");
                 final JSONArray pts = o.optJSONArray("points"), rts = o.optJSONArray("routes");
+                final JSONObject grp = o.optJSONObject("group"), gty = o.optJSONObject("groupTypes");
                 runOnUiThread(() -> {
                     sheet("Восстановление");
                     LinearLayout card = hCard();
                     addKV(card, "В копии точек", Integer.toString(pts == null ? 0 : pts.length()));
                     addKV(card, "В копии маршрутов", Integer.toString(rts == null ? 0 : rts.length()));
+                    if (grp != null) addKV(card, "Группа", "«" + grp.optString("c2Group", "Группа") + "», позывной " + grp.optString("chatCall"));
                     addKV(card, "Сейчас на телефоне", userPoints.size() + " точек, " + routes.size() + " маршрутов");
                     sheetContent.addView(card);
+                    if (grp != null && gty != null && !chat.configured())
+                        hChipRow(hChip("Вернуть доступ к группе", R.drawable.ic_my_location, true, v -> {
+                            restoreGroup(grp, gty);
+                            Toast.makeText(this, "Доступ к группе восстановлен", Toast.LENGTH_LONG).show();
+                        }));
                     hChipRow(hChip("Добавить к текущим", R.drawable.ic_add, false, v -> applyRestore(pts, rts, false)));
                     footer("Отмена", "Заменить всё", v -> applyRestore(pts, rts, true));
                 });
@@ -4382,6 +4452,28 @@ public class MapActivity extends Activity {
                 runOnUiThread(() -> Toast.makeText(this, "Не удалось восстановить: " + e.getMessage(), Toast.LENGTH_LONG).show());
             }
         }).start();
+    }
+
+    private void restoreGroup(JSONObject g, JSONObject types) {
+        try {
+            SharedPreferences.Editor ed = prefs.edit();
+            for (java.util.Iterator<String> it = g.keys(); it.hasNext(); ) {
+                String k = it.next();
+                switch (types.optString(k, "s")) {
+                    case "l": ed.putLong(k, g.getLong(k)); break;
+                    case "i": ed.putInt(k, g.getInt(k)); break;
+                    case "b": ed.putBoolean(k, g.getBoolean(k)); break;
+                    default: ed.putString(k, g.getString(k));
+                }
+            }
+            ed.commit();
+            chat.reload();
+            chat.start();
+            GroupService.start(this);
+            refreshGroupMap();
+        } catch (Exception e) {
+            Toast.makeText(this, "Не удалось вернуть группу: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     private void applyRestore(JSONArray pts, JSONArray rts, boolean replace) {

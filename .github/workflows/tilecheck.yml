@@ -1,19 +1,9 @@
 name: Check tiles
 on:
   workflow_dispatch:
-permissions:
-  actions: read
-  contents: read
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Compare signing certs of recent builds
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          AS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)apksigner
-          for id in $(gh run list -R ${{ github.repository }} -w "Build APK" -s success -L 4 --json databaseId -q '.[].databaseId'); do
-            mkdir -p a$id && gh run download $id -R ${{ github.repository }} -n LbsKml-apk -D a$id >/dev/null 2>&1 || continue
-            echo "run $id: $($AS verify --print-certs a$id/LbsKml.apk | grep SHA-256)"
-          done
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_elev.py

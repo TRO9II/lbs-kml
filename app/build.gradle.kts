@@ -10,11 +10,25 @@ android {
         applicationId = "ru.lbs.kml"
         minSdk = 29
         targetSdk = 35
-        versionCode = 47
-        versionName = "3.19"
+        versionCode = 48
+        versionName = "3.20"
+    }
+
+    // Постоянная подпись: ключ кладётся в app/rubezh.jks из секрета GitHub SIGN_KEYSTORE_B64.
+    // С одной и той же подписью новые версии ставятся поверх старой, без удаления.
+    signingConfigs {
+        create("rubezh") {
+            storeFile = file("rubezh.jks")
+            storePassword = "rubezh-sign"
+            keyAlias = "rubezh"
+            keyPassword = "rubezh-sign"
+        }
     }
 
     buildTypes {
+        debug {
+            if (file("rubezh.jks").exists()) signingConfig = signingConfigs.getByName("rubezh")
+        }
         release {
             isMinifyEnabled = false
         }
