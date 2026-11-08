@@ -21,6 +21,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.osmdroid.tileprovider.tilesource.XYTileSource;
 import org.osmdroid.events.MapListener;
+import org.osmdroid.tileprovider.cachemanager.CacheManager;
+import org.osmdroid.tileprovider.modules.SqlTileWriter;
 import org.osmdroid.events.ScrollEvent;
 import org.osmdroid.events.ZoomEvent;
 import org.osmdroid.views.overlay.Marker;
@@ -52,6 +54,7 @@ import org.osmdroid.views.overlay.TilesOverlay;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /** Карта ЛБС по направлениям (областям). */
 public class MapActivity extends Activity {
@@ -82,9 +85,17 @@ public class MapActivity extends Activity {
         IConfigurationProvider conf = Configuration.getInstance();
         conf.load(this, LbsCore.prefs(this));
         conf.setUserAgentValue(getPackageName());
-        File base = new File(getCacheDir(), "osmdroid");
+        // во внутренней памяти (а не в кэше), чтобы система не удаляла скачанные области
+        File base = new File(getFilesDir(), "osmdroid");
         conf.setOsmdroidBasePath(base);
         conf.setOsmdroidTileCache(new File(base, "tiles"));
+        conf.setTileDownloadThreads((short) 8);          // по умолчанию 2 — отсюда медленная прогрузка
+        conf.setTileFileSystemThreads((short) 8);
+        conf.setTileDownloadMaxQueueSize((short) 120);
+        conf.setTileFileSystemMaxQueueSize((short) 120);
+        conf.setTileFileSystemCacheMaxBytes(3000L * 1024 * 1024);
+        conf.setTileFileSystemCacheTrimBytes(2500L * 1024 * 1024);
+        conf.setExpirationExtendedDuration(60L * 24 * 60 * 60 * 1000); // скачанное считается свежим 60 дней
 
         setContentView(R.layout.activity_map);
         applyInsets(findViewById(R.id.mapRoot), findViewById(R.id.topBar), findViewById(R.id.bottomBar));
@@ -100,6 +111,8 @@ public class MapActivity extends Activity {
         findViewById(R.id.btnZoomIn).setOnClickListener(v -> map.getController().zoomIn());
         findViewById(R.id.btnZoomOut).setOnClickListener(v -> map.getController().zoomOut());
         findViewById(R.id.btnLayers).setOnClickListener(v -> chooseStyle());
+        findViewById(R.id.btnDownload).setOnClickListener(v -> chooseDownload());
+        findViewById(R.id.dlCancel).setOnClickListener(v -> cancelDownload());
         findViewById(R.id.btnLabels).setOnClickListener(v -> toggleLabels());
         styleLabelsButton();
         setupSearch();
@@ -509,6 +522,128 @@ public class MapActivity extends Activity {
                 .show();
     }
 
+    // ---------- Скачивание области для офлайна ----------
+
+    private static final int MAX_TILES = 25000;
+    private CacheManager.CacheManagerTask dlTask;
+
+    private File tileDb() {
+        return new File(Configuration.getInstance().getOsmdroidTileCache(), "cache.db");
+    }
+
+    private static String mb(double bytes) {
+        double m = bytes / 1024 / 1024;
+        return m >= 1024 ? String.format(Locale.US, "%.1f ГБ", m / 1024) : Math.max(1, Math.round(m)) + " МБ";
+    }
+
+    /** Примерный размер одного тайла, байт. */
+    private int tileBytes() {
+        return currentStyle == STYLE_SAT ? 20000 : currentStyle == STYLE_TOPO ? 16000 : 9000;
+    }
+
+    private void chooseDownload() {
+        if (dlTask != null) {
+            Toast.makeText(this, "Загрузка уже идёт", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final CacheManager cm;
+        try {
+            cm = new CacheManager(map);
+        } catch (Exception e) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Нельзя скачать эту карту")
+                    .setMessage("Правила OpenStreetMap запрещают массовое скачивание схемы с их подписями. "
+                            + "Включите «Аа» (русские подписи) или выберите спутник / топокарту.")
+                    .setPositiveButton("Понятно", null)
+                    .show();
+            return;
+        }
+        final BoundingBox bb = map.getBoundingBox();
+        final int zMin = 8;
+        final int[] zMaxes = {15, 16, 17, 18};
+        final String[] labels = new String[zMaxes.length];
+        final int[] counts = new int[zMaxes.length];
+        for (int i = 0; i < zMaxes.length; i++) {
+            counts[i] = cm.possibleTilesInArea(bb, zMin, zMaxes[i]);
+            String detail = zMaxes[i] <= 15 ? "обзор" : zMaxes[i] == 16 ? "сёла" : zMaxes[i] == 17 ? "улицы" : "максимум, дома";
+            labels[i] = "До уровня " + zMaxes[i] + " (" + detail + ") — " + mb((double) counts[i] * tileBytes())
+                    + (counts[i] > MAX_TILES ? " · слишком много, приблизьте" : "");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Скачать видимую область")
+                .setItems(labels, (d, which) -> {
+                    if (counts[which] > MAX_TILES) {
+                        Toast.makeText(this, "Слишком большая область — приблизьте карту или выберите уровень ниже",
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    startDownload(cm, bb, zMin, zMaxes[which], counts[which]);
+                })
+                .setNeutralButton("Очистить (" + mb(tileDb().length()) + ")", (d, w) -> confirmClear())
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void startDownload(CacheManager cm, BoundingBox bb, int zMin, int zMax, int total) {
+        final TextView t = findViewById(R.id.dlText);
+        findViewById(R.id.dlRow).setVisibility(View.VISIBLE);
+        t.setText("Скачиваю область: 0%");
+        dlTask = cm.downloadAreaAsyncNoUI(this, bb, zMin, zMax, new CacheManager.CacheManagerCallback() {
+            @Override
+            public void onTaskComplete() {
+                finishDownload("Область сохранена — работает без интернета");
+            }
+
+            @Override
+            public void onTaskFailed(int errors) {
+                finishDownload("Скачано с ошибками (" + errors + " тайлов). Проверьте интернет и повторите");
+            }
+
+            @Override
+            public void updateProgress(int progress, int currentZoomLevel, int zoomMin, int zoomMax) {
+                int pct = total > 0 ? Math.min(100, progress * 100 / total) : 0;
+                t.setText("Скачиваю область: " + pct + "% · уровень " + currentZoomLevel + " из " + zoomMax);
+            }
+
+            @Override
+            public void downloadStarted() {
+            }
+
+            @Override
+            public void setPossibleTilesInArea(int total) {
+            }
+        });
+    }
+
+    private void finishDownload(String msg) {
+        dlTask = null;
+        findViewById(R.id.dlRow).setVisibility(View.GONE);
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+        map.invalidate();
+    }
+
+    private void cancelDownload() {
+        if (dlTask != null) dlTask.cancel(true);
+        finishDownload("Загрузка остановлена. Уже скачанное сохранено");
+    }
+
+    private void confirmClear() {
+        new AlertDialog.Builder(this)
+                .setTitle("Удалить сохранённые карты?")
+                .setMessage("Все скачанные и просмотренные участки карты будут удалены (" + mb(tileDb().length())
+                        + "). Линия фронта и подписи останутся.")
+                .setPositiveButton("Удалить", (d, w) -> {
+                    try {
+                        new SqlTileWriter().purgeCache();
+                    } catch (Exception ignored) {
+                    }
+                    map.invalidate();
+                    Toast.makeText(this, "Сохранённые карты удалены", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
     private float dp(float v) {
         return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
     }
@@ -643,6 +778,7 @@ public class MapActivity extends Activity {
     @Override
     protected void onDestroy() {
         infoHandler.removeCallbacksAndMessages(null);
+        if (dlTask != null) dlTask.cancel(true);
         if (map != null) map.onDetach();
         super.onDestroy();
     }
