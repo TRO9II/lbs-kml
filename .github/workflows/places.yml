@@ -1,0 +1,24 @@
+name: Update places
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  places:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch settlements from OpenStreetMap
+        run: python3 scripts/fetch_places.py
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/assets/places.tsv.gz
+          git commit -m "Обновлён список населённых пунктов (OSM)" || exit 0
+          git push
