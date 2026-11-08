@@ -61,11 +61,11 @@ public class GridOverlay extends Overlay {
         zoneLine.setStrokeWidth(1.8f * density);
         zoneLine.setColor(Color.argb(200, 255, 64, 129));
         text.setColor(Color.argb(235, 15, 15, 15));
-        text.setTextSize(8.5f * density);
+        text.setTextSize(7.5f * density);
         text.setTextAlign(Paint.Align.CENTER);
         halo.set(text);
         halo.setStyle(Paint.Style.STROKE);
-        halo.setStrokeWidth(2.2f * density);
+        halo.setStrokeWidth(2f * density);
         halo.setColor(Color.argb(190, 255, 255, 255));
     }
 

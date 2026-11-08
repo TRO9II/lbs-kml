@@ -185,8 +185,8 @@ final class KmlBuilder {
             sb.append("<Folder><name>Серая зона</name><open>1</open>\n");
             for (double[][] g : gray) {
                 sb.append("<Placemark><name>Серая зона</name><description>Статус неизвестен</description>")
-                  .append("<Style><LineStyle><color>FF9E9E9E</color><width>1</width></LineStyle>")
-                  .append("<PolyStyle><color>66A0A0A0</color></PolyStyle></Style>")
+                  .append("<Style><LineStyle><color>FF505050</color><width>1</width></LineStyle>")
+                  .append("<PolyStyle><color>8C505050</color></PolyStyle></Style>")
                   .append("<Polygon><outerBoundaryIs><LinearRing><coordinates>");
                 appendCoords(sb, g, true);
                 sb.append("</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n");

@@ -239,7 +239,7 @@ public class MainActivity extends Activity {
         btnUpdate.setEnabled(false);
         btnUpdate.setText("Обновляю…");
         tvState.setOnClickListener(null);
-        showState("Загружаю данные DeepStateMap…", true);
+        showState("Загружаю данные…", true);
         web.loadUrl(LbsCore.SOURCE_URL);
     }
 

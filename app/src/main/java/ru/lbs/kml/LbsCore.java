@@ -257,7 +257,7 @@ final class LbsCore {
         if (nm == null || nm.getNotificationChannel(CHANNEL) != null) return;
         NotificationChannel ch = new NotificationChannel(CHANNEL, "Новая ЛБС",
                 NotificationManager.IMPORTANCE_DEFAULT);
-        ch.setDescription("Уведомления о новом снимке DeepStateMap");
+        ch.setDescription("Уведомления о новой линии фронта");
         nm.createNotificationChannel(ch);
     }
 

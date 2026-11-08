@@ -217,7 +217,11 @@ public class MapActivity extends Activity {
     private void wireUi() {
         findViewById(R.id.btnZoomIn).setOnClickListener(v -> map.getController().zoomIn());
         findViewById(R.id.btnZoomOut).setOnClickListener(v -> map.getController().zoomOut());
-        findViewById(R.id.btnCompass).setOnClickListener(v -> resetNorth());
+        findViewById(R.id.btnCompass).setOnClickListener(v -> onCompassClick());
+        findViewById(R.id.btnCompass).setOnLongClickListener(v -> {
+            setCompassMode(!compassMode);
+            return true;
+        });
         findViewById(R.id.btnGrid).setOnClickListener(v -> toggleGrid());
         findViewById(R.id.dlCancel).setOnClickListener(v -> cancelDownload());
         findViewById(R.id.coordCard).setOnClickListener(v -> copyCenterCoords());
@@ -230,6 +234,8 @@ public class MapActivity extends Activity {
         findViewById(R.id.dockMenu).setOnClickListener(v -> openMenu(true));
         findViewById(R.id.btnSearch).setOnClickListener(v -> openSearch(true));
         setupMenu();
+        findViewById(R.id.genScrim).setOnClickListener(v -> closeSheet());
+        findViewById(R.id.genClose).setOnClickListener(v -> closeSheet());
         setupLbsWeb();
 
         findViewById(R.id.toolUndo).setOnClickListener(v -> toolUndo());
@@ -276,9 +282,9 @@ public class MapActivity extends Activity {
             for (double[][] g : data.gray) {
                 Polygon pg = new Polygon();
                 pg.setPoints(pts(g));
-                pg.getFillPaint().setColor(Color.argb(90, 120, 120, 120));
-                pg.getOutlinePaint().setColor(Color.argb(200, 110, 110, 110));
-                pg.getOutlinePaint().setStrokeWidth(dp(1));
+                pg.getFillPaint().setColor(Color.argb(140, 70, 70, 70));
+                pg.getOutlinePaint().setColor(Color.argb(230, 50, 50, 50));
+                pg.getOutlinePaint().setStrokeWidth(dp(1.2f));
                 lbsFolder.add(pg);
             }
         }
@@ -330,12 +336,78 @@ public class MapActivity extends Activity {
     }
 
     private void resetNorth() {
-        if (map.getMapOrientation() == 0f) {
-            Toast.makeText(this, "Поворачивайте карту двумя пальцами", Toast.LENGTH_SHORT).show();
-            return;
-        }
         map.getController().animateTo(map.getMapCenter(), map.getZoomLevelDouble(), 400L, 0f);
     }
+
+    // ---- компас по датчику телефона
+
+    private android.hardware.SensorManager sensors;
+    private boolean compassMode;
+    private float azSin, azCos;
+    private boolean azInit;
+    private long lastHeadingApply;
+    private float declination;
+
+    /** Нажатие: повернута карта → на север; на севере → режим «по компасу»; в режиме → выключить. */
+    private void onCompassClick() {
+        if (compassMode) {
+            setCompassMode(false);
+        } else if (Math.abs(map.getMapOrientation()) > 0.5f) {
+            resetNorth();
+        } else {
+            setCompassMode(true);
+        }
+    }
+
+    private void setCompassMode(boolean on) {
+        if (sensors == null) sensors = getSystemService(android.hardware.SensorManager.class);
+        android.hardware.Sensor rv = sensors == null ? null
+                : sensors.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR);
+        if (on && rv == null) {
+            Toast.makeText(this, "В телефоне нет датчика компаса", Toast.LENGTH_LONG).show();
+            return;
+        }
+        compassMode = on;
+        findViewById(R.id.btnCompass).setBackgroundResource(on ? R.drawable.bg_round_accent : R.drawable.bg_round_hud);
+        findViewById(R.id.headingText).setVisibility(on ? View.VISIBLE : View.GONE);
+        if (on) {
+            azInit = false;
+            GeoPoint c = (GeoPoint) map.getMapCenter();
+            declination = new android.hardware.GeomagneticField((float) c.getLatitude(), (float) c.getLongitude(), 0,
+                    System.currentTimeMillis()).getDeclination();
+            sensors.registerListener(compassListener, rv, android.hardware.SensorManager.SENSOR_DELAY_UI);
+            Toast.makeText(this, "Карта поворачивается по компасу", Toast.LENGTH_SHORT).show();
+        } else {
+            sensors.unregisterListener(compassListener);
+            resetNorth();
+        }
+    }
+
+    private final android.hardware.SensorEventListener compassListener = new android.hardware.SensorEventListener() {
+        private final float[] rm = new float[9], or = new float[3];
+
+        @Override
+        public void onSensorChanged(android.hardware.SensorEvent e) {
+            android.hardware.SensorManager.getRotationMatrixFromVector(rm, e.values);
+            android.hardware.SensorManager.getOrientation(rm, or);
+            double az = Math.toDegrees(or[0]) + declination; // истинный азимут
+            // сглаживание по углу (через синус/косинус, без скачка 359→0)
+            float s = (float) Math.sin(Math.toRadians(az)), c = (float) Math.cos(Math.toRadians(az));
+            if (!azInit) { azSin = s; azCos = c; azInit = true; }
+            azSin += (s - azSin) * 0.15f;
+            azCos += (c - azCos) * 0.15f;
+            long now = System.currentTimeMillis();
+            if (now - lastHeadingApply < 40) return;
+            lastHeadingApply = now;
+            float heading = (float) ((Math.toDegrees(Math.atan2(azSin, azCos)) + 360) % 360);
+            map.setMapOrientation(-heading);
+            ((TextView) findViewById(R.id.headingText)).setText(String.format(Locale.US, "%.0f°", heading));
+        }
+
+        @Override
+        public void onAccuracyChanged(android.hardware.Sensor sensor, int accuracy) {
+        }
+    };
 
     // ================= Направления =================
 
@@ -453,147 +525,291 @@ public class MapActivity extends Activity {
         map.invalidate();
     }
 
-    // ================= Окно «Слои» =================
+    // ================= Панели в своём стиле (вместо стандартных окон) =================
 
-    private void showLayers() {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) dp(22);
-        box.setPadding(pad, (int) dp(6), pad, (int) dp(4));
+    private LinearLayout sheetContent, sheetFooter;
 
-        box.addView(sectionTitle("ПОДЛОЖКА"));
-        LinearLayout styles = new LinearLayout(this);
-        styles.setOrientation(LinearLayout.HORIZONTAL);
-        final List<TextView> styleBtns = new ArrayList<>();
-        String[] st = {"Спутник", "Топо", "Схема"};
-        int[] stIdx = {STYLE_SAT, STYLE_TOPO, STYLE_SCHEME};
-        for (int i = 0; i < 3; i++) {
-            TextView t = new TextView(this);
-            t.setText(st[i]);
-            t.setGravity(android.view.Gravity.CENTER);
-            t.setTextSize(14);
-            int ph = (int) dp(10);
-            t.setPadding(ph, (int) dp(10), ph, (int) dp(10));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-            lp.setMarginEnd(i < 2 ? (int) dp(8) : 0);
-            final int s = stIdx[i];
-            t.setOnClickListener(v -> {
-                applyStyle(s);
-                for (int k = 0; k < styleBtns.size(); k++) styleSeg(styleBtns.get(k), stIdx[k] == currentStyle);
-            });
-            styleBtns.add(t);
-            styles.addView(t, lp);
-            styleSeg(t, s == currentStyle);
+    private void sheet(String title) {
+        View host = findViewById(R.id.genSheet), panel = findViewById(R.id.genPanel), scrim = findViewById(R.id.genScrim);
+        ((TextView) findViewById(R.id.genTitle)).setText(title);
+        sheetContent = findViewById(R.id.genContent);
+        sheetFooter = findViewById(R.id.genFooter);
+        sheetContent.removeAllViews();
+        sheetFooter.removeAllViews();
+        sheetFooter.setVisibility(View.GONE);
+        findViewById(R.id.genScroll).scrollTo(0, 0);
+        if (host.getVisibility() != View.VISIBLE) {
+            host.setVisibility(View.VISIBLE);
+            panel.setTranslationY(dp(600));
+            scrim.setAlpha(0f);
+            panel.animate().translationY(0).setDuration(220).start();
+            scrim.animate().alpha(1f).setDuration(220).start();
         }
-        box.addView(styles);
-
-        box.addView(sectionTitle("НА КАРТЕ"));
-        box.addView(toggleRow("Подписи на русском", "Названия населённых пунктов", labelsOn(), on -> {
-            prefs.edit().putBoolean("labelsRu", on).apply();
-            applyStyle(currentStyle);
-        }));
-        box.addView(toggleRow("Сетка СК-42", "Километровая сетка Гаусса-Крюгера, круг-компас", gridOn(), on -> {
-            prefs.edit().putBoolean("gridOn", on).apply();
-            applyGrid();
-        }));
-        box.addView(toggleRow("Кнопки направлений", "Херсонская, Запорожская…", prefs.getBoolean("showChips", false), on -> {
-            prefs.edit().putBoolean("showChips", on).apply();
-            findViewById(R.id.chipsScroll).setVisibility(on ? View.VISIBLE : View.GONE);
-        }));
-
-        box.addView(sectionTitle("ЛБС"));
-        box.addView(toggleRow("Линия фронта", lbsDate.isEmpty() ? "не загружена" : "снимок " + lbsDate,
-                prefs.getBoolean("showLbs", true), on -> {
-                    prefs.edit().putBoolean("showLbs", on).apply();
-                    forceReloadLbs();
-                }));
-        box.addView(toggleRow("Изменения", "Жёлтым — новое положение, серым — прежнее",
-                prefs.getBoolean("showDiff", true), on -> {
-                    prefs.edit().putBoolean("showDiff", on).apply();
-                    forceReloadLbs();
-                }));
-        box.addView(toggleRow("Серая зона", "Статус неизвестен", prefs.getBoolean("showGray", true), on -> {
-            prefs.edit().putBoolean("showGray", on).apply();
-            forceReloadLbs();
-        }));
-
-        ScrollView sv = new ScrollView(this);
-        sv.addView(box);
-        new AlertDialog.Builder(this).setTitle("Слои").setView(sv).setPositiveButton("Готово", null).show();
     }
 
-    private TextView sectionTitle(String s) {
+    private void closeSheet() {
+        View host = findViewById(R.id.genSheet), panel = findViewById(R.id.genPanel), scrim = findViewById(R.id.genScrim);
+        if (host.getVisibility() != View.VISIBLE) return;
+        hideKeyboard();
+        panel.animate().translationY(dp(800)).setDuration(170).withEndAction(() -> host.setVisibility(View.GONE)).start();
+        scrim.animate().alpha(0f).setDuration(170).start();
+    }
+
+    private boolean sheetOpen() {
+        return findViewById(R.id.genSheet).getVisibility() == View.VISIBLE;
+    }
+
+    private void hideKeyboard() {
+        InputMethodManager imm = getSystemService(InputMethodManager.class);
+        View f = getCurrentFocus();
+        if (imm != null && f != null) imm.hideSoftInputFromWindow(f.getWindowToken(), 0);
+    }
+
+    private TextView hSection(String s) {
         TextView t = new TextView(this);
         t.setText(s);
-        t.setTextSize(12);
-        t.setLetterSpacing(0.08f);
-        t.setTextColor(getColor(R.color.text2));
-        t.setPadding(0, (int) dp(16), 0, (int) dp(8));
+        t.setTextSize(11);
+        t.setLetterSpacing(0.1f);
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setPadding((int) dp(2), (int) dp(16), 0, (int) dp(8));
+        sheetContent.addView(t);
         return t;
-    }
-
-    private void styleSeg(TextView t, boolean on) {
-        GradientDrawable g = new GradientDrawable();
-        g.setCornerRadius(dp(12));
-        g.setColor(on ? getColor(R.color.accent) : Color.TRANSPARENT);
-        g.setStroke((int) dp(1.2f), on ? getColor(R.color.accent) : getColor(R.color.divider));
-        t.setBackground(g);
-        t.setTextColor(on ? Color.WHITE : getColor(R.color.text));
     }
 
     private interface Toggle {
         void on(boolean on);
     }
 
-    private View toggleRow(String title, String sub, boolean value, Toggle cb) {
+    private View hToggle(String title, String sub, boolean value, Toggle cb) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        row.setPadding(0, (int) dp(6), 0, (int) dp(6));
+        row.setPadding((int) dp(12), (int) dp(9), (int) dp(6), (int) dp(9));
+        row.setBackgroundResource(R.drawable.bg_hud_btn);
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
         TextView t = new TextView(this);
         t.setText(title);
-        t.setTextSize(16);
-        t.setTextColor(getColor(R.color.text));
-        TextView s = new TextView(this);
-        s.setText(sub);
-        s.setTextSize(12.5f);
-        s.setTextColor(getColor(R.color.text2));
+        t.setTextSize(15);
+        t.setTextColor(getColor(R.color.hud_text));
         texts.addView(t);
-        texts.addView(s);
+        if (sub != null && !sub.isEmpty()) {
+            TextView s = new TextView(this);
+            s.setText(sub);
+            s.setTextSize(12);
+            s.setTextColor(getColor(R.color.hud_text2));
+            texts.addView(s);
+        }
         row.addView(texts, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         Switch sw = new Switch(this);
         sw.setChecked(value);
         sw.setOnCheckedChangeListener((b, on) -> cb.on(on));
         row.addView(sw);
         row.setOnClickListener(v -> sw.toggle());
+        sheetContent.addView(row);
         return row;
     }
 
-    // ================= Меню =================
-
-    private void showMenu() {
-        String[] items = {
-                lbsDate.isEmpty() ? "● ЛБС не загружена — загрузить" : "ЛБС — снимок " + lbsDate + " · обновить, файл",
-                "Скачать видимую область (офлайн)",
-                "Экспорт моих точек в KML",
-                "О карте: даты снимков, легенда",
-                "О приложении"};
-        new AlertDialog.Builder(this)
-                .setTitle("Меню")
-                .setItems(items, (dlg, which) -> {
-                    switch (which) {
-                        case 0: openLbsScreen(); break;
-                        case 1: chooseDownload(); break;
-                        case 2: exportPoints(); break;
-                        case 3: showInfo(); break;
-                        default: showAbout();
-                    }
-                })
-                .setNegativeButton("Закрыть", null)
-                .show();
+    /** Строка списка: значок слева, заголовок/подзаголовок, необязательный элемент справа. */
+    private LinearLayout hRow(View lead, String title, String sub, View trail, View.OnClickListener click) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding((int) dp(10), (int) dp(9), (int) dp(6), (int) dp(9));
+        row.setBackgroundResource(R.drawable.bg_hud_btn);
+        if (lead != null) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.setMarginEnd((int) dp(12));
+            row.addView(lead, lp);
+        }
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(15);
+        t.setTextColor(getColor(R.color.hud_text));
+        texts.addView(t);
+        if (sub != null && !sub.isEmpty()) {
+            TextView s = new TextView(this);
+            s.setText(sub);
+            s.setTextSize(12);
+            s.setTextColor(getColor(R.color.hud_text2));
+            texts.addView(s);
+        }
+        row.addView(texts, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        if (trail != null) row.addView(trail);
+        if (click != null) row.setOnClickListener(click);
+        sheetContent.addView(row);
+        return row;
     }
+
+    private ImageView hIcon(int res, int tint, int sizeDp) {
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(res);
+        iv.setImageTintList(ColorStateList.valueOf(tint));
+        iv.setLayoutParams(new LinearLayout.LayoutParams((int) dp(sizeDp), (int) dp(sizeDp)));
+        return iv;
+    }
+
+    private ImageView hIconButton(int res, int tint, View.OnClickListener click) {
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(res);
+        iv.setImageTintList(ColorStateList.valueOf(tint));
+        int p = (int) dp(9);
+        iv.setPadding(p, p, p, p);
+        iv.setBackgroundResource(R.drawable.bg_hud_btn);
+        iv.setLayoutParams(new LinearLayout.LayoutParams((int) dp(40), (int) dp(40)));
+        iv.setOnClickListener(click);
+        return iv;
+    }
+
+    private EditText hInput(String hint, String text) {
+        EditText e = new EditText(this);
+        e.setHint(hint);
+        e.setText(text);
+        e.setTextSize(16);
+        e.setTextColor(getColor(R.color.hud_text));
+        e.setHintTextColor(getColor(R.color.hud_text2));
+        e.setBackgroundResource(R.drawable.bg_input);
+        int ph = (int) dp(14), pv = (int) dp(11);
+        e.setPadding(ph, pv, ph, pv);
+        return e;
+    }
+
+    private LinearLayout hCard() {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setBackgroundResource(R.drawable.bg_card_dark);
+        int p = (int) dp(12);
+        c.setPadding(p, (int) dp(10), p, (int) dp(10));
+        return c;
+    }
+
+    /** Кнопка-«таблетка» (иконка + текст). */
+    private TextView hChip(String text, int icon, boolean accent, View.OnClickListener click) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(13.5f);
+        t.setGravity(android.view.Gravity.CENTER);
+        t.setTextColor(accent ? Color.WHITE : getColor(R.color.hud_text));
+        t.setBackgroundResource(accent ? R.drawable.bg_accent_btn : R.drawable.bg_sheet_chip);
+        int ph = (int) dp(12);
+        t.setPadding(ph, 0, ph, 0);
+        if (icon != 0) {
+            android.graphics.drawable.Drawable d = getDrawable(icon).mutate();
+            d.setTint(accent ? Color.WHITE : getColor(R.color.hud_text));
+            int s = (int) dp(18);
+            d.setBounds(0, 0, s, s);
+            t.setCompoundDrawables(d, null, null, null);
+            t.setCompoundDrawablePadding((int) dp(6));
+        }
+        t.setOnClickListener(click);
+        return t;
+    }
+
+    private LinearLayout hChipRow(View... chips) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < chips.length; i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(42), 1);
+            if (i < chips.length - 1) lp.setMarginEnd((int) dp(8));
+            row.addView(chips[i], lp);
+        }
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rl.topMargin = (int) dp(6);
+        sheetContent.addView(row, rl);
+        return row;
+    }
+
+    private void footer(String cancel, String ok, View.OnClickListener onOk) {
+        sheetFooter.setVisibility(View.VISIBLE);
+        sheetFooter.removeAllViews();
+        TextView c = hChip(cancel, 0, false, v -> closeSheet());
+        TextView o = hChip(ok, R.drawable.ic_check, true, onOk);
+        LinearLayout.LayoutParams lc = new LinearLayout.LayoutParams(0, (int) dp(48), 1);
+        lc.setMarginEnd((int) dp(10));
+        sheetFooter.addView(c, lc);
+        sheetFooter.addView(o, new LinearLayout.LayoutParams(0, (int) dp(48), 1.4f));
+    }
+
+    private void styleSegHud(TextView t, boolean on) {
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(14));
+        g.setColor(on ? getColor(R.color.hud_accent) : 0xFF22262C);
+        g.setStroke((int) dp(1), on ? getColor(R.color.hud_accent) : getColor(R.color.hud_line));
+        t.setBackground(g);
+        t.setTextColor(on ? Color.WHITE : getColor(R.color.hud_text));
+        android.graphics.drawable.Drawable[] ds = t.getCompoundDrawables();
+        if (ds[1] != null) ds[1].setTint(on ? Color.WHITE : getColor(R.color.hud_text));
+    }
+
+    // ---------- Слои ----------
+
+    private void showLayers() {
+        sheet("Слои");
+        hSection("ПОДЛОЖКА");
+        LinearLayout seg = new LinearLayout(this);
+        seg.setOrientation(LinearLayout.HORIZONTAL);
+        final List<TextView> btns = new ArrayList<>();
+        final String[] names = {"Спутник", "Топо", "Схема"};
+        final int[] idx = {STYLE_SAT, STYLE_TOPO, STYLE_SCHEME};
+        final int[] icons = {R.drawable.ic_layers, R.drawable.ic_lbs, R.drawable.ic_grid};
+        for (int i = 0; i < 3; i++) {
+            TextView t = new TextView(this);
+            t.setText(names[i]);
+            t.setTextSize(13.5f);
+            t.setGravity(android.view.Gravity.CENTER);
+            android.graphics.drawable.Drawable d = getDrawable(icons[i]).mutate();
+            int s = (int) dp(22);
+            d.setBounds(0, 0, s, s);
+            t.setCompoundDrawables(null, d, null, null);
+            t.setCompoundDrawablePadding((int) dp(4));
+            t.setPadding(0, (int) dp(12), 0, (int) dp(10));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            if (i < 2) lp.setMarginEnd((int) dp(8));
+            final int st = idx[i];
+            t.setOnClickListener(v -> {
+                applyStyle(st);
+                for (int k = 0; k < btns.size(); k++) styleSegHud(btns.get(k), idx[k] == currentStyle);
+            });
+            btns.add(t);
+            seg.addView(t, lp);
+            styleSegHud(t, st == currentStyle);
+        }
+        sheetContent.addView(seg);
+
+        hSection("НА КАРТЕ");
+        hToggle("Подписи на русском", "Названия населённых пунктов", labelsOn(), on -> {
+            prefs.edit().putBoolean("labelsRu", on).apply();
+            applyStyle(currentStyle);
+        });
+        hToggle("Сетка СК-42", "Километровая сетка и круг-компас", gridOn(), on -> {
+            prefs.edit().putBoolean("gridOn", on).apply();
+            applyGrid();
+        });
+        hToggle("Кнопки направлений", "Строка с областями под поиском", prefs.getBoolean("showChips", false), on -> {
+            prefs.edit().putBoolean("showChips", on).apply();
+            findViewById(R.id.chipsScroll).setVisibility(on ? View.VISIBLE : View.GONE);
+        });
+
+        hSection("ЛИНИЯ ФРОНТА");
+        hToggle("ЛБС", lbsDate.isEmpty() ? "не загружена" : "снимок " + lbsDate, prefs.getBoolean("showLbs", true), on -> {
+            prefs.edit().putBoolean("showLbs", on).apply();
+            forceReloadLbs();
+        });
+        hToggle("Изменения", "Новое положение — жёлтым, прежнее — серым", prefs.getBoolean("showDiff", true), on -> {
+            prefs.edit().putBoolean("showDiff", on).apply();
+            forceReloadLbs();
+        });
+        hToggle("Серая зона", "Статус неизвестен", prefs.getBoolean("showGray", true), on -> {
+            prefs.edit().putBoolean("showGray", on).apply();
+            forceReloadLbs();
+        });
+    }
+
+    // ================= Меню =================
 
     private void showAbout() {
         String ver = "";
@@ -603,10 +819,8 @@ public class MapActivity extends Activity {
         }
         new AlertDialog.Builder(this)
                 .setTitle("ЛБС KML  v" + ver)
-                .setMessage("Карта линии фронта с сеткой СК-42, точками, линейкой и маршрутами.\n\n"
-                        + "Разработчик: TRO9II\n\n"
-                        + "Данные: DeepStateMap (ЛБС), OpenStreetMap (населённые пункты), "
-                        + "Esri / CARTO / OpenStreetMap (подложки).")
+                .setMessage("Карта линии фронта: сетка СК-42, свои точки, линейка и маршруты, офлайн-карты.\n\n"
+                        + "Подложки: Esri, CARTO, OpenStreetMap. Населённые пункты: OpenStreetMap.")
                 .setPositiveButton("OK", null)
                 .show();
     }
@@ -614,7 +828,7 @@ public class MapActivity extends Activity {
     // ================= Информация о карте =================
 
     private void showInfo() {
-        final String head = "ЛБС (DeepState): " + (lbsDate.isEmpty() ? "не загружена" : lbsDate) + "\n";
+        final String head = "ЛБС: " + (lbsDate.isEmpty() ? "не загружена" : lbsDate) + "\n";
         final String legend = "\n━  ЛБС — красная линия\n"
                 + "━  Изменения — жёлтая (новое), серая (прежнее)\n"
                 + "▮  Серая зона — статус неизвестен\n"
@@ -949,6 +1163,7 @@ public class MapActivity extends Activity {
             int maxZ = (int) map.getTileProvider().getTileSource().getMaximumZoomLevel();
             ((TextView) findViewById(R.id.zoomText)).setText("z" + Math.round(map.getZoomLevelDouble()) + "/" + maxZ);
         }
+        ((TextView) findViewById(R.id.zoomLevel)).setText(Long.toString(Math.round(map.getZoomLevelDouble())));
         updateTargetCard(lat, lon);
         if (tool != TOOL_NONE) updateToolPanel();
     }
@@ -1077,74 +1292,113 @@ public class MapActivity extends Activity {
             return;
         }
         if (p == pointsOverlay.getExtra()) {
-            new AlertDialog.Builder(this)
-                    .setTitle(p.name)
-                    .setMessage((p.note == null ? "" : p.note + "\n\n") + coordsText(p.lat, p.lon))
-                    .setPositiveButton("Сохранить как точку", (d, w) -> {
-                        pointsOverlay.setExtra(null);
-                        editPoint(null, p.lat, p.lon, p.name);
-                    })
-                    .setNeutralButton("Навести", (d, w) -> setTarget(p.lat, p.lon, p.name))
-                    .setNegativeButton("Убрать", (d, w) -> {
-                        pointsOverlay.setExtra(null);
-                        map.invalidate();
-                    })
-                    .show();
+            sheet(p.name);
+            if (p.note != null && !p.note.isEmpty()) {
+                TextView n = new TextView(this);
+                n.setText(p.note);
+                n.setTextColor(getColor(R.color.hud_text2));
+                n.setTextSize(13);
+                sheetContent.addView(n);
+            }
+            coordsCard(p.lat, p.lon);
+            hChipRow(
+                    hChip("Навести", R.drawable.ic_flag, false, v -> { closeSheet(); setTarget(p.lat, p.lon, p.name); }),
+                    hChip("Убрать", R.drawable.ic_close, false, v -> { closeSheet(); pointsOverlay.setExtra(null); map.invalidate(); }));
+            footer("Закрыть", "Сохранить точку", v -> {
+                pointsOverlay.setExtra(null);
+                editPoint(null, p.lat, p.lon, p.name);
+            });
             return;
         }
         editPoint(p, p.lat, p.lon, null);
     }
 
+    /** Карточка координат (нажатие — скопировать). */
+    private void coordsCard(double lat, double lon) {
+        LinearLayout card = hCard();
+        TextView cap = new TextView(this);
+        cap.setText("КООРДИНАТЫ · нажмите, чтобы скопировать");
+        cap.setTextSize(10.5f);
+        cap.setLetterSpacing(0.06f);
+        cap.setTextColor(getColor(R.color.hud_text2));
+        TextView sk = new TextView(this);
+        double[] r = Sk42.fromWgs(lat, lon);
+        sk.setText("X " + Math.round(r[0]) + "   Y " + Math.round(r[1]));
+        sk.setTextSize(16);
+        sk.setTextColor(getColor(R.color.hud_text));
+        sk.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+        TextView wgs = new TextView(this);
+        wgs.setText(String.format(Locale.US, "%.6f, %.6f  ·  зона %d", lat, lon, (int) r[2]));
+        wgs.setTextSize(12.5f);
+        wgs.setTextColor(0xFF64B5F6);
+        card.addView(cap);
+        card.addView(sk);
+        card.addView(wgs);
+        card.setOnClickListener(v -> copy(coordsText(lat, lon), "Координаты скопированы"));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) dp(12);
+        sheetContent.addView(card, lp);
+    }
+
+    /** Создание/редактирование точки в своей панели: название, цвет, значок, заметка. */
     private void editPoint(UserPoints.Point existing, double lat, double lon, String presetName) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) dp(20);
-        box.setPadding(pad, (int) dp(8), pad, 0);
-
-        EditText name = new EditText(this);
-        name.setHint("Название");
-        name.setSingleLine(true);
-        name.setText(existing != null ? existing.name : presetName != null ? presetName : "Точка " + (userPoints.size() + 1));
-        name.setSelectAllOnFocus(true);
-        box.addView(name);
-
-        EditText note = new EditText(this);
-        note.setHint("Заметка (необязательно)");
-        note.setText(existing != null ? existing.note : "");
-        box.addView(note);
-
-        box.addView(sectionTitle("ЦВЕТ"));
+        sheet(existing == null ? "Новая точка" : "Точка");
         final int[] chosen = {existing != null ? existing.color : prefs.getInt("lastColor", UserPoints.COLORS[0])};
+        final String[] icon = {existing != null && existing.icon != null ? existing.icon : prefs.getString("lastIcon", "")};
+
+        // превью булавки + название
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        final ImageView preview = new ImageView(this);
+        float den = getResources().getDisplayMetrics().density;
+        preview.setImageBitmap(UserPoints.pin(chosen[0], den * 1.3f, icon[0]));
+        top.addView(preview, new LinearLayout.LayoutParams((int) dp(40), (int) dp(52)));
+        final EditText name = hInput("Название",
+                existing != null ? existing.name : presetName != null ? presetName : "Точка " + (userPoints.size() + 1));
+        name.setSingleLine(true);
+        name.setSelectAllOnFocus(true);
+        LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        nl.setMarginStart((int) dp(12));
+        top.addView(name, nl);
+        sheetContent.addView(top);
+
+        final EditText note = hInput("Заметка (необязательно)", existing != null ? existing.note : "");
+        LinearLayout.LayoutParams ntl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        ntl.topMargin = (int) dp(8);
+        sheetContent.addView(note, ntl);
+
+        hSection("ЦВЕТ");
         final List<View> swatches = new ArrayList<>();
-        int sz = (int) dp(28);
         LinearLayout colRow = null;
         for (int i = 0; i < UserPoints.COLORS.length; i++) {
             if (i % 8 == 0) {
                 colRow = new LinearLayout(this);
                 colRow.setOrientation(LinearLayout.HORIZONTAL);
                 LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                rl.bottomMargin = (int) dp(7);
-                box.addView(colRow, rl);
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                rl.bottomMargin = (int) dp(8);
+                sheetContent.addView(colRow, rl);
             }
             final int col = UserPoints.COLORS[i];
             View sw = new View(this);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(sz, sz);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(32), 1);
             lp.setMarginEnd((int) dp(7));
-            sw.setLayoutParams(lp);
             sw.setContentDescription(UserPoints.COLOR_NAMES[i]);
             sw.setOnClickListener(v -> {
                 chosen[0] = col;
                 for (int k = 0; k < swatches.size(); k++)
-                    swatches.get(k).setBackground(swatch(UserPoints.COLORS[k], UserPoints.COLORS[k] == col));
+                    swatches.get(k).setBackground(swatchHud(UserPoints.COLORS[k], UserPoints.COLORS[k] == col));
+                preview.setImageBitmap(UserPoints.pin(chosen[0], den * 1.3f, icon[0]));
             });
-            sw.setBackground(swatch(col, col == chosen[0]));
+            sw.setBackground(swatchHud(col, col == chosen[0]));
             swatches.add(sw);
-            colRow.addView(sw);
+            colRow.addView(sw, lp);
         }
 
-        box.addView(sectionTitle("ЗНАЧОК"));
-        final String[] icon = {existing != null && existing.icon != null ? existing.icon : ""};
+        hSection("ЗНАЧОК");
         final List<TextView> iconViews = new ArrayList<>();
         LinearLayout icRow = null;
         for (int i = 0; i < UserPoints.ICONS.length; i++) {
@@ -1153,153 +1407,125 @@ public class MapActivity extends Activity {
                 icRow.setOrientation(LinearLayout.HORIZONTAL);
                 LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                rl.bottomMargin = (int) dp(6);
-                box.addView(icRow, rl);
+                rl.bottomMargin = (int) dp(7);
+                sheetContent.addView(icRow, rl);
             }
             final String ic = UserPoints.ICONS[i];
+            final String icName = UserPoints.ICON_NAMES[i];
             TextView t = new TextView(this);
             t.setText(ic.isEmpty() ? "•" : ic);
-            t.setTextSize(17);
+            t.setTextSize(18);
             t.setGravity(android.view.Gravity.CENTER);
-            t.setContentDescription(UserPoints.ICON_NAMES[i]);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(38), 1);
-            lp.setMarginEnd((int) dp(6));
+            t.setContentDescription(icName);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(40), 1);
+            lp.setMarginEnd((int) dp(7));
             t.setOnClickListener(v -> {
                 icon[0] = ic;
-                for (TextView tv : iconViews) styleIcon(tv, tv == v);
-                Toast.makeText(this, UserPoints.ICON_NAMES[iconViews.indexOf((TextView) v)], Toast.LENGTH_SHORT).show();
+                for (TextView tv : iconViews) styleIconHud(tv, tv == v);
+                preview.setImageBitmap(UserPoints.pin(chosen[0], den * 1.3f, icon[0]));
+                Toast.makeText(this, icName, Toast.LENGTH_SHORT).show();
             });
             iconViews.add(t);
             icRow.addView(t, lp);
-            styleIcon(t, ic.equals(icon[0]));
+            styleIconHud(t, ic.equals(icon[0]));
         }
 
-        TextView coords = new TextView(this);
-        coords.setText(coordsText(lat, lon));
-        coords.setTextColor(getColor(R.color.text2));
-        coords.setTextSize(13);
-        coords.setPadding(0, (int) dp(14), 0, 0);
-        coords.setTextIsSelectable(true);
-        box.addView(coords);
+        coordsCard(lat, lon);
 
-        final AlertDialog[] dlgRef = new AlertDialog[1];
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        Button nav = new Button(this);
-        nav.setText("Навести");
-        nav.setAllCaps(false);
-        nav.setOnClickListener(v -> {
-            String nm = name.getText().toString().trim();
-            setTarget(lat, lon, nm.isEmpty() ? "Точка" : nm);
-            if (dlgRef[0] != null) dlgRef[0].dismiss();
-        });
-        Button ruler = new Button(this);
-        ruler.setText("Линейка отсюда");
-        ruler.setAllCaps(false);
-        ruler.setOnClickListener(v -> {
-            if (dlgRef[0] != null) dlgRef[0].dismiss();
-            startTool(TOOL_RULER, null);
-            toolAdd(lat, lon);
-        });
-        actions.addView(nav, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        actions.addView(ruler, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        alp.topMargin = (int) dp(10);
-        box.addView(actions, alp);
-
-        ScrollView sv = new ScrollView(this);
-        sv.addView(box);
-        AlertDialog.Builder b = new AlertDialog.Builder(this)
-                .setTitle(existing == null ? "Новая точка" : "Точка")
-                .setView(sv)
-                .setPositiveButton("Сохранить", (dd, w) -> {
-                    UserPoints.Point p = existing;
-                    if (p == null) {
-                        p = new UserPoints.Point();
-                        p.id = Long.toString(System.currentTimeMillis(), 36);
-                        p.created = System.currentTimeMillis();
-                        p.lat = lat;
-                        p.lon = lon;
-                        userPoints.add(p);
-                    }
+        hChipRow(
+                hChip("Навести", R.drawable.ic_flag, false, v -> {
                     String nm = name.getText().toString().trim();
-                    p.name = nm.isEmpty() ? "Точка" : nm;
-                    p.note = note.getText().toString().trim();
-                    p.color = chosen[0];
-                    p.icon = icon[0];
-                    prefs.edit().putInt("lastColor", chosen[0]).apply();
-                    savePoints();
-                })
-                .setNegativeButton("Отмена", null);
+                    closeSheet();
+                    setTarget(lat, lon, nm.isEmpty() ? "Точка" : nm);
+                }),
+                hChip("Линейка", R.drawable.ic_ruler, false, v -> {
+                    closeSheet();
+                    startTool(TOOL_RULER, null);
+                    toolAdd(lat, lon);
+                }));
         if (existing != null) {
-            b.setNeutralButton("Удалить", (dd, w) -> new AlertDialog.Builder(this)
+            hChipRow(hChip("Удалить точку", R.drawable.ic_delete, false, v -> new AlertDialog.Builder(this)
                     .setTitle("Удалить «" + existing.name + "»?")
                     .setPositiveButton("Удалить", (d2, w2) -> {
                         userPoints.remove(existing);
                         savePoints();
+                        closeSheet();
                     })
                     .setNegativeButton("Отмена", null)
-                    .show());
+                    .show()));
         }
-        dlgRef[0] = b.show();
+
+        footer("Отмена", "Сохранить", v -> {
+            UserPoints.Point p = existing;
+            if (p == null) {
+                p = new UserPoints.Point();
+                p.id = Long.toString(System.currentTimeMillis(), 36);
+                p.created = System.currentTimeMillis();
+                p.lat = lat;
+                p.lon = lon;
+                userPoints.add(p);
+            }
+            String nm = name.getText().toString().trim();
+            p.name = nm.isEmpty() ? "Точка" : nm;
+            p.note = note.getText().toString().trim();
+            p.color = chosen[0];
+            p.icon = icon[0];
+            prefs.edit().putInt("lastColor", chosen[0]).putString("lastIcon", icon[0]).apply();
+            savePoints();
+            closeSheet();
+        });
     }
 
-    private void styleIcon(TextView t, boolean on) {
+    private void styleIconHud(TextView t, boolean on) {
         GradientDrawable g = new GradientDrawable();
-        g.setCornerRadius(dp(10));
-        g.setColor(on ? getColor(R.color.accent) : Color.TRANSPARENT);
-        g.setStroke((int) dp(1), on ? getColor(R.color.accent) : getColor(R.color.divider));
+        g.setCornerRadius(dp(12));
+        g.setColor(on ? getColor(R.color.hud_accent) : 0xFF22262C);
+        g.setStroke((int) dp(1), on ? getColor(R.color.hud_accent) : getColor(R.color.hud_line));
         t.setBackground(g);
-        t.setTextColor(on ? Color.WHITE : getColor(R.color.text));
+        t.setTextColor(on ? Color.WHITE : getColor(R.color.hud_text));
     }
 
-    private GradientDrawable swatch(int color, boolean sel) {
+    private GradientDrawable swatchHud(int color, boolean sel) {
         GradientDrawable g = new GradientDrawable();
         g.setShape(GradientDrawable.OVAL);
         g.setColor(color);
-        g.setStroke((int) dp(sel ? 3 : 1), sel ? getColor(R.color.text) : getColor(R.color.divider));
+        g.setStroke((int) dp(sel ? 3 : 1), sel ? Color.WHITE : getColor(R.color.hud_line));
         return g;
     }
 
     private void showPointsList() {
+        sheet("Мои точки" + (userPoints.isEmpty() ? "" : " · " + userPoints.size()));
+        hChipRow(
+                hChip("Точка в центре", R.drawable.ic_add, true, v -> { closeSheet(); newPointAtCenter(); }),
+                hChip("Экспорт KML", R.drawable.ic_share, false, v -> { closeSheet(); exportPoints(); }));
         if (userPoints.isEmpty()) {
-            new AlertDialog.Builder(this)
-                    .setTitle("Мои точки")
-                    .setMessage("Пока нет точек.\n\nНажмите на прицел в центре карты — точка встанет туда. "
-                            + "Или подержите палец на нужном месте.")
-                    .setPositiveButton("Точка в центре", (d, w) -> newPointAtCenter())
-                    .setNegativeButton("Закрыть", null)
-                    .show();
+            TextView t = new TextView(this);
+            t.setText("Пока нет точек.\nНажмите на прицел в центре карты — точка встанет туда. Или подержите палец на нужном месте.");
+            t.setTextColor(getColor(R.color.hud_text2));
+            t.setTextSize(13.5f);
+            t.setPadding((int) dp(4), (int) dp(16), (int) dp(4), (int) dp(8));
+            sheetContent.addView(t);
             return;
         }
-        final List<UserPoints.Point> sorted = new ArrayList<>(userPoints);
-        Collections.sort(sorted, (a, b) -> Long.compare(b.created, a.created));
+        hSection("БЛИЖАЙШИЕ К ЦЕНТРУ КАРТЫ");
         GeoPoint c = (GeoPoint) map.getMapCenter();
-        CharSequence[] items = new CharSequence[sorted.size() + 1];
-        items[0] = "＋  Новая точка в центре карты";
-        for (int i = 0; i < sorted.size(); i++) {
-            UserPoints.Point p = sorted.get(i);
-            double[] inv = Geo.inverse(c.getLatitude(), c.getLongitude(), p.lat, p.lon);
-            SpannableStringBuilder sb = new SpannableStringBuilder((p.icon == null || p.icon.isEmpty() ? "●" : p.icon) + " ");
-            sb.setSpan(new ForegroundColorSpan(p.color), 0, 1, 0);
-            sb.append(p.name).append("\n");
-            int st = sb.length();
-            sb.append(Geo.dist(inv[0])).append(" от центра · ").append(Sk42.format(p.lat, p.lon));
-            sb.setSpan(new RelativeSizeSpan(0.8f), st, sb.length(), 0);
-            sb.setSpan(new ForegroundColorSpan(getColor(R.color.text2)), st, sb.length(), 0);
-            items[i + 1] = sb;
+        final List<UserPoints.Point> sorted = new ArrayList<>(userPoints);
+        final double cLat = c.getLatitude(), cLon = c.getLongitude();
+        Collections.sort(sorted, (a, b) -> Double.compare(
+                Geo.inverse(cLat, cLon, a.lat, a.lon)[0], Geo.inverse(cLat, cLon, b.lat, b.lon)[0]));
+        float den = getResources().getDisplayMetrics().density;
+        for (UserPoints.Point p : sorted) {
+            double[] inv = Geo.inverse(cLat, cLon, p.lat, p.lon);
+            ImageView pin = new ImageView(this);
+            pin.setImageBitmap(UserPoints.pin(p.color, den, p.icon));
+            pin.setLayoutParams(new LinearLayout.LayoutParams((int) dp(26), (int) dp(35)));
+            ImageView edit = hIconButton(R.drawable.ic_info, getColor(R.color.hud_text2), v -> editPoint(p, p.lat, p.lon, null));
+            hRow(pin, p.name, Geo.dist(inv[0]) + " · " + String.format(Locale.US, "%.0f°", inv[1]) + " · "
+                    + Sk42.format(p.lat, p.lon), edit, v -> {
+                closeSheet();
+                map.getController().animateTo(new GeoPoint(p.lat, p.lon), Math.max(13.0, map.getZoomLevelDouble()), 800L);
+            });
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Мои точки (" + sorted.size() + ")")
-                .setItems(items, (d, which) -> {
-                    if (which == 0) { newPointAtCenter(); return; }
-                    UserPoints.Point p = sorted.get(which - 1);
-                    map.getController().animateTo(new GeoPoint(p.lat, p.lon), Math.max(13.0, map.getZoomLevelDouble()), 800L);
-                })
-                .setPositiveButton("Экспорт KML", (d, w) -> exportPoints())
-                .setNegativeButton("Закрыть", null)
-                .show();
     }
 
     private void exportPoints() {
@@ -1464,59 +1690,63 @@ public class MapActivity extends Activity {
             Toast.makeText(this, "Нужно минимум 2 точки", Toast.LENGTH_SHORT).show();
             return;
         }
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) dp(20);
-        box.setPadding(pad, (int) dp(8), pad, 0);
-        EditText name = new EditText(this);
+        sheet(editingRoute != null ? "Изменить маршрут" : "Сохранить маршрут");
+        final EditText name = hInput("Название маршрута",
+                editingRoute != null ? editingRoute.name : "Маршрут " + (routes.size() + 1));
         name.setSingleLine(true);
-        name.setHint("Название маршрута");
-        name.setText(editingRoute != null ? editingRoute.name : "Маршрут " + (routes.size() + 1));
         name.setSelectAllOnFocus(true);
-        box.addView(name);
-        box.addView(sectionTitle("ЦВЕТ"));
+        sheetContent.addView(name);
+
+        LinearLayout info = hCard();
+        TextView t = new TextView(this);
+        t.setText(Geo.dist(Routes.length(toolPts)) + " · " + (toolPts.size() - 1) + " уч. · " + toolPts.size() + " точек");
+        t.setTextColor(getColor(R.color.hud_text));
+        t.setTextSize(14);
+        info.addView(t);
+        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        il.topMargin = (int) dp(10);
+        sheetContent.addView(info, il);
+
+        hSection("ЦВЕТ ЛИНИИ");
         final int[] chosen = {editingRoute != null ? editingRoute.color : Routes.COLORS[0]};
         LinearLayout colors = new LinearLayout(this);
         final List<View> sw = new ArrayList<>();
         for (int i = 0; i < Routes.COLORS.length; i++) {
             final int col = Routes.COLORS[i];
             View v = new View(this);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams((int) dp(30), (int) dp(30));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(34), 1);
             lp.setMarginEnd((int) dp(8));
-            v.setLayoutParams(lp);
             v.setOnClickListener(x -> {
                 chosen[0] = col;
-                for (int k = 0; k < sw.size(); k++) sw.get(k).setBackground(swatch(Routes.COLORS[k], Routes.COLORS[k] == col));
+                for (int k = 0; k < sw.size(); k++) sw.get(k).setBackground(swatchHud(Routes.COLORS[k], Routes.COLORS[k] == col));
             });
-            v.setBackground(swatch(col, col == chosen[0]));
+            v.setBackground(swatchHud(col, col == chosen[0]));
             sw.add(v);
-            colors.addView(v);
+            colors.addView(v, lp);
         }
-        box.addView(colors);
-        new AlertDialog.Builder(this)
-                .setTitle("Сохранить маршрут")
-                .setView(box)
-                .setPositiveButton("Сохранить", (d, w) -> {
-                    Routes.Route r = editingRoute;
-                    if (r == null) {
-                        r = new Routes.Route();
-                        r.id = Long.toString(System.currentTimeMillis(), 36);
-                        r.created = System.currentTimeMillis();
-                        routes.add(r);
-                    }
-                    String nm = name.getText().toString().trim();
-                    r.name = nm.isEmpty() ? "Маршрут" : nm;
-                    r.color = chosen[0];
-                    r.pts.clear();
-                    r.pts.addAll(toolPts);
-                    r.visible = true;
-                    saveRoutes();
-                    Toast.makeText(this, "Маршрут «" + r.name + "» сохранён", Toast.LENGTH_SHORT).show();
-                    editingRoute = r;
-                    finishTool();
-                })
-                .setNegativeButton("Отмена", null)
-                .show();
+        sheetContent.addView(colors);
+
+        footer("Отмена", "Сохранить", v -> {
+            Routes.Route r = editingRoute;
+            if (r == null) {
+                r = new Routes.Route();
+                r.id = Long.toString(System.currentTimeMillis(), 36);
+                r.created = System.currentTimeMillis();
+                routes.add(r);
+            }
+            String nm = name.getText().toString().trim();
+            r.name = nm.isEmpty() ? "Маршрут" : nm;
+            r.color = chosen[0];
+            r.pts.clear();
+            r.pts.addAll(toolPts);
+            r.visible = true;
+            saveRoutes();
+            Toast.makeText(this, "Маршрут «" + r.name + "» сохранён", Toast.LENGTH_SHORT).show();
+            editingRoute = r;
+            closeSheet();
+            finishTool();
+        });
     }
 
     private void saveRoutes() {
@@ -1529,64 +1759,83 @@ public class MapActivity extends Activity {
         map.invalidate();
     }
 
+    private View routeSwatch(int color) {
+        View v = new View(this);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(3));
+        g.setColor(color);
+        v.setBackground(g);
+        v.setLayoutParams(new LinearLayout.LayoutParams((int) dp(26), (int) dp(6)));
+        return v;
+    }
+
     private void showRoutes() {
-        List<CharSequence> items = new ArrayList<>();
-        items.add("＋  Новый маршрут");
-        for (Routes.Route r : routes) {
-            SpannableStringBuilder sb = new SpannableStringBuilder("━ ");
-            sb.setSpan(new ForegroundColorSpan(r.color), 0, 1, 0);
-            sb.append(r.name).append(r.visible ? "" : "  (скрыт)").append("\n");
-            int st = sb.length();
-            sb.append(Geo.dist(Routes.length(r.pts))).append(" · ").append(Integer.toString(Math.max(0, r.pts.size() - 1)))
-              .append(" уч.");
-            sb.setSpan(new RelativeSizeSpan(0.8f), st, sb.length(), 0);
-            sb.setSpan(new ForegroundColorSpan(getColor(R.color.text2)), st, sb.length(), 0);
-            items.add(sb);
+        sheet("Маршруты" + (routes.isEmpty() ? "" : " · " + routes.size()));
+        hChipRow(hChip("Новый маршрут", R.drawable.ic_add, true, v -> { closeSheet(); startTool(TOOL_ROUTE, null); }));
+        if (routes.isEmpty()) {
+            TextView t = new TextView(this);
+            t.setText("Маршрутов пока нет.\nНажмите «Новый маршрут» и ставьте точки на карте — "
+                    + "получите длину участков, азимуты и дирекционные углы.");
+            t.setTextColor(getColor(R.color.hud_text2));
+            t.setTextSize(13.5f);
+            t.setPadding((int) dp(4), (int) dp(16), (int) dp(4), (int) dp(8));
+            sheetContent.addView(t);
+            return;
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Маршруты")
-                .setItems(items.toArray(new CharSequence[0]), (d, which) -> {
-                    if (which == 0) startTool(TOOL_ROUTE, null);
-                    else routeActions(routes.get(which - 1));
-                })
-                .setNegativeButton("Закрыть", null)
-                .show();
+        hSection("СОХРАНЁННЫЕ");
+        for (Routes.Route r : routes) {
+            final ImageView eye = hIconButton(R.drawable.ic_eye,
+                    r.visible ? getColor(R.color.hud_accent) : getColor(R.color.hud_text2), null);
+            eye.setOnClickListener(v -> {
+                r.visible = !r.visible;
+                saveRoutes();
+                eye.setImageTintList(ColorStateList.valueOf(r.visible ? getColor(R.color.hud_accent) : getColor(R.color.hud_text2)));
+            });
+            hRow(routeSwatch(r.color), r.name, Geo.dist(Routes.length(r.pts)) + " · "
+                    + Math.max(0, r.pts.size() - 1) + " уч.", eye, v -> routeActions(r));
+        }
     }
 
     private void routeActions(Routes.Route r) {
-        String[] acts = {"Показать на карте", "Изменить", "Таблица участков", r.visible ? "Скрыть" : "Показать слой",
-                "Экспорт в KML", "Удалить"};
-        new AlertDialog.Builder(this)
-                .setTitle(r.name + " · " + Geo.dist(Routes.length(r.pts)))
-                .setItems(acts, (d, which) -> {
-                    switch (which) {
-                        case 0: fitRoute(r); break;
-                        case 1: startTool(TOOL_ROUTE, r); break;
-                        case 2: {
-                            List<double[]> keep = new ArrayList<>(toolPts);
-                            toolPts.clear();
-                            toolPts.addAll(r.pts);
-                            toolTable();
-                            toolPts.clear();
-                            toolPts.addAll(keep);
-                            break;
-                        }
-                        case 3: r.visible = !r.visible; saveRoutes(); break;
-                        case 4:
-                            saveAndShare(r.name.replaceAll("[^A-Za-z0-9А-Яа-яЁё_-]", "_") + ".kml", Routes.toKml(r), "Отправить маршрут");
-                            break;
-                        default:
-                            new AlertDialog.Builder(this)
-                                    .setTitle("Удалить «" + r.name + "»?")
-                                    .setPositiveButton("Удалить", (d2, w2) -> {
-                                        routes.remove(r);
-                                        saveRoutes();
-                                    })
-                                    .setNegativeButton("Отмена", null)
-                                    .show();
-                    }
+        sheet(r.name);
+        LinearLayout info = hCard();
+        TextView t = new TextView(this);
+        List<Routes.Leg> legs = Routes.legs(r.pts);
+        StringBuilder sb = new StringBuilder(Geo.dist(Routes.length(r.pts))).append(" · ").append(legs.size()).append(" уч.");
+        if (!legs.isEmpty())
+            sb.append("\nПервый участок: ").append(String.format(Locale.US, "%.1f°", legs.get(0).az))
+              .append(" (").append(Geo.mils(legs.get(0).grid)).append(")");
+        t.setText(sb);
+        t.setTextColor(getColor(R.color.hud_text));
+        t.setTextSize(13.5f);
+        info.addView(t);
+        sheetContent.addView(info);
+        int tx = getColor(R.color.hud_text);
+        hSection("ДЕЙСТВИЯ");
+        hRow(hIcon(R.drawable.ic_eye, tx, 22), "Показать на карте", null, null, v -> { closeSheet(); fitRoute(r); });
+        hRow(hIcon(R.drawable.ic_route, tx, 22), "Изменить точки", null, null, v -> { closeSheet(); startTool(TOOL_ROUTE, r); });
+        hRow(hIcon(R.drawable.ic_table, tx, 22), "Таблица участков", "Длины, азимуты, дир. углы, координаты", null, v -> {
+            closeSheet();
+            List<double[]> keep = new ArrayList<>(toolPts);
+            toolPts.clear();
+            toolPts.addAll(r.pts);
+            toolTable();
+            toolPts.clear();
+            toolPts.addAll(keep);
+        });
+        hRow(hIcon(R.drawable.ic_share, tx, 22), "Экспорт в KML", "Для AlpineQuest", null, v -> {
+            closeSheet();
+            saveAndShare(r.name.replaceAll("[^A-Za-z0-9А-Яа-яЁё_-]", "_") + ".kml", Routes.toKml(r), "Отправить маршрут");
+        });
+        hRow(hIcon(R.drawable.ic_delete, 0xFFFF6B60, 22), "Удалить маршрут", null, null, v -> new AlertDialog.Builder(this)
+                .setTitle("Удалить «" + r.name + "»?")
+                .setPositiveButton("Удалить", (d2, w2) -> {
+                    routes.remove(r);
+                    saveRoutes();
+                    showRoutes();
                 })
-                .show();
+                .setNegativeButton("Отмена", null)
+                .show());
     }
 
     private void fitRoute(Routes.Route r) {
@@ -1631,8 +1880,8 @@ public class MapActivity extends Activity {
         swDiff.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("optDiff", on).apply());
         swGray.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("optGray", on).apply());
         try {
-            ((TextView) findViewById(R.id.menuVersion)).setText("v"
-                    + getPackageManager().getPackageInfo(getPackageName(), 0).versionName + " · разработчик TRO9II");
+            ((TextView) findViewById(R.id.menuVersion)).setText("Карта линии фронта · v"
+                    + getPackageManager().getPackageInfo(getPackageName(), 0).versionName);
         } catch (Exception ignored) {
         }
     }
@@ -1761,7 +2010,7 @@ public class MapActivity extends Activity {
         if (lbsRunning || lbsScript == null) return;
         lbsRunning = true;
         lbsTries = 0;
-        lbsProgress = "Загружаю данные DeepStateMap…";
+        lbsProgress = "Загружаю данные…";
         updateLbsCard();
         lbsWeb.loadUrl(LbsCore.SOURCE_URL);
         lbsHandler.postDelayed(() -> {
@@ -1776,7 +2025,7 @@ public class MapActivity extends Activity {
             String res = LbsCore.decode(raw);
             if (res == null || res.startsWith("WAIT")) {
                 if (++lbsTries < 20) {
-                    lbsProgress = "Жду ответа сайта…";
+                    lbsProgress = "Обновляю данные…";
                     updateLbsCard();
                     lbsHandler.postDelayed(this::lbsExtract, 2000);
                 } else {
@@ -1788,7 +2037,7 @@ public class MapActivity extends Activity {
                 lbsFail(res.substring(3).trim());
                 return;
             }
-            lbsProgress = "Строю линию фронта…";
+            lbsProgress = "Обрабатываю данные…";
             updateLbsCard();
             final String data = res;
             new Thread(() -> {
@@ -1944,6 +2193,9 @@ public class MapActivity extends Activity {
             bottom.setPadding(bottom.getPaddingLeft(), bottom.getPaddingTop(), bottom.getPaddingRight(), bp + b);
             View mp = findViewById(R.id.menuPanel);
             mp.setPadding(mp.getPaddingLeft(), mp.getPaddingTop(), mp.getPaddingRight(), (int) dp(16) + b);
+            int ime = Build.VERSION.SDK_INT >= 30 ? insets.getInsets(WindowInsets.Type.ime()).bottom : 0;
+            View gp = findViewById(R.id.genPanel);
+            gp.setPadding(gp.getPaddingLeft(), gp.getPaddingTop(), gp.getPaddingRight(), (int) dp(14) + Math.max(b, ime));
             return insets;
         });
         root.requestApplyInsets();
@@ -1963,6 +2215,10 @@ public class MapActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (sheetOpen()) {
+            closeSheet();
+            return;
+        }
         if (menuOpen()) {
             openMenu(false);
             return;
@@ -1988,12 +2244,17 @@ public class MapActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (map != null) map.onResume();
+        if (compassMode && sensors != null) {
+            android.hardware.Sensor rv = sensors.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR);
+            if (rv != null) sensors.registerListener(compassListener, rv, android.hardware.SensorManager.SENSOR_DELAY_UI);
+        }
         reloadLbs();
         showSavedCrash();
     }
 
     @Override
     protected void onPause() {
+        if (sensors != null) sensors.unregisterListener(compassListener);
         if (map != null) {
             GeoPoint c = (GeoPoint) map.getMapCenter();
             prefs.edit().putString("viewLat", Double.toString(c.getLatitude()))
