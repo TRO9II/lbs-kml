@@ -6,4 +6,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 scripts/check_elev.py
+      - run: python3 scripts/check_ov.py
