@@ -1337,7 +1337,7 @@ public class MapActivity extends Activity {
         TextView total = findViewById(R.id.toolTotal), sub = findViewById(R.id.toolSub);
         if (n == 0) {
             total.setText("—");
-            sub.setText("Нажимайте на карту, на свои точки или ⊕ (точка по прицелу)");
+            sub.setText("Нажмите на карту или ⊕ — первая точка. Дальше двигайте карту: линия тянется к прицелу");
             return;
         }
         List<Routes.Leg> legs = Routes.legs(toolPts);

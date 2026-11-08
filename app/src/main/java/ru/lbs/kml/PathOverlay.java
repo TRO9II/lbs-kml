@@ -36,6 +36,11 @@ public class PathOverlay extends Overlay {
     private List<Routes.Route> saved = new ArrayList<>();
     private List<double[]> active;
     private int activeColor = 0xFFFFB300;
+    private final Paint rubber = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint rubberHalo = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint liveText = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint liveSub = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Point pc = new Point();
 
     public PathOverlay(float density) {
         this.density = density;
@@ -56,6 +61,19 @@ public class PathOverlay extends Overlay {
         label.setTypeface(Typeface.DEFAULT_BOLD);
         label.setTextAlign(Paint.Align.CENTER);
         labelBg.setColor(Color.argb(215, 21, 24, 29));
+        rubber.setStyle(Paint.Style.STROKE);
+        rubber.setStrokeWidth(2.4f * density);
+        rubber.setStrokeCap(Paint.Cap.ROUND);
+        rubber.setPathEffect(new android.graphics.DashPathEffect(new float[]{9 * density, 7 * density}, 0));
+        rubberHalo.set(rubber);
+        rubberHalo.setPathEffect(null);
+        rubberHalo.setStrokeWidth(4.2f * density);
+        rubberHalo.setColor(Color.argb(110, 0, 0, 0));
+        liveText.setColor(Color.WHITE);
+        liveText.setTextSize(15 * density);
+        liveText.setTypeface(Typeface.DEFAULT_BOLD);
+        liveSub.setColor(Color.argb(220, 200, 205, 212));
+        liveSub.setTextSize(11 * density);
     }
 
     void setSaved(List<Routes.Route> routes) {
@@ -74,7 +92,43 @@ public class PathOverlay extends Overlay {
         Projection pj = mv.getProjection();
         float orient = mv.getMapOrientation();
         for (Routes.Route r : saved) if (r.visible && r.pts.size() > 1) drawPath(c, pj, orient, r.pts, r.color, false);
-        if (active != null && !active.isEmpty()) drawPath(c, pj, orient, active, activeColor, true);
+        if (active != null && !active.isEmpty()) {
+            drawPath(c, pj, orient, active, activeColor, true);
+            drawRubber(c, mv, pj, orient);
+        }
+    }
+
+    /** «Резинка»: пунктир от последней точки к прицелу (центру карты) и расстояние у прицела. */
+    private void drawRubber(Canvas c, MapView mv, Projection pj, float orient) {
+        double[] last = active.get(active.size() - 1);
+        org.osmdroid.api.IGeoPoint ctr = mv.getMapCenter();
+        gp.setCoords(last[0], last[1]);
+        pj.toPixels(gp, pt);
+        gp.setCoords(ctr.getLatitude(), ctr.getLongitude());
+        pj.toPixels(gp, pc);
+        if (Math.hypot(pc.x - pt.x, pc.y - pt.y) < 4 * density) return;
+        rubber.setColor(activeColor);
+        c.drawLine(pt.x, pt.y, pc.x, pc.y, rubberHalo);
+        c.drawLine(pt.x, pt.y, pc.x, pc.y, rubber);
+
+        double[] inv = Geo.inverse(last[0], last[1], ctr.getLatitude(), ctr.getLongitude());
+        double grid = Geo.gridBearing(last[0], last[1], ctr.getLatitude(), ctr.getLongitude());
+        String main = Geo.dist(inv[0]);
+        String sub = String.format(java.util.Locale.US, "%.1f° · %s", inv[1], Geo.mils(grid));
+        double total = Routes.length(active) + inv[0];
+        if (active.size() > 1) sub += " · всего " + Geo.dist(total);
+
+        // плашка справа-сверху от прицела, всегда ровно
+        c.save();
+        if (orient != 0f) c.rotate(-orient, pc.x, pc.y);
+        float x = pc.x + 22 * density, y = pc.y - 20 * density;
+        float w = Math.max(liveText.measureText(main), liveSub.measureText(sub));
+        float pad = 8 * density;
+        c.drawRoundRect(x - pad, y - liveText.getTextSize() - pad * 0.6f, x + w + pad,
+                y + liveSub.getTextSize() + pad, 10 * density, 10 * density, labelBg);
+        c.drawText(main, x, y, liveText);
+        c.drawText(sub, x, y + liveSub.getTextSize() + 3 * density, liveSub);
+        c.restore();
     }
 
     private void drawPath(Canvas c, Projection pj, float orient, List<double[]> pts, int color, boolean editing) {
