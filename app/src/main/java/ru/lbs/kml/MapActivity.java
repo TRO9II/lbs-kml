@@ -250,7 +250,8 @@ public class MapActivity extends Activity {
             }
         });
         findViewById(R.id.offlineChip).setOnClickListener(v -> openMenu(true));
-        findViewById(R.id.navStop).setOnClickListener(v -> stopNav());
+        findViewById(R.id.navStop).setOnClickListener(v -> { if (guideOn()) stopGuide(true); else stopNav(); });
+        findViewById(R.id.navPanel).setOnClickListener(v -> { if (guideOn()) guideAdjust(); });
         findViewById(R.id.targetCard).setOnLongClickListener(v -> {
             try {
                 startNav(Collections.singletonList(new double[]{Double.parseDouble(prefs.getString("targetLat", "0")),
@@ -2716,9 +2717,6 @@ public class MapActivity extends Activity {
 
     private void cancelDownload() {
         if (dlTask != null) dlTask.cancel(true);
-        if (locMgr != null) locMgr.removeUpdates(locListener);
-        if (track != null) setTracking(false);
-        if (sensors != null) sensors.unregisterListener(navSensor);
         finishDownload("Загрузка остановлена. Уже скачанное сохранено");
     }
 
@@ -2850,6 +2848,14 @@ public class MapActivity extends Activity {
         lbsHandler.removeCallbacksAndMessages(null);
         if (lbsWeb != null) lbsWeb.destroy();
         if (dlTask != null) dlTask.cancel(true);
+        if (locMgr != null) locMgr.removeUpdates(locListener);
+        if (track != null) setTracking(false);
+        if (sensors != null) {
+            sensors.unregisterListener(navSensor);
+            sensors.unregisterListener(stepListener);
+        }
+        gHandler.removeCallbacksAndMessages(null);
+        if (tts != null) tts.shutdown();
         if (map != null) map.onDetach();
         super.onDestroy();
     }
@@ -2939,6 +2945,7 @@ public class MapActivity extends Activity {
         if (follow) map.getController().animateTo(new GeoPoint(l.getLatitude(), l.getLongitude()));
         if (track != null) appendTrack(l);
         if (navOn()) updateNav(l);
+        if (guideOn()) guideLocation(l);
         updateCoords();
         map.invalidate();
     }
@@ -3528,6 +3535,12 @@ public class MapActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int req, String[] perms, int[] grants) {
         super.onRequestPermissionsResult(req, perms, grants);
+        if (req == REQ_STEPS) {
+            if (pendingGuide != null && checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED)
+                startGuide(pendingGuide, pendingBack, GUIDE_STEPS);
+            else Toast.makeText(this, "Без доступа к шагомеру — выберите ведение по скорости или GPS", Toast.LENGTH_LONG).show();
+            pendingGuide = null;
+        }
         if (req == REQ_LOC) {
             if (hasLocPerm()) startLocation(pendingCenter);
             else Toast.makeText(this, "Без разрешения на геолокацию «Моё местоположение» не работает", Toast.LENGTH_LONG).show();
@@ -3757,6 +3770,7 @@ public class MapActivity extends Activity {
 
     private void startNav(List<double[]> pts, int idx, String name) {
         if (pts == null || pts.isEmpty()) return;
+        if (guideOn()) stopGuide(false);
         navPts = new ArrayList<>(pts);
         navIdx = Math.max(0, Math.min(idx, navPts.size() - 1));
         navName = name;
@@ -3865,10 +3879,7 @@ public class MapActivity extends Activity {
     }
 
     private void navRoute(Routes.Route r, boolean back) {
-        List<double[]> p = new ArrayList<>(r.pts);
-        if (back) Collections.reverse(p);
-        if (back && r == track) setTracking(false);
-        startNav(p, nearestIdx(p), (back ? "Обратно: " : "") + r.name);
+        guideOptions(r, back);
     }
 
     // ================= Обмен по QR-коду =================
@@ -4115,6 +4126,511 @@ public class MapActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         rl.bottomMargin = (int) dp(8);
         sheetContent.addView(row, rl);
+    }
+
+    // ================= Ведение по маршруту (с GPS или без: по шагам / по скорости) =================
+
+    private static final int GUIDE_GPS = 0, GUIDE_STEPS = 1, GUIDE_SPEED = 2, REQ_STEPS = 22;
+
+    private static final class Key {
+        int idx;
+        double at;      // расстояние от начала, м
+        String name;
+        double turn;    // угол поворота, ° (+ направо), NaN — финиш
+        boolean passed;
+        final boolean[] said = new boolean[4];
+    }
+
+    private static final double[] SAY_AT = {500, 200, 100, 30};
+
+    private List<double[]> gPts;
+    private double[] gCum;
+    private final List<Key> gKeys = new ArrayList<>();
+    private int gSrc;
+    private double gS;            // пройдено вдоль маршрута, м
+    private double gSpeed = 1.3;  // м/с для режима «по скорости»
+    private double gStep = 0.75;  // м на шаг
+    private String gName = "";
+    private boolean gPaused, gOffWarned, gBack;
+    private long gStartAt;
+    private android.speech.tts.TextToSpeech tts;
+    private boolean ttsOk;
+    private float lastStepCount = -1;
+    private Routes.Route pendingGuide;
+    private boolean pendingBack;
+    private final android.os.Handler gHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable gTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!guideOn()) return;
+            if (gSrc == GUIDE_SPEED && !gPaused) {
+                gS += gSpeed;
+                updateGuide();
+            }
+            gHandler.postDelayed(this, 1000);
+        }
+    };
+
+    private final android.hardware.SensorEventListener stepListener = new android.hardware.SensorEventListener() {
+        @Override
+        public void onSensorChanged(android.hardware.SensorEvent e) {
+            if (!guideOn() || gSrc != GUIDE_STEPS || gPaused) return;
+            int steps;
+            if (e.sensor.getType() == android.hardware.Sensor.TYPE_STEP_DETECTOR) {
+                steps = 1;
+            } else {
+                float v = e.values[0];
+                steps = lastStepCount < 0 ? 0 : Math.round(v - lastStepCount);
+                lastStepCount = v;
+            }
+            if (steps <= 0) return;
+            gS += steps * gStep;
+            updateGuide();
+        }
+
+        @Override
+        public void onAccuracyChanged(android.hardware.Sensor s, int a) {}
+    };
+
+    private boolean guideOn() {
+        return gPts != null;
+    }
+
+    /** Выбор способа ведения по маршруту. */
+    private void guideOptions(Routes.Route r, boolean back) {
+        sheet((back ? "Обратно · " : "Вести · ") + r.name);
+        TextView t = new TextView(this);
+        t.setText("Голосом и вибрацией предупреждаю о поворотах и контрольных точках: за 500, 200, 100 и 30 м. "
+                + "Без GPS положение считается по шагам или по скорости — поправить его можно, нажав на панель ведения.");
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setTextSize(12.5f);
+        t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
+        sheetContent.addView(t);
+        int tx = getColor(R.color.hud_text);
+        hRow(hIcon(R.drawable.ic_my_location, 0xFF42A5F5, 22), "По GPS", "Самый точный: положение со спутников", null,
+                v -> { closeSheet(); startGuide(r, back, GUIDE_GPS); });
+        hRow(hIcon(R.drawable.ic_route, tx, 22), "Без GPS — по шагам", "Шагомер телефона, шаг " + fmtM(gStep()), null,
+                v -> { closeSheet(); startGuide(r, back, GUIDE_STEPS); });
+        hSection("БЕЗ GPS — ПО СКОРОСТИ");
+        final double[] spd = {prefs.getFloat("guideSpeed", 5f)};
+        heightChipsUnits("Скорость, км/ч", new double[]{3, 5, 10, 20, 40, 60}, spd, " км/ч",
+                v -> prefs.edit().putFloat("guideSpeed", (float) v).apply());
+        hChipRow(hChip("Начать по скорости", R.drawable.ic_nav, true, v -> {
+            closeSheet();
+            gSpeed = spd[0] / 3.6;
+            startGuide(r, back, GUIDE_SPEED);
+        }));
+    }
+
+    private double gStep() {
+        return prefs.getFloat("stepLen", 0.75f);
+    }
+
+    private static String fmtM(double m) {
+        return String.format(Locale.US, "%.2f м", m).replace('.', ',');
+    }
+
+    /** Ряд кнопок выбора значения с единицами. */
+    private void heightChipsUnits(String label, double[] values, double[] cur, String unit, DoubleCb cb) {
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextColor(getColor(R.color.hud_text2));
+        l.setTextSize(12);
+        l.setPadding((int) dp(4), (int) dp(6), 0, (int) dp(4));
+        sheetContent.addView(l);
+        LinearLayout row = new LinearLayout(this);
+        final List<TextView> all = new ArrayList<>();
+        for (double v : values) {
+            TextView c = new TextView(this);
+            c.setText(Math.round(v) + unit);
+            c.setGravity(android.view.Gravity.CENTER);
+            c.setTextSize(12.5f);
+            c.setSingleLine(true);
+            c.setPadding(0, (int) dp(8), 0, (int) dp(8));
+            c.setTag(v);
+            all.add(c);
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            p.setMarginEnd((int) dp(5));
+            row.addView(c, p);
+            c.setOnClickListener(x -> {
+                cur[0] = v;
+                for (TextView o : all) styleHeightChip(o, (double) o.getTag() == v);
+                cb.on(v);
+            });
+            styleHeightChip(c, v == cur[0]);
+        }
+        sheetContent.addView(row);
+    }
+
+    private void startGuide(Routes.Route r, boolean back, int src) {
+        if (r.pts.size() < 2) return;
+        if (src == GUIDE_STEPS && Build.VERSION.SDK_INT >= 29
+                && checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED) {
+            pendingGuide = r;
+            pendingBack = back;
+            requestPermissions(new String[]{Manifest.permission.ACTIVITY_RECOGNITION}, REQ_STEPS);
+            return;
+        }
+        if (navOn()) stopNav();
+        if (guideOn()) stopGuide(false);
+        if (back && r == track) setTracking(false);
+        gPts = new ArrayList<>(r.pts);
+        if (back) Collections.reverse(gPts);
+        gName = (back ? "Обратно: " : "") + r.name;
+        gBack = back;
+        gSrc = src;
+        gStep = gStep();
+        gPaused = false;
+        gOffWarned = false;
+        gStartAt = System.currentTimeMillis();
+        int n = gPts.size();
+        gCum = new double[n];
+        for (int i = 1; i < n; i++)
+            gCum[i] = gCum[i - 1] + Geo.inverse(gPts.get(i - 1)[0], gPts.get(i - 1)[1], gPts.get(i)[0], gPts.get(i)[1])[0];
+        buildKeys();
+        gS = 0;
+        if (src == GUIDE_GPS) {
+            if (!locOn) startLocation(false);
+            android.location.Location me = myLoc.getLocation();
+            if (me != null) gS = project(me.getLatitude(), me.getLongitude(), -1);
+        } else {
+            if (locOn) stopLocation();
+            if (src == GUIDE_STEPS) {
+                if (sensors == null) sensors = getSystemService(android.hardware.SensorManager.class);
+                android.hardware.Sensor det = sensors == null ? null : sensors.getDefaultSensor(android.hardware.Sensor.TYPE_STEP_DETECTOR);
+                android.hardware.Sensor cnt = sensors == null ? null : sensors.getDefaultSensor(android.hardware.Sensor.TYPE_STEP_COUNTER);
+                lastStepCount = -1;
+                if (det != null) sensors.registerListener(stepListener, det, android.hardware.SensorManager.SENSOR_DELAY_FASTEST);
+                else if (cnt != null) sensors.registerListener(stepListener, cnt, android.hardware.SensorManager.SENSOR_DELAY_FASTEST);
+                else {
+                    Toast.makeText(this, "В телефоне нет шагомера — выберите ведение по скорости", Toast.LENGTH_LONG).show();
+                    gPts = null;
+                    return;
+                }
+            }
+        }
+        for (Key k : gKeys) if (k.at < gS - 1) k.passed = true;
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        findViewById(R.id.navPanel).setVisibility(View.VISIBLE);
+        follow = true;
+        gHandler.removeCallbacks(gTick);
+        gHandler.post(gTick);
+        initTts();
+        Key first = nextKey();
+        say("Начинаю ведение. " + gName + ". Всего " + spokenDist(gCum[n - 1])
+                + (first != null ? ". Первая точка " + first.name + " через " + spokenDist(first.at - gS) : ""));
+        updateGuide();
+    }
+
+    private void stopGuide(boolean speak) {
+        if (!guideOn()) return;
+        gPts = null;
+        gHandler.removeCallbacks(gTick);
+        if (sensors != null) sensors.unregisterListener(stepListener);
+        findViewById(R.id.navPanel).setVisibility(View.GONE);
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (gSrc != GUIDE_GPS) {
+            myLoc.setLocation(null);
+            myLoc.setHeading(Float.NaN);
+        }
+        if (speak) say("Ведение остановлено");
+        map.invalidate();
+    }
+
+    /** Ключевые точки: вершины с заметным поворотом, свои точки рядом с маршрутом, финиш. */
+    private void buildKeys() {
+        gKeys.clear();
+        int n = gPts.size();
+        boolean sparse = n <= 40;
+        for (int i = 1; i < n - 1; i++) {
+            double[] inOut = turnAt(i, sparse ? 0 : 30);
+            double turn = inOut[0];
+            String own = ownPointNear(gPts.get(i), 40);
+            if (sparse || Math.abs(turn) >= 35 || own != null) {
+                if (!sparse && own == null && !gKeys.isEmpty() && gCum[i] - gKeys.get(gKeys.size() - 1).at < 40) continue;
+                Key k = new Key();
+                k.idx = i;
+                k.at = gCum[i];
+                k.turn = turn;
+                k.name = own != null ? own : sparse ? "КТ " + (gBack ? n - i : i + 1) : "поворот";
+                gKeys.add(k);
+            }
+        }
+        Key fin = new Key();
+        fin.idx = n - 1;
+        fin.at = gCum[n - 1];
+        fin.turn = Double.NaN;
+        String own = ownPointNear(gPts.get(n - 1), 40);
+        fin.name = own != null ? own : "конечная точка";
+        gKeys.add(fin);
+    }
+
+    /** Угол поворота в вершине i; look — сколько метров брать до и после (0 — соседние вершины). */
+    private double[] turnAt(int i, double look) {
+        int a = i - 1, b = i + 1;
+        if (look > 0) {
+            while (a > 0 && gCum[i] - gCum[a] < look) a--;
+            while (b < gPts.size() - 1 && gCum[b] - gCum[i] < look) b++;
+        }
+        double[] p = gPts.get(i);
+        double azIn = Geo.inverse(gPts.get(a)[0], gPts.get(a)[1], p[0], p[1])[1];
+        double azOut = Geo.inverse(p[0], p[1], gPts.get(b)[0], gPts.get(b)[1])[1];
+        double d = ((azOut - azIn) % 360 + 540) % 360 - 180;
+        return new double[]{d, azOut};
+    }
+
+    private String ownPointNear(double[] p, double radius) {
+        String best = null;
+        double bd = radius;
+        for (UserPoints.Point up : userPoints) {
+            double d = Geo.inverse(p[0], p[1], up.lat, up.lon)[0];
+            if (d <= bd) { bd = d; best = up.name; }
+        }
+        return best;
+    }
+
+    private static String turnWords(double t) {
+        if (Double.isNaN(t)) return "";
+        double a = Math.abs(t);
+        String side = t > 0 ? "направо" : "налево";
+        if (a < 20) return "прямо";
+        if (a < 45) return "плавно " + side;
+        if (a < 135) return side;
+        if (a < 165) return "резко " + side;
+        return "разворот";
+    }
+
+    private Key nextKey() {
+        for (Key k : gKeys) if (!k.passed) return k;
+        return null;
+    }
+
+    /** Точка на маршруте на расстоянии s от начала и азимут участка. */
+    private double[] pointAt(double s) {
+        int n = gPts.size();
+        if (s <= 0) return new double[]{gPts.get(0)[0], gPts.get(0)[1], Geo.inverse(gPts.get(0)[0], gPts.get(0)[1], gPts.get(1)[0], gPts.get(1)[1])[1]};
+        int i = 1;
+        while (i < n - 1 && gCum[i] < s) i++;
+        double span = gCum[i] - gCum[i - 1];
+        double t = span <= 0 ? 1 : Math.min(1, (s - gCum[i - 1]) / span);
+        double[] a = gPts.get(i - 1), b = gPts.get(i);
+        return new double[]{a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, Geo.inverse(a[0], a[1], b[0], b[1])[1]};
+    }
+
+    /** Проекция координаты на маршрут → расстояние от начала. near≥0 — искать рядом с этим местом. Отклонение — в gOff. */
+    private double gOff;
+
+    private double project(double lat, double lon, double near) {
+        double best = Double.MAX_VALUE, bestS = 0;
+        double kx = Math.cos(Math.toRadians(lat)) * 111320, ky = 110574;
+        for (int i = 1; i < gPts.size(); i++) {
+            if (near >= 0 && (gCum[i] < near - 300 || gCum[i - 1] > near + 800)) continue;
+            double[] a = gPts.get(i - 1), b = gPts.get(i);
+            double ax = (a[1] - lon) * kx, ay = (a[0] - lat) * ky, bx = (b[1] - lon) * kx, by = (b[0] - lat) * ky;
+            double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+            double t = l2 == 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / l2));
+            double px = ax + dx * t, py = ay + dy * t;
+            double d = Math.hypot(px, py);
+            if (d < best) { best = d; bestS = gCum[i - 1] + (gCum[i] - gCum[i - 1]) * t; }
+        }
+        gOff = best;
+        return bestS;
+    }
+
+    private void guideLocation(android.location.Location l) {
+        if (!guideOn() || gSrc != GUIDE_GPS) return;
+        double s = project(l.getLatitude(), l.getLongitude(), gS);
+        if (gOff > 80) s = project(l.getLatitude(), l.getLongitude(), -1);
+        if (gOff > 60) {
+            if (!gOffWarned) {
+                gOffWarned = true;
+                vibrate(500);
+                say("Внимание. Вы ушли с маршрута на " + spokenDist(gOff));
+            }
+        } else {
+            gOffWarned = false;
+            gS = Math.max(gS - 30, s); // не прыгать назад из-за погрешности
+        }
+        updateGuide();
+    }
+
+    private void updateGuide() {
+        if (!guideOn()) return;
+        double total = gCum[gCum.length - 1];
+        gS = Math.max(0, Math.min(total, gS));
+        double[] here = pointAt(gS);
+        if (gSrc != GUIDE_GPS) {
+            android.location.Location fake = new android.location.Location("route");
+            fake.setLatitude(here[0]);
+            fake.setLongitude(here[1]);
+            fake.setAccuracy(0);
+            myLoc.setLocation(fake);
+            myLoc.setHeading((float) here[2]);
+            if (follow) map.getController().animateTo(new GeoPoint(here[0], here[1]));
+        }
+        // объявления
+        boolean gps = gSrc == GUIDE_GPS;
+        Key k = nextKey();
+        while (k != null) {
+            double dk = k.at - gS;
+            double passR = gps ? 12 : 2;
+            if (dk <= passR) {
+                k.passed = true;
+                vibrate(Double.isNaN(k.turn) ? 800 : 300);
+                if (Double.isNaN(k.turn)) {
+                    say("Вы прибыли. " + k.name);
+                    Toast.makeText(this, "Маршрут пройден", Toast.LENGTH_LONG).show();
+                    stopGuide(false);
+                    return;
+                }
+                Key nx = nextKey();
+                say(k.name + ". " + capital(turnWords(k.turn))
+                        + (nx != null ? ". Дальше " + spokenDist(nx.at - k.at) + " до " + nx.name : ""));
+                k = nx;
+                continue;
+            }
+            Key prev = null;
+            for (Key x : gKeys) { if (x == k) break; prev = x; }
+            double legLen = k.at - (prev == null ? 0 : prev.at);
+            int jj = -1;
+            for (int j = 0; j < SAY_AT.length; j++) if (SAY_AT[j] >= dk) jj = j;
+            if (jj >= 0 && !k.said[jj]) {
+                for (int j = 0; j <= jj; j++) k.said[j] = true;
+                boolean last = jj == SAY_AT.length - 1;
+                if (last || legLen >= SAY_AT[jj] + 40) {
+                    String tw = turnWords(k.turn);
+                    say("Через " + spokenDist(last ? Math.max(10, dk) : SAY_AT[jj]) + " " + k.name
+                            + (Double.isNaN(k.turn) ? ", финиш" : tw.equals("прямо") ? "" : ", " + tw));
+                    if (jj >= 2) vibrate(150);
+                }
+            }
+            break;
+        }
+        // панель
+        TextView dist = findViewById(R.id.navDist), sub = findViewById(R.id.navSub);
+        ImageView arrow = findViewById(R.id.navArrow);
+        arrow.setAlpha(1f);
+        if (k != null) {
+            double dk = Math.max(0, k.at - gS);
+            dist.setText(Geo.dist(dk) + " · " + k.name);
+            String tw = Double.isNaN(k.turn) ? "финиш" : turnWords(k.turn);
+            arrow.setRotation(dk < 250 && !Double.isNaN(k.turn) ? (float) k.turn : 0f);
+            double sp = gSrc == GUIDE_SPEED ? gSpeed : gps && speedEma > 0.4 ? speedEma : 1.25;
+            if (gSrc == GUIDE_STEPS) {
+                double el = (System.currentTimeMillis() - gStartAt) / 1000.0;
+                if (el > 60 && gS > 50) sp = gS / el;
+            }
+            long min = Math.round((total - gS) / sp / 60);
+            String src = gps ? "GPS" : gSrc == GUIDE_STEPS ? "по шагам" : "по скорости " + Math.round(gSpeed * 3.6) + " км/ч";
+            sub.setText("затем " + tw + (Double.isNaN(k.turn) ? "" : String.format(Locale.US, " %.0f°", Math.abs(k.turn)))
+                    + " · пройдено " + Geo.dist(gS) + " из " + Geo.dist(total) + " · ~" + durText(min * 60.0)
+                    + "\n" + gName + " · " + src + (gPaused ? " · ПАУЗА" : "") + (gps ? "" : " · нажмите для поправки"));
+        }
+        map.invalidate();
+    }
+
+    private static String capital(String s) {
+        return s.isEmpty() ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1);
+    }
+
+    private static String spokenDist(double m) {
+        if (m < 1000) return (Math.round(m / 10.0) * 10) + " метров";
+        return String.format(Locale.US, "%.1f", m / 1000).replace(".0", "").replace('.', ',') + " километра";
+    }
+
+    /** Поправка положения без GPS. */
+    private void guideAdjust() {
+        if (!guideOn()) return;
+        sheet("Поправка положения");
+        TextView t = new TextView(this);
+        t.setText("Сейчас: пройдено " + Geo.dist(gS) + ". Если метка на маршруте отстаёт или убежала вперёд — поправьте.");
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setTextSize(12.5f);
+        t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
+        sheetContent.addView(t);
+        hChipRow(hChip("−100 м", 0, false, v -> shiftGuide(-100)), hChip("−20 м", 0, false, v -> shiftGuide(-20)),
+                hChip("+20 м", 0, false, v -> shiftGuide(20)), hChip("+100 м", 0, false, v -> shiftGuide(100)));
+        hChipRow(hChip("Я у следующей точки", R.drawable.ic_flag, true, v -> {
+            Key k = nextKey();
+            if (k != null) { gS = k.at - (gSrc == GUIDE_GPS ? 12 : 1.5); updateGuide(); }
+            closeSheet();
+        }));
+        hChipRow(hChip("Я здесь — по прицелу карты", R.drawable.ic_crosshair_add, false, v -> {
+            closeSheet();
+            follow = false;
+            Toast.makeText(this, "Наведите прицел на своё место на маршруте и нажмите на панель ещё раз → «Поставить по прицелу»", Toast.LENGTH_LONG).show();
+            aimMode = true;
+        }));
+        if (aimMode) {
+            hChipRow(hChip("Поставить по прицелу", R.drawable.ic_check, true, v -> {
+                GeoPoint c = (GeoPoint) map.getMapCenter();
+                double s = project(c.getLatitude(), c.getLongitude(), -1);
+                for (Key k : gKeys) {
+                    k.passed = k.at < s - 1;
+                    java.util.Arrays.fill(k.said, k.passed);
+                }
+                gS = s;
+                aimMode = false;
+                follow = true;
+                closeSheet();
+                updateGuide();
+                Toast.makeText(this, gOff > 100 ? "Прицел далеко от маршрута — взята ближайшая точка маршрута" : "Положение поправлено",
+                        Toast.LENGTH_SHORT).show();
+            }));
+        }
+        hChipRow(hChip(gPaused ? "Продолжить" : "Пауза", 0, false, v -> {
+            gPaused = !gPaused;
+            closeSheet();
+            say(gPaused ? "Пауза" : "Продолжаю");
+            updateGuide();
+        }), hChip("Остановить", R.drawable.ic_close, false, v -> { closeSheet(); stopGuide(true); }));
+        if (gSrc == GUIDE_STEPS) {
+            hSection("ДЛИНА ШАГА");
+            final double[] st = {gStep};
+            heightChipsUnits("Подберите, если метка отстаёт или спешит", new double[]{0.6, 0.65, 0.7, 0.75, 0.8, 0.9}, st, "",
+                    vv -> { gStep = vv; prefs.edit().putFloat("stepLen", (float) vv).apply(); });
+            // подписи «0,6 м» вместо округлённых
+            LinearLayout last = (LinearLayout) sheetContent.getChildAt(sheetContent.getChildCount() - 1);
+            for (int i = 0; i < last.getChildCount(); i++) {
+                TextView c = (TextView) last.getChildAt(i);
+                c.setText(String.format(Locale.US, "%.2f", (double) c.getTag()).replace('.', ','));
+            }
+        }
+        if (gSrc == GUIDE_SPEED) {
+            hSection("СКОРОСТЬ");
+            final double[] sp = {Math.round(gSpeed * 3.6)};
+            heightChipsUnits("км/ч", new double[]{3, 5, 10, 20, 40, 60}, sp, "", vv -> gSpeed = vv / 3.6);
+        }
+    }
+
+    private boolean aimMode;
+
+    private void shiftGuide(double m) {
+        gS += m;
+        for (Key k : gKeys) if (k.at > gS + 1) { k.passed = false; java.util.Arrays.fill(k.said, false); }
+        updateGuide();
+    }
+
+    private void initTts() {
+        if (tts != null) return;
+        tts = new android.speech.tts.TextToSpeech(this, status -> {
+            if (status != android.speech.tts.TextToSpeech.SUCCESS) {
+                Toast.makeText(this, "Голосовые подсказки недоступны — только экран и вибрация", Toast.LENGTH_LONG).show();
+                return;
+            }
+            int r = tts.setLanguage(new Locale("ru", "RU"));
+            ttsOk = r != android.speech.tts.TextToSpeech.LANG_MISSING_DATA && r != android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED;
+            if (!ttsOk)
+                Toast.makeText(this, "Нет русского голоса в телефоне (Настройки → Синтез речи) — подсказки только на экране",
+                        Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void say(String text) {
+        ((TextView) findViewById(R.id.navSub)).setContentDescription(text);
+        if (!prefs.getBoolean("guideVoice", true)) return;
+        if (tts != null && ttsOk) tts.speak(text, android.speech.tts.TextToSpeech.QUEUE_ADD, null, "g" + System.nanoTime());
+        else if (tts == null) initTts();
     }
 
     @SuppressWarnings("unused")
