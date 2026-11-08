@@ -131,7 +131,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="end|center_vertical"
-        android:layout_marginTop="40dp"
+        android:layout_marginTop="30dp"
         android:layout_marginEnd="12dp"
         android:orientation="vertical">
 
@@ -181,6 +181,25 @@
             <View style="@style/MapDivider" />
 
             <TextView
+                android:id="@+id/btnGrid"
+                style="@style/MapIconBtn"
+                android:contentDescription="Сетка СК-42"
+                android:fontFamily="sans-serif-medium"
+                android:text="СК"
+                android:textSize="15sp" />
+
+            <View style="@style/MapDivider" />
+
+            <TextView
+                android:id="@+id/btnPoints"
+                style="@style/MapIconBtn"
+                android:contentDescription="Мои точки"
+                android:text="📍"
+                android:textSize="18sp" />
+
+            <View style="@style/MapDivider" />
+
+            <TextView
                 android:id="@+id/btnDownload"
                 style="@style/MapIconBtn"
                 android:contentDescription="Скачать область"
@@ -196,11 +215,25 @@
                 android:text="i"
                 android:textSize="19sp" />
         </LinearLayout>
+    </LinearLayout>
 
-        <LinearLayout
+    <!-- Прицел в центре (при сетке СК-42) -->
+    <ImageView
+        android:id="@+id/crosshair"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_gravity="center"
+        android:src="@drawable/ic_crosshair"
+        android:visibility="gone" />
+
+    <!-- Масштаб: справа внизу -->
+    <LinearLayout
+        android:id="@+id/zoomGroup"
             android:layout_width="48dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
+            android:layout_gravity="end|bottom"
+            android:layout_marginEnd="12dp"
+            android:layout_marginBottom="64dp"
             android:background="@drawable/bg_float"
             android:elevation="6dp"
             android:orientation="vertical">
@@ -220,7 +253,6 @@
                 android:contentDescription="Отдалить"
                 android:text="−"
                 android:textSize="26sp" />
-        </LinearLayout>
     </LinearLayout>
 
     <!-- Снизу: прогресс скачивания + источник карты -->
@@ -274,6 +306,33 @@
                 android:text="Отмена"
                 android:textColor="@color/accent"
                 android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/coordPanel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="start"
+            android:layout_marginEnd="72dp"
+            android:layout_marginBottom="6dp"
+            android:background="@drawable/bg_float"
+            android:clickable="true"
+            android:elevation="6dp"
+            android:focusable="true"
+            android:orientation="vertical"
+            android:paddingStart="12dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="6dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/coordText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:textColor="@color/text"
+                android:textSize="12sp" />
         </LinearLayout>
 
         <TextView

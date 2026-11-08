@@ -35,7 +35,11 @@ import org.osmdroid.util.GeoPoint;
 import org.osmdroid.util.MapTileIndex;
 import org.osmdroid.views.CustomZoomButtonsController;
 import org.osmdroid.views.MapView;
-import org.osmdroid.views.overlay.Marker;
+import org.osmdroid.events.MapEventsReceiver;
+import org.osmdroid.events.MapListener;
+import org.osmdroid.events.ScrollEvent;
+import org.osmdroid.events.ZoomEvent;
+import org.osmdroid.views.overlay.MapEventsOverlay;
 import org.osmdroid.views.overlay.Overlay;
 import org.osmdroid.views.overlay.Polygon;
 import org.osmdroid.views.overlay.Polyline;
@@ -118,6 +122,9 @@ public class MapActivity extends Activity {
         findViewById(R.id.btnInfo).setOnClickListener(v -> showInfo());
         findViewById(R.id.btnCompass).setOnClickListener(v -> resetNorth());
         findViewById(R.id.dlCancel).setOnClickListener(v -> cancelDownload());
+        findViewById(R.id.btnGrid).setOnClickListener(v -> toggleGrid());
+        findViewById(R.id.btnPoints).setOnClickListener(v -> showPointsList());
+        findViewById(R.id.coordPanel).setOnClickListener(v -> copyCenterCoords());
         styleLabelsButton();
         setupSearch();
 
@@ -133,9 +140,25 @@ public class MapActivity extends Activity {
             return;
         }
         lbsDate = data.date.replace(" o ", ", ");
+        // долгое нажатие — новая точка (слой в самом низу, чтобы нажатия на булавки обрабатывались раньше)
+        map.getOverlays().add(0, new MapEventsOverlay(new MapEventsReceiver() {
+            @Override public boolean singleTapConfirmedHelper(GeoPoint p) { return false; }
+            @Override public boolean longPressHelper(GeoPoint p) { editPoint(null, p.getLatitude(), p.getLongitude()); return true; }
+        }));
         addOverlays(data);
+        gridOverlay = new GridOverlay(getResources().getDisplayMetrics().density);
+        map.getOverlays().add(gridOverlay);
         loadPlaces();
+        pointsOverlay = new PointsOverlay(getResources().getDisplayMetrics().density);
+        pointsOverlay.setPoints(userPoints = UserPoints.load(this));
+        pointsOverlay.setListener(this::onPointTap);
+        map.getOverlays().add(pointsOverlay);
         map.getOverlays().add(new CompassSync());
+        applyGrid();
+        map.addMapListener(new MapListener() {
+            @Override public boolean onScroll(ScrollEvent e) { updateCoords(); return false; }
+            @Override public boolean onZoom(ZoomEvent e) { updateCoords(); return false; }
+        });
         applyStyle(LbsCore.prefs(this).getInt("mapStyle", STYLE_SAT));
         buildChips();
 
@@ -464,7 +487,6 @@ public class MapActivity extends Activity {
     private EditText searchBox;
     private LinearLayout results;
     private View resultsScroll;
-    private Marker found;
     private Thread onlineSearch;
 
     private void setupSearch() {
@@ -563,15 +585,15 @@ public class MapActivity extends Activity {
 
     private void goTo(double lat, double lon, String title, String sub, double zoom) {
         openSearch(false);
-        GeoPoint g = new GeoPoint(lat, lon);
-        if (found != null) map.getOverlays().remove(found);
-        found = new Marker(map);
-        found.setPosition(g);
-        found.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM);
-        found.setTitle(title);
-        found.setSnippet(sub);
-        map.getOverlays().add(found);
-        map.getController().animateTo(g, zoom, 900L);
+        UserPoints.Point p = new UserPoints.Point();
+        p.id = "";
+        p.name = title;
+        p.note = sub;
+        p.color = 0xFF1E88E5;
+        p.lat = lat;
+        p.lon = lon;
+        pointsOverlay.setExtra(p);
+        map.getController().animateTo(new GeoPoint(lat, lon), zoom, 900L);
         map.invalidate();
     }
 
@@ -736,6 +758,256 @@ public class MapActivity extends Activity {
                 })
                 .setNegativeButton("Отмена", null)
                 .show();
+    }
+
+    // ---------- Сетка СК-42 ----------
+
+    private GridOverlay gridOverlay;
+
+    private boolean gridOn() {
+        return LbsCore.prefs(this).getBoolean("gridOn", false);
+    }
+
+    private void toggleGrid() {
+        boolean on = !gridOn();
+        LbsCore.prefs(this).edit().putBoolean("gridOn", on).apply();
+        applyGrid();
+        Toast.makeText(this, on ? "Сетка СК-42 включена" : "Сетка СК-42 выключена", Toast.LENGTH_SHORT).show();
+    }
+
+    private void applyGrid() {
+        boolean on = gridOn();
+        gridOverlay.setEnabled(on);
+        findViewById(R.id.crosshair).setVisibility(on ? View.VISIBLE : View.GONE);
+        findViewById(R.id.coordPanel).setVisibility(on ? View.VISIBLE : View.GONE);
+        ((TextView) findViewById(R.id.btnGrid)).setTextColor(on ? getColor(R.color.accent) : getColor(R.color.text));
+        updateCoords();
+        map.invalidate();
+    }
+
+    private void updateCoords() {
+        if (gridOverlay == null || !gridOn()) return;
+        GeoPoint c = (GeoPoint) map.getMapCenter();
+        double[] r = Sk42.fromWgs(c.getLatitude(), c.getLongitude());
+        double st = gridOverlay.step();
+        String stepTxt = st >= 1000 ? Math.round(st / 1000) + " км" : Math.round(st) + " м";
+        ((TextView) findViewById(R.id.coordText)).setText(
+                Sk42.format(c.getLatitude(), c.getLongitude()) + "\n"
+                        + String.format(Locale.US, "%.5f, %.5f", c.getLatitude(), c.getLongitude())
+                        + "   ·   зона " + (int) r[2] + " · сетка " + stepTxt);
+    }
+
+    private void copyCenterCoords() {
+        GeoPoint c = (GeoPoint) map.getMapCenter();
+        copy("СК-42: " + Sk42.format(c.getLatitude(), c.getLongitude()) + "\nWGS-84: "
+                + String.format(Locale.US, "%.6f, %.6f", c.getLatitude(), c.getLongitude()));
+    }
+
+    private void copy(String text) {
+        android.content.ClipboardManager cm = getSystemService(android.content.ClipboardManager.class);
+        if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("coords", text));
+        Toast.makeText(this, "Координаты скопированы", Toast.LENGTH_SHORT).show();
+    }
+
+    // ---------- Свои точки ----------
+
+    private PointsOverlay pointsOverlay;
+    private List<UserPoints.Point> userPoints = new ArrayList<>();
+
+    private void savePoints() {
+        try {
+            UserPoints.save(this, userPoints);
+        } catch (Exception e) {
+            Toast.makeText(this, "Не удалось сохранить точки", Toast.LENGTH_LONG).show();
+        }
+        pointsOverlay.setPoints(userPoints);
+        map.invalidate();
+    }
+
+    private void onPointTap(UserPoints.Point p) {
+        if (p == pointsOverlay.getExtra()) {
+            // результат поиска: предложить сохранить
+            new AlertDialog.Builder(this)
+                    .setTitle(p.name)
+                    .setMessage((p.note == null ? "" : p.note + "\n\n") + coordsText(p.lat, p.lon))
+                    .setPositiveButton("Сохранить как точку", (d, w) -> {
+                        pointsOverlay.setExtra(null);
+                        editPoint(null, p.lat, p.lon, p.name);
+                    })
+                    .setNeutralButton("Убрать метку", (d, w) -> {
+                        pointsOverlay.setExtra(null);
+                        map.invalidate();
+                    })
+                    .setNegativeButton("Закрыть", null)
+                    .show();
+            return;
+        }
+        editPoint(p, p.lat, p.lon);
+    }
+
+    private static String coordsText(double lat, double lon) {
+        return "СК-42: " + Sk42.format(lat, lon) + "\nWGS-84: " + String.format(Locale.US, "%.6f, %.6f", lat, lon);
+    }
+
+    private void editPoint(UserPoints.Point existing, double lat, double lon) {
+        editPoint(existing, lat, lon, null);
+    }
+
+    /** Создание/редактирование точки: название, цвет, заметка. */
+    private void editPoint(UserPoints.Point existing, double lat, double lon, String presetName) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) dp(20);
+        box.setPadding(pad, (int) dp(8), pad, 0);
+
+        EditText name = new EditText(this);
+        name.setHint("Название");
+        name.setSingleLine(true);
+        name.setText(existing != null ? existing.name : presetName != null ? presetName : "Точка " + (userPoints.size() + 1));
+        name.setSelectAllOnFocus(true);
+        box.addView(name);
+
+        EditText note = new EditText(this);
+        note.setHint("Заметка (необязательно)");
+        note.setText(existing != null ? existing.note : "");
+        box.addView(note);
+
+        TextView colorTitle = new TextView(this);
+        colorTitle.setText("Цвет");
+        colorTitle.setTextColor(getColor(R.color.text2));
+        colorTitle.setPadding(0, (int) dp(12), 0, (int) dp(6));
+        box.addView(colorTitle);
+
+        final int[] chosen = {existing != null ? existing.color : UserPoints.COLORS[0]};
+        LinearLayout colors = new LinearLayout(this);
+        colors.setOrientation(LinearLayout.HORIZONTAL);
+        final List<View> swatches = new ArrayList<>();
+        int sz = (int) dp(30);
+        for (int i = 0; i < UserPoints.COLORS.length; i++) {
+            final int col = UserPoints.COLORS[i];
+            View sw = new View(this);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(sz, sz);
+            lp.setMarginEnd((int) dp(7));
+            sw.setLayoutParams(lp);
+            sw.setContentDescription(UserPoints.COLOR_NAMES[i]);
+            sw.setOnClickListener(v -> {
+                chosen[0] = col;
+                for (int k = 0; k < swatches.size(); k++)
+                    swatches.get(k).setBackground(swatch(UserPoints.COLORS[k], UserPoints.COLORS[k] == col));
+            });
+            sw.setBackground(swatch(col, col == chosen[0]));
+            swatches.add(sw);
+            colors.addView(sw);
+        }
+        android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(this);
+        hs.addView(colors);
+        box.addView(hs);
+
+        TextView coords = new TextView(this);
+        coords.setText(coordsText(lat, lon));
+        coords.setTextColor(getColor(R.color.text2));
+        coords.setTextSize(13);
+        coords.setPadding(0, (int) dp(14), 0, 0);
+        coords.setTextIsSelectable(true);
+        box.addView(coords);
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle(existing == null ? "Новая точка" : "Точка")
+                .setView(box)
+                .setPositiveButton("Сохранить", (d, w) -> {
+                    UserPoints.Point p = existing;
+                    if (p == null) {
+                        p = new UserPoints.Point();
+                        p.id = Long.toString(System.currentTimeMillis(), 36);
+                        p.created = System.currentTimeMillis();
+                        p.lat = lat;
+                        p.lon = lon;
+                        userPoints.add(p);
+                    }
+                    String nm = name.getText().toString().trim();
+                    p.name = nm.isEmpty() ? "Точка" : nm;
+                    p.note = note.getText().toString().trim();
+                    p.color = chosen[0];
+                    savePoints();
+                })
+                .setNegativeButton("Отмена", null);
+        if (existing != null) {
+            b.setNeutralButton("Удалить", (d, w) -> new AlertDialog.Builder(this)
+                    .setTitle("Удалить «" + existing.name + "»?")
+                    .setPositiveButton("Удалить", (d2, w2) -> {
+                        userPoints.remove(existing);
+                        savePoints();
+                    })
+                    .setNegativeButton("Отмена", null)
+                    .show());
+        }
+        b.show();
+    }
+
+    private android.graphics.drawable.GradientDrawable swatch(int color, boolean selected) {
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        g.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        g.setColor(color);
+        g.setStroke((int) dp(selected ? 3 : 1), selected ? getColor(R.color.text) : getColor(R.color.divider));
+        return g;
+    }
+
+    private void showPointsList() {
+        if (userPoints.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Мои точки")
+                    .setMessage("Пока нет точек.\n\nЧтобы поставить точку, нажмите и подержите палец на карте.")
+                    .setPositiveButton("Понятно", null)
+                    .show();
+            return;
+        }
+        final List<UserPoints.Point> sorted = new ArrayList<>(userPoints);
+        java.util.Collections.sort(sorted, (a, b) -> Long.compare(b.created, a.created));
+        CharSequence[] items = new CharSequence[sorted.size()];
+        for (int i = 0; i < sorted.size(); i++) {
+            UserPoints.Point p = sorted.get(i);
+            android.text.SpannableStringBuilder sb = new android.text.SpannableStringBuilder("● ");
+            sb.setSpan(new android.text.style.ForegroundColorSpan(p.color), 0, 1, 0);
+            sb.append(p.name).append("\n");
+            int st = sb.length();
+            sb.append(Sk42.format(p.lat, p.lon));
+            sb.setSpan(new android.text.style.RelativeSizeSpan(0.8f), st, sb.length(), 0);
+            sb.setSpan(new android.text.style.ForegroundColorSpan(getColor(R.color.text2)), st, sb.length(), 0);
+            items[i] = sb;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Мои точки (" + sorted.size() + ")")
+                .setItems(items, (d, which) -> {
+                    UserPoints.Point p = sorted.get(which);
+                    map.getController().animateTo(new GeoPoint(p.lat, p.lon), Math.max(13.0, map.getZoomLevelDouble()), 800L);
+                })
+                .setPositiveButton("Экспорт в KML", (d, w) -> exportPoints())
+                .setNegativeButton("Закрыть", null)
+                .show();
+    }
+
+    private void exportPoints() {
+        new Thread(() -> {
+            String msg;
+            try {
+                String name = "Tochki_" + new java.text.SimpleDateFormat("dd_MM_yyyy", Locale.US).format(new java.util.Date()) + ".kml";
+                android.net.Uri uri = LbsCore.saveToDownloads(getApplicationContext(), name,
+                        UserPoints.toKml(userPoints).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                runOnUiThread(() -> {
+                    Toast.makeText(this, name + " сохранён в «Загрузки»", Toast.LENGTH_LONG).show();
+                    android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_SEND);
+                    i.setType(LbsCore.KML_MIME);
+                    i.putExtra(android.content.Intent.EXTRA_STREAM, uri);
+                    i.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    startActivity(android.content.Intent.createChooser(i, "Отправить точки"));
+                });
+                return;
+            } catch (Exception e) {
+                msg = "Не удалось сохранить файл: " + e.getMessage();
+            }
+            final String m = msg;
+            runOnUiThread(() -> Toast.makeText(this, m, Toast.LENGTH_LONG).show());
+        }).start();
     }
 
     // ---------- Отступы под системные панели ----------
