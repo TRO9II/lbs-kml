@@ -2194,19 +2194,83 @@ public class MapActivity extends Activity {
         };
     }
 
+    /** Ряд действий: кнопки делят ширину, квадратная иконка — справа. null пропускается. */
+    private void actionRow(View... items) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        List<View> vs = new ArrayList<>();
+        for (View v : items) if (v != null) vs.add(v);
+        for (int i = 0; i < vs.size(); i++) {
+            View v = vs.get(i);
+            boolean square = "square".equals(v.getTag());
+            LinearLayout.LayoutParams lp = square ? new LinearLayout.LayoutParams((int) dp(46), (int) dp(44))
+                    : new LinearLayout.LayoutParams(0, (int) dp(44), 1);
+            if (i < vs.size() - 1) lp.setMarginEnd((int) dp(8));
+            row.addView(v, lp);
+        }
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rl.topMargin = (int) dp(4);
+        rl.bottomMargin = (int) dp(4);
+        sheetContent.addView(row, rl);
+    }
+
+    private View iconAction(int icon, String desc, View.OnClickListener click) {
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(icon);
+        iv.setImageTintList(ColorStateList.valueOf(getColor(R.color.hud_text)));
+        int p = (int) dp(11);
+        iv.setPadding(p, p, p, p);
+        iv.setBackgroundResource(R.drawable.bg_sheet_chip);
+        iv.setContentDescription(desc);
+        iv.setTag("square");
+        iv.setOnClickListener(click);
+        iv.setOnLongClickListener(v -> { Toast.makeText(this, desc, Toast.LENGTH_SHORT).show(); return true; });
+        return iv;
+    }
+
+    /** Пустой список: значок в круге, заголовок, подсказка — по центру. */
+    private void emptyState(int icon, String title, String text) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        box.setPadding((int) dp(16), (int) dp(22), (int) dp(16), (int) dp(12));
+        ImageView iv = hIcon(icon, getColor(R.color.hud_text2), 26);
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(0xFF22262C);
+        iv.setBackground(g);
+        int p = (int) dp(14);
+        iv.setPadding(p, p, p, p);
+        box.addView(iv, new LinearLayout.LayoutParams((int) dp(56), (int) dp(56)));
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(15.5f);
+        t.setTextColor(getColor(R.color.hud_text));
+        t.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+        t.setGravity(android.view.Gravity.CENTER);
+        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        tl.topMargin = (int) dp(12);
+        box.addView(t, tl);
+        TextView d = new TextView(this);
+        d.setText(text);
+        d.setTextSize(13);
+        d.setTextColor(getColor(R.color.hud_text2));
+        d.setGravity(android.view.Gravity.CENTER);
+        d.setLineSpacing(dp(2), 1f);
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        dl.topMargin = (int) dp(6);
+        box.addView(d, dl);
+        sheetContent.addView(box);
+    }
+
     private void showPointsList() {
         sheet("Мои точки" + (userPoints.isEmpty() ? "" : " · " + userPoints.size()));
-        hChipRow(
-                hChip("Точка в центре", R.drawable.ic_add, true, v -> { closeSheet(); newPointAtCenter(); }),
-                hChip("Экспорт KML", R.drawable.ic_share, false, v -> { closeSheet(); exportPoints(); }));
-        hChipRow(hChip("Принять по QR", R.drawable.ic_qr, false, v -> { closeSheet(); scanQr(); }));
+        actionRow(hChip("Точка в центре", R.drawable.ic_add, true, v -> { closeSheet(); newPointAtCenter(); }),
+                userPoints.isEmpty() ? null : hChip("Экспорт", R.drawable.ic_share, false, v -> { closeSheet(); exportPoints(); }),
+                iconAction(R.drawable.ic_qr, "Принять по QR", v -> { closeSheet(); scanQr(); }));
         if (userPoints.isEmpty()) {
-            TextView t = new TextView(this);
-            t.setText("Пока нет точек.\nНажмите на прицел в центре карты — точка встанет туда. Или подержите палец на нужном месте.");
-            t.setTextColor(getColor(R.color.hud_text2));
-            t.setTextSize(13.5f);
-            t.setPadding((int) dp(4), (int) dp(16), (int) dp(4), (int) dp(8));
-            sheetContent.addView(t);
+            emptyState(R.drawable.ic_place, "Точек пока нет",
+                    "Нажмите на прицел в центре карты — точка встанет туда.\nИли подержите палец на нужном месте.");
             return;
         }
         hSection("БЛИЖАЙШИЕ К ЦЕНТРУ КАРТЫ");
@@ -2711,19 +2775,15 @@ public class MapActivity extends Activity {
 
     private void showRoutes() {
         sheet("Маршруты" + (routes.isEmpty() ? "" : " · " + routes.size()));
-        hChipRow(hChip("Новый маршрут", R.drawable.ic_add, true, v -> { closeSheet(); startTool(TOOL_ROUTE, null); }),
-                hChip("Новая зона", R.drawable.ic_area, false, v -> { closeSheet(); startTool(TOOL_AREA, null); }));
-        hChipRow(hChip("Принять по QR", R.drawable.ic_qr, false, v -> { closeSheet(); scanQr(); }));
+        actionRow(hChip("Маршрут", R.drawable.ic_add, true, v -> { closeSheet(); startTool(TOOL_ROUTE, null); }),
+                hChip("Зона", R.drawable.ic_area, false, v -> { closeSheet(); startTool(TOOL_AREA, null); }),
+                iconAction(R.drawable.ic_qr, "Принять по QR", v -> { closeSheet(); scanQr(); }));
         if (track != null && track.pts.size() > 1)
             hChipRow(hChip("Вернуться по треку", R.drawable.ic_nav, true, v -> { closeSheet(); navRoute(track, true); }));
         if (routes.isEmpty()) {
-            TextView t = new TextView(this);
-            t.setText("Маршрутов пока нет.\nНажмите «Новый маршрут» и ставьте точки на карте — "
-                    + "получите длину участков, азимуты и дирекционные углы.");
-            t.setTextColor(getColor(R.color.hud_text2));
-            t.setTextSize(13.5f);
-            t.setPadding((int) dp(4), (int) dp(16), (int) dp(4), (int) dp(8));
-            sheetContent.addView(t);
+            emptyState(R.drawable.ic_route, "Маршрутов и зон пока нет",
+                    "Нажмите «Маршрут» и ставьте точки на карте — получите длины участков, азимуты и дирекционные углы. "
+                            + "Авто-маршрут по дорогам — в «Инструментах».");
             return;
         }
         hSection("СОХРАНЁННЫЕ");
@@ -2851,7 +2911,7 @@ public class MapActivity extends Activity {
         swDiff.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("optDiff", on).apply());
         swGray.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("optGray", on).apply());
         try {
-            ((TextView) findViewById(R.id.menuVersion)).setText("Рубеж · v"
+            ((TextView) findViewById(R.id.menuVersion)).setText("Версия "
                     + getPackageManager().getPackageInfo(getPackageName(), 0).versionName);
         } catch (Exception ignored) {
         }
@@ -4530,16 +4590,16 @@ public class MapActivity extends Activity {
         hSection("ИЗМЕРЕНИЯ");
         toolTiles(
                 toolTile(R.drawable.ic_ruler, "Линейка", tx, () -> startTool(TOOL_RULER, null)),
-                toolTile(R.drawable.ic_area, "Зона и площадь", tx, () -> startTool(TOOL_AREA, null)),
+                toolTile(R.drawable.ic_area, "Площадь", tx, () -> startTool(TOOL_AREA, null)),
                 toolTile(R.drawable.ic_eye_los, "Видимость", tx, () -> {
                     startTool(TOOL_RULER, null);
                     Toast.makeText(this, "Поставьте 2 точки (откуда и куда смотреть), затем нажмите ⛰ «Профиль»", Toast.LENGTH_LONG).show();
                 }));
         hSection("МАРШРУТЫ");
         toolTiles(
-                toolTile(R.drawable.ic_route, "Маршрут по прямым", tx, () -> startTool(TOOL_ROUTE, null)),
-                toolTile(R.drawable.ic_road, "Авто-маршрут пешком", blue, () -> { startTool(TOOL_ROUTE, null); setRoadMode("foot"); }),
-                toolTile(R.drawable.ic_road, "Авто-маршрут на машине", blue, () -> { startTool(TOOL_ROUTE, null); setRoadMode("car"); }));
+                toolTile(R.drawable.ic_route, "По прямым", tx, () -> startTool(TOOL_ROUTE, null)),
+                toolTile(R.drawable.ic_road, "По дорогам пешком", tx, () -> { startTool(TOOL_ROUTE, null); setRoadMode("foot"); }),
+                toolTile(R.drawable.ic_road, "По дорогам на авто", tx, () -> { startTool(TOOL_ROUTE, null); setRoadMode("car"); }));
         toolTiles(
                 toolTile(R.drawable.ic_nav, "Вести к цели", tx, () -> {
                     if (!hasTarget()) {
@@ -4549,7 +4609,7 @@ public class MapActivity extends Activity {
                     startNav(Collections.singletonList(new double[]{Double.parseDouble(prefs.getString("targetLat", "0")),
                             Double.parseDouble(prefs.getString("targetLon", "0"))}), 0, prefs.getString("targetName", "Цель"));
                 }),
-                toolTile(R.drawable.ic_route, "Мои маршруты и зоны", tx, this::showRoutes),
+                toolTile(R.drawable.ic_eye, "Мои маршруты", tx, this::showRoutes),
                 toolTile(R.drawable.ic_my_location, track == null ? "Записать трек" : "Остановить трек", tx,
                         () -> setTracking(track == null)));
         hSection("ПРОЧЕЕ");
