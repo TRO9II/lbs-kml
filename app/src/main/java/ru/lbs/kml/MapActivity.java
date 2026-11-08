@@ -14,6 +14,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import org.osmdroid.config.Configuration;
+import org.osmdroid.config.IConfigurationProvider;
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory;
 import org.osmdroid.util.BoundingBox;
 import org.osmdroid.util.GeoPoint;
@@ -51,7 +52,7 @@ public class MapActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        Configuration conf = Configuration.getInstance();
+        IConfigurationProvider conf = Configuration.getInstance();
         conf.load(this, LbsCore.prefs(this));
         conf.setUserAgentValue(getPackageName());
         File base = new File(getCacheDir(), "osmdroid");
