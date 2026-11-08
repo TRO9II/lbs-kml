@@ -3,9 +3,9 @@ package ru.lbs.kml;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
-import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -21,7 +21,8 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
-import android.widget.CheckBox;
+import android.widget.ProgressBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -34,9 +35,11 @@ public class MainActivity extends Activity {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private WebView web;
-    private TextView status;
+    private TextView tvDate, tvInfo, tvState;
+    private View stateRow;
+    private ProgressBar progress;
     private Button btnUpdate, btnOpen, btnShare;
-    private CheckBox autoCheck;
+    private Switch autoCheck;
     private String script;
     private boolean running;
     private int tries;
@@ -49,21 +52,25 @@ public class MainActivity extends Activity {
         applySystemBarInsets(findViewById(R.id.root));
 
         web = findViewById(R.id.web);
-        status = findViewById(R.id.status);
+        tvDate = findViewById(R.id.tvDate);
+        tvInfo = findViewById(R.id.tvInfo);
+        tvState = findViewById(R.id.tvState);
+        stateRow = findViewById(R.id.stateRow);
+        progress = findViewById(R.id.progress);
         btnUpdate = findViewById(R.id.btnUpdate);
         btnOpen = findViewById(R.id.btnOpen);
         btnShare = findViewById(R.id.btnShare);
         autoCheck = findViewById(R.id.autoCheck);
         try {
             String ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-            ((TextView) findViewById(R.id.title)).setText("ЛБС KML  v" + ver);
+            ((TextView) findViewById(R.id.version)).setText("v" + ver);
         } catch (Exception ignored) {
         }
 
         try {
             script = LbsCore.readAsset(this, "lbs.js");
         } catch (Exception e) {
-            status.setText("Ошибка: не найден скрипт расчёта");
+            showState("Ошибка: не найден скрипт расчёта", false);
             btnUpdate.setEnabled(false);
             return;
         }
@@ -94,49 +101,36 @@ public class MainActivity extends Activity {
         btnShare.setOnClickListener(v -> shareFile());
     }
 
-    private void safeSchedule(boolean on) {
-        try {
-            LbsCore.schedule(this, on);
-            if (on) askNotificationPermission();
-        } catch (Throwable e) {
-            showError("Автопроверка не включилась", e);
-        }
-    }
-
-    /** Если в прошлый раз приложение упало — показываем текст ошибки. */
-    private boolean showSavedCrash() {
-        SharedPreferences p = LbsCore.prefs(this);
-        String crash = p.getString("crash", null);
-        if (crash == null) return false;
-        p.edit().remove("crash").apply();
-        String text = "Приложение упало в прошлый раз. Пришлите этот текст:\n\n" + crash;
-        status.setText(text);
-        new AlertDialog.Builder(this)
-                .setTitle("Ошибка в прошлый раз")
-                .setMessage(text)
-                .setPositiveButton("Скопировать", (d, w) -> copy(crash))
-                .setNegativeButton("Закрыть", null)
-                .show();
-        return true;
-    }
-
-    private void showError(String title, Throwable e) {
-        StringWriter sw = new StringWriter();
-        e.printStackTrace(new PrintWriter(sw));
-        status.setText(title + ":\n" + sw);
-    }
-
-    private void copy(String text) {
-        ClipboardManager cm = getSystemService(ClipboardManager.class);
-        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("crash", text));
-        Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show();
-    }
-
     @Override
     protected void onResume() {
         super.onResume();
-        if (showSavedCrash()) return;
+        showSavedCrash();
         if (!running) showLastFromPrefs();
+    }
+
+    // ---------- Отображение ----------
+
+    /** Строка состояния под карточкой: с крутилкой (busy) или без. */
+    private void showState(CharSequence text, boolean busy) {
+        stateRow.setVisibility(View.VISIBLE);
+        progress.setVisibility(busy ? View.VISIBLE : View.GONE);
+        tvState.setText(text);
+    }
+
+    private void hideState() {
+        stateRow.setVisibility(View.GONE);
+    }
+
+    /** "06.11 o 22:08" -> "06.11, 22:08" */
+    private static String prettyDate(String d) {
+        return d == null ? "" : d.replace(" o ", ", ").trim();
+    }
+
+    private static String linesWord(int n) {
+        int m10 = n % 10, m100 = n % 100;
+        if (m10 == 1 && m100 != 11) return n + " линия";
+        if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return n + " линии";
+        return n + " линий";
     }
 
     /** Показывает последний сохранённый файл (в т.ч. сделанный фоновой проверкой). */
@@ -147,12 +141,55 @@ public class MainActivity extends Activity {
         lastUri = Uri.parse(last);
         btnOpen.setEnabled(true);
         btnShare.setEnabled(true);
-        StringBuilder sb = new StringBuilder("Последний файл: ").append(p.getString("lastName", ""));
+
         String date = p.getString("lastDate", null);
-        if (date != null) sb.append("\nСнимок DeepState: ").append(date);
+        tvDate.setText(date != null ? prettyDate(date) : "—");
+
+        StringBuilder sb = new StringBuilder(p.getString("lastName", ""));
+        int lines = p.getInt("lastLines", 0);
+        if (lines > 0) sb.append(" · ").append(linesWord(lines));
         long checked = p.getLong("lastCheck", 0);
-        if (checked > 0) sb.append("\nПроверено: ").append(DateFormat.format("dd.MM HH:mm", checked));
-        status.setText(sb);
+        if (checked > 0) sb.append("\nПроверено ").append(DateFormat.format("dd.MM в HH:mm", checked));
+        tvInfo.setText(sb);
+    }
+
+    // ---------- Ошибки ----------
+
+    private void safeSchedule(boolean on) {
+        try {
+            LbsCore.schedule(this, on);
+            if (on) askNotificationPermission();
+        } catch (Throwable e) {
+            showError("Автопроверка не включилась", e);
+        }
+    }
+
+    /** Если в прошлый раз приложение упало — предлагаем скопировать текст ошибки. */
+    private void showSavedCrash() {
+        SharedPreferences p = LbsCore.prefs(this);
+        String crash = p.getString("crash", null);
+        if (crash == null) return;
+        p.edit().remove("crash").apply();
+        new AlertDialog.Builder(this)
+                .setTitle("Приложение упало в прошлый раз")
+                .setMessage("Скопируйте текст ошибки и пришлите разработчику.")
+                .setPositiveButton("Скопировать", (d, w) -> copy(crash))
+                .setNegativeButton("Закрыть", null)
+                .show();
+    }
+
+    private void showError(String title, Throwable e) {
+        StringWriter sw = new StringWriter();
+        e.printStackTrace(new PrintWriter(sw));
+        final String full = title + ":\n" + sw;
+        showState(title + ". Нажмите, чтобы скопировать подробности.", false);
+        tvState.setOnClickListener(v -> copy(full));
+    }
+
+    private void copy(String text) {
+        ClipboardManager cm = getSystemService(ClipboardManager.class);
+        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("lbs", text));
+        Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show();
     }
 
     private void askNotificationPermission() {
@@ -164,7 +201,6 @@ public class MainActivity extends Activity {
 
     /** Android 15+: контент рисуется под системными панелями — добавляем отступы. */
     private void applySystemBarInsets(View root) {
-        final int pad = root.getPaddingTop();
         root.setOnApplyWindowInsetsListener((v, insets) -> {
             int l, t, r, b;
             if (Build.VERSION.SDK_INT >= 30) {
@@ -175,17 +211,21 @@ public class MainActivity extends Activity {
                 l = insets.getSystemWindowInsetLeft(); t = insets.getSystemWindowInsetTop();
                 r = insets.getSystemWindowInsetRight(); b = insets.getSystemWindowInsetBottom();
             }
-            v.setPadding(pad + l, pad + t, pad + r, pad + b);
+            v.setPadding(l, t, r, b);
             return insets;
         });
         root.requestApplyInsets();
     }
 
+    // ---------- Обновление ----------
+
     private void startUpdate() {
         running = true;
         tries = 0;
         btnUpdate.setEnabled(false);
-        status.setText("Загружаю данные DeepStateMap…");
+        btnUpdate.setText("Обновляю…");
+        tvState.setOnClickListener(null);
+        showState("Загружаю данные DeepStateMap…", true);
         web.loadUrl(LbsCore.SOURCE_URL);
     }
 
@@ -199,7 +239,7 @@ public class MainActivity extends Activity {
         String res = LbsCore.decode(raw);
         if (res == null || res.startsWith("WAIT")) {
             if (++tries < MAX_TRIES) {
-                status.setText("Жду ответа сайта… (" + tries + ")");
+                showState("Жду ответа сайта…", true);
                 handler.postDelayed(this::extract, 2000);
             } else {
                 finishWithError("Сайт не отдал данные. Проверьте интернет и попробуйте ещё раз.");
@@ -211,7 +251,7 @@ public class MainActivity extends Activity {
             return;
         }
         running = false;
-        status.setText("Строю файл…");
+        showState("Строю линию фронта…", true);
         final String data = res;
         new Thread(() -> {
             try {
@@ -226,20 +266,26 @@ public class MainActivity extends Activity {
 
     private void onSaved(LbsCore.Result r, boolean isNew) {
         lastUri = r.uri;
-        btnUpdate.setEnabled(true);
+        resetUpdateButton();
         btnOpen.setEnabled(true);
         btnShare.setEnabled(true);
-        status.setText("Готово: " + r.name + " (Загрузки)\n" +
-                "Снимок DeepState: " + r.date + "\n" +
-                "Линий: " + r.lines +
-                (isNew ? "" : "\nНовых данных с прошлого раза нет."));
+        showLastFromPrefs();
+        showState(isNew ? "✓ Файл сохранён в «Загрузки»"
+                        : "✓ Новых данных нет — файл актуален", false);
     }
 
     private void finishWithError(String msg) {
         running = false;
-        btnUpdate.setEnabled(true);
-        status.setText("Ошибка: " + msg);
+        resetUpdateButton();
+        showState("⚠ " + msg, false);
     }
+
+    private void resetUpdateButton() {
+        btnUpdate.setEnabled(true);
+        btnUpdate.setText("Обновить ЛБС");
+    }
+
+    // ---------- Файл ----------
 
     private void openFile() {
         if (lastUri == null) return;
