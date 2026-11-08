@@ -6,4 +6,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 scripts/check_elev.py
+      - name: Routing check
+        run: |
+          for m in foot car; do
+            curl -s -A "ru.lbs.kml (https://github.com/TRO9II/lbs-kml)" "https://routing.openstreetmap.de/routed-$m/route/v1/driving/37.62,55.75;37.66,55.76?overview=full&geometries=geojson" | python3 -c "import json,sys;o=json.load(sys.stdin);r=o['routes'][0];print('$m',o['code'],round(r['distance']),round(r['duration']),len(r['geometry']['coordinates']))"
+          done

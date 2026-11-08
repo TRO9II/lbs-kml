@@ -75,6 +75,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
@@ -264,7 +265,8 @@ public class MapActivity extends Activity {
         findViewById(R.id.targetClear).setOnClickListener(v -> clearTarget());
 
         findViewById(R.id.dockLayers).setOnClickListener(v -> showLayers());
-        findViewById(R.id.dockRuler).setOnClickListener(v -> startTool(TOOL_RULER, null));
+        findViewById(R.id.dockRuler).setOnClickListener(v -> showTools());
+        findViewById(R.id.toolRoad).setOnClickListener(v -> roadMenu());
         findViewById(R.id.dockRoute).setOnClickListener(v -> showRoutes());
         findViewById(R.id.dockPoints).setOnClickListener(v -> showPointsList());
         findViewById(R.id.dockMenu).setOnClickListener(v -> openMenu(true));
@@ -1879,8 +1881,11 @@ public class MapActivity extends Activity {
         findViewById(R.id.centerMark).setVisibility(View.GONE);
         findViewById(R.id.toolSave).setVisibility(which != TOOL_RULER ? View.VISIBLE : View.GONE);
         findViewById(R.id.toolProfile).setVisibility(which != TOOL_AREA ? View.VISIBLE : View.GONE);
-        ((TextView) findViewById(R.id.toolTitle)).setText(which == TOOL_RULER ? "ЛИНЕЙКА"
-                : (which == TOOL_AREA ? "ЗОНА" : "МАРШРУТ") + (route != null ? " · " + route.name : ""));
+        findViewById(R.id.toolRoad).setVisibility(which != TOOL_AREA ? View.VISIBLE : View.GONE);
+        toolSteps.clear();
+        for (int i = 0; i < toolPts.size(); i++) toolSteps.add(1);
+        roadLast = "";
+        updateToolTitle();
         applyGrid();
         updateToolPanel();
         map.invalidate();
@@ -1905,6 +1910,8 @@ public class MapActivity extends Activity {
 
     private void finishTool() {
         tool = TOOL_NONE;
+        roadMode = "";
+        toolSteps.clear();
         editingRoute = null;
         toolPts.clear();
         pathOverlay.setActive(null, 0);
@@ -1916,19 +1923,193 @@ public class MapActivity extends Activity {
         map.invalidate();
     }
 
+    /** Сколько точек добавило каждое действие (для «отменить» после прокладки по дорогам). */
+    private final List<Integer> toolSteps = new ArrayList<>();
+    /** Режим авто-маршрута: "" — прямые, "foot" / "car" — по дорогам. */
+    private String roadMode = "";
+    private boolean roadBusy;
+
     private void toolAdd(double lat, double lon) {
+        if (!roadMode.isEmpty() && !toolPts.isEmpty() && tool != TOOL_AREA) {
+            if (roadBusy) {
+                Toast.makeText(this, "Подождите, прокладываю предыдущий участок…", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            double[] last = toolPts.get(toolPts.size() - 1);
+            roadSegment(Arrays.asList(last, new double[]{lat, lon}), roadMode, false);
+            return;
+        }
         toolPts.add(new double[]{lat, lon});
+        toolSteps.add(1);
         updateToolPanel();
         map.invalidate();
     }
 
     private void toolUndo() {
-        if (!toolPts.isEmpty()) toolPts.remove(toolPts.size() - 1);
+        if (roadBusy) return;
+        int k = toolSteps.isEmpty() ? 1 : toolSteps.remove(toolSteps.size() - 1);
+        if (k < 0) { // откат «весь маршрут по дорогам»
+            toolPts.clear();
+            toolPts.addAll(roadBackup);
+            toolSteps.clear();
+            for (int i = 0; i < toolPts.size(); i++) toolSteps.add(1);
+        } else {
+            for (int i = 0; i < k && !toolPts.isEmpty(); i++) toolPts.remove(toolPts.size() - 1);
+        }
         updateToolPanel();
         map.invalidate();
     }
 
+    private final List<double[]> roadBackup = new ArrayList<>();
+
+    /**
+     * Прокладка по дорогам (OSRM, данные OpenStreetMap). GPS не нужен, нужен интернет.
+     * whole=false — добавить участок к линии; whole=true — заменить всю линию дорожным вариантом.
+     */
+    private void roadSegment(List<double[]> via, String mode, boolean whole) {
+        if (offline()) {
+            Toast.makeText(this, "Прокладка по дорогам работает только с интернетом. Выключите «Без сети».", Toast.LENGTH_LONG).show();
+            if (!whole) {
+                double[] p = via.get(via.size() - 1);
+                toolPts.add(p);
+                toolSteps.add(1);
+                updateToolPanel();
+                map.invalidate();
+            }
+            return;
+        }
+        roadBusy = true;
+        ((TextView) findViewById(R.id.toolSub)).setText("Прокладываю по дорогам…");
+        final List<double[]> pts = new ArrayList<>(via);
+        new Thread(() -> {
+            String err = null;
+            List<double[]> geom = new ArrayList<>();
+            double dist = 0, dur = 0;
+            try {
+                StringBuilder u = new StringBuilder("https://routing.openstreetmap.de/routed-")
+                        .append(mode.equals("car") ? "car" : "foot").append("/route/v1/driving/");
+                for (int i = 0; i < pts.size(); i++) {
+                    if (i > 0) u.append(';');
+                    u.append(String.format(Locale.US, "%.6f,%.6f", pts.get(i)[1], pts.get(i)[0]));
+                }
+                u.append("?overview=full&geometries=geojson");
+                JSONObject o = new JSONObject(httpGet(u.toString()));
+                if (!"Ok".equals(o.optString("code"))) throw new Exception(o.optString("message", "дорога не найдена"));
+                JSONObject r = o.getJSONArray("routes").getJSONObject(0);
+                dist = r.optDouble("distance");
+                dur = r.optDouble("duration");
+                JSONArray c = r.getJSONObject("geometry").getJSONArray("coordinates");
+                for (int i = 0; i < c.length(); i++) {
+                    double[] p = {c.getJSONArray(i).getDouble(1), c.getJSONArray(i).getDouble(0)};
+                    if (!geom.isEmpty() && i < c.length() - 1) {
+                        double[] q = geom.get(geom.size() - 1);
+                        if (Geo.inverse(q[0], q[1], p[0], p[1])[0] < 8) continue;
+                    }
+                    geom.add(p);
+                }
+                if (geom.size() < 2) throw new Exception("пустой ответ");
+            } catch (Exception e) {
+                err = e.getMessage();
+            }
+            final String fe = err;
+            final double fd = dist, fdur = dur;
+            runOnUiThread(() -> {
+                roadBusy = false;
+                if (tool == TOOL_NONE) return;
+                if (fe != null) {
+                    Toast.makeText(this, "Не удалось проложить по дорогам (" + fe + ")"
+                            + (whole ? "" : " — участок поставлен прямой"), Toast.LENGTH_LONG).show();
+                    if (!whole) {
+                        toolPts.add(pts.get(pts.size() - 1));
+                        toolSteps.add(1);
+                    }
+                } else if (whole) {
+                    roadBackup.clear();
+                    roadBackup.addAll(toolPts);
+                    toolPts.clear();
+                    toolPts.addAll(geom);
+                    toolSteps.clear();
+                    toolSteps.add(-1);
+                    Toast.makeText(this, "По дорогам: " + Geo.dist(fd) + ", ~" + durText(fdur)
+                            + ". «Отменить» вернёт прямые участки", Toast.LENGTH_LONG).show();
+                } else {
+                    // первая точка ответа ≈ последняя наша — её пропускаем
+                    toolPts.addAll(geom.subList(1, geom.size()));
+                    toolSteps.add(geom.size() - 1);
+                    roadLast = "+" + Geo.dist(fd) + ", ~" + durText(fdur);
+                }
+                updateToolPanel();
+                map.invalidate();
+            });
+        }).start();
+    }
+
+    private String roadLast = "";
+
+    private static String durText(double sec) {
+        long m = Math.round(sec / 60);
+        return m < 60 ? m + " мин" : (m / 60) + " ч " + (m % 60) + " мин";
+    }
+
+    /** Кнопка «По дорогам» на панели: выбор способа и прокладка всей линии. */
+    private void roadMenu() {
+        sheet("По дорогам");
+        TextView t = new TextView(this);
+        t.setText("Линия пройдёт по дорогам и тропам из OpenStreetMap. GPS не нужен, нужен интернет. "
+                + "Можно включить авто-режим: каждая новая точка сразу соединяется с предыдущей по дорогам.");
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setTextSize(12.5f);
+        t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
+        sheetContent.addView(t);
+        int tx = getColor(R.color.hud_text);
+        if (toolPts.size() >= 2) {
+            hSection("ПРОЛОЖИТЬ ВСЮ ЛИНИЮ (" + toolPts.size() + " точек)");
+            hRow(hIcon(R.drawable.ic_road, tx, 22), "Пешком", "Тропы, грунтовки, дороги", null, v -> {
+                closeSheet();
+                roadWhole("foot");
+            });
+            hRow(hIcon(R.drawable.ic_road, tx, 22), "На машине", "Только проезжие дороги", null, v -> {
+                closeSheet();
+                roadWhole("car");
+            });
+        }
+        hSection("АВТО-РЕЖИМ ДЛЯ НОВЫХ ТОЧЕК");
+        hToggle("Пешком по дорогам", null, roadMode.equals("foot"), on -> { setRoadMode(on ? "foot" : ""); closeSheet(); });
+        hToggle("На машине по дорогам", null, roadMode.equals("car"), on -> { setRoadMode(on ? "car" : ""); closeSheet(); });
+    }
+
+    private void roadWhole(String mode) {
+        if (toolPts.size() > 25) {
+            // много вершин (например, импортированный трек) — берём каждую n-ю, концы сохраняем
+            List<double[]> v = new ArrayList<>();
+            double step = (toolPts.size() - 1) / 24.0;
+            for (int i = 0; i < 25; i++) v.add(toolPts.get((int) Math.round(i * step)));
+            roadSegment(v, mode, true);
+        } else {
+            roadSegment(new ArrayList<>(toolPts), mode, true);
+        }
+    }
+
+    private void setRoadMode(String mode) {
+        roadMode = mode;
+        roadLast = "";
+        updateToolTitle();
+        updateToolPanel();
+        if (!mode.isEmpty())
+            Toast.makeText(this, "Авто-маршрут " + (mode.equals("car") ? "на машине" : "пешком")
+                    + ": ставьте точки — линия пойдёт по дорогам", Toast.LENGTH_LONG).show();
+    }
+
+    private void updateToolTitle() {
+        String base = tool == TOOL_RULER ? "ЛИНЕЙКА" : tool == TOOL_AREA ? "ЗОНА" : "МАРШРУТ";
+        if (editingRoute != null && tool != TOOL_RULER) base += " · " + editingRoute.name;
+        if (!roadMode.isEmpty() && tool != TOOL_AREA) base += roadMode.equals("car") ? " · ПО ДОРОГАМ (АВТО)" : " · ПО ДОРОГАМ (ПЕШКОМ)";
+        ((TextView) findViewById(R.id.toolTitle)).setText(base);
+    }
+
     private void toolClear() {
+        toolSteps.clear();
+        roadLast = "";
         toolPts.clear();
         updateToolPanel();
         map.invalidate();
@@ -1964,6 +2145,7 @@ public class MapActivity extends Activity {
               .append(" · посл. ").append(Geo.dist(l.dist)).append(" ")
               .append(String.format(Locale.US, "%.1f°", l.az)).append(" (").append(Geo.mils(l.grid)).append(")\n");
         }
+        if (!roadLast.isEmpty()) sb.append("По дорогам: последний участок ").append(roadLast).append("\n");
         sb.append("До прицела: ").append(Geo.dist(toC[0])).append(" ")
           .append(String.format(Locale.US, "%.1f°", toC[1]))
           .append(" (").append(Geo.mils(Geo.gridBearing(last[0], last[1], c.getLatitude(), c.getLongitude()))).append(")");
@@ -3855,6 +4037,84 @@ public class MapActivity extends Activity {
     private static String dur(long ms) {
         long m = ms / 60000;
         return (m / 60) + " ч " + (m % 60) + " мин";
+    }
+
+    // ================= Инструменты =================
+
+    private void showTools() {
+        sheet("Инструменты");
+        int tx = getColor(R.color.hud_text), blue = 0xFF42A5F5;
+        hSection("ИЗМЕРЕНИЯ");
+        toolTiles(
+                toolTile(R.drawable.ic_ruler, "Линейка", tx, () -> startTool(TOOL_RULER, null)),
+                toolTile(R.drawable.ic_area, "Зона и площадь", tx, () -> startTool(TOOL_AREA, null)),
+                toolTile(R.drawable.ic_eye_los, "Видимость", tx, () -> {
+                    startTool(TOOL_RULER, null);
+                    Toast.makeText(this, "Поставьте 2 точки (откуда и куда смотреть), затем нажмите ⛰ «Профиль»", Toast.LENGTH_LONG).show();
+                }));
+        hSection("МАРШРУТЫ");
+        toolTiles(
+                toolTile(R.drawable.ic_route, "Маршрут по прямым", tx, () -> startTool(TOOL_ROUTE, null)),
+                toolTile(R.drawable.ic_road, "Авто-маршрут пешком", blue, () -> { startTool(TOOL_ROUTE, null); setRoadMode("foot"); }),
+                toolTile(R.drawable.ic_road, "Авто-маршрут на машине", blue, () -> { startTool(TOOL_ROUTE, null); setRoadMode("car"); }));
+        toolTiles(
+                toolTile(R.drawable.ic_nav, "Вести к цели", tx, () -> {
+                    if (!hasTarget()) {
+                        Toast.makeText(this, "Сначала выберите цель: точка → «Навести»", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    startNav(Collections.singletonList(new double[]{Double.parseDouble(prefs.getString("targetLat", "0")),
+                            Double.parseDouble(prefs.getString("targetLon", "0"))}), 0, prefs.getString("targetName", "Цель"));
+                }),
+                toolTile(R.drawable.ic_route, "Мои маршруты и зоны", tx, this::showRoutes),
+                toolTile(R.drawable.ic_my_location, track == null ? "Записать трек" : "Остановить трек", tx,
+                        () -> setTracking(track == null)));
+        hSection("ПРОЧЕЕ");
+        toolTiles(
+                toolTile(R.drawable.ic_sun, "Солнце и Луна", tx, this::showSun),
+                toolTile(R.drawable.ic_qr, "Принять по QR", tx, this::scanQr),
+                toolTile(R.drawable.ic_import, "Импорт KML/GPX", tx, () -> pickFile(REQ_IMPORT)));
+    }
+
+    private View toolTile(int icon, String label, int tint, Runnable action) {
+        LinearLayout t = new LinearLayout(this);
+        t.setOrientation(LinearLayout.VERTICAL);
+        t.setGravity(android.view.Gravity.CENTER);
+        t.setBackgroundResource(R.drawable.bg_tile);
+        t.setPadding((int) dp(4), (int) dp(12), (int) dp(4), (int) dp(10));
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(icon);
+        iv.setImageTintList(ColorStateList.valueOf(tint));
+        t.addView(iv, new LinearLayout.LayoutParams((int) dp(26), (int) dp(26)));
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setGravity(android.view.Gravity.CENTER);
+        tv.setTextColor(getColor(R.color.hud_text));
+        tv.setTextSize(12);
+        tv.setMaxLines(2);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) dp(6);
+        t.addView(tv, lp);
+        t.setOnClickListener(v -> {
+            closeSheet();
+            action.run();
+        });
+        return t;
+    }
+
+    private void toolTiles(View... tiles) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setBaselineAligned(false);
+        for (int i = 0; i < tiles.length; i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(84), 1);
+            if (i < tiles.length - 1) lp.setMarginEnd((int) dp(8));
+            row.addView(tiles[i], lp);
+        }
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rl.bottomMargin = (int) dp(8);
+        sheetContent.addView(row, rl);
     }
 
     @SuppressWarnings("unused")

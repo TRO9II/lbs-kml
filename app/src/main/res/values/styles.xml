@@ -91,9 +91,9 @@
         <item name="android:background">@color/hud_line</item>
     </style>
     <style name="ToolIcon">
-        <item name="android:layout_width">42dp</item>
+        <item name="android:layout_width">40dp</item>
         <item name="android:layout_height">42dp</item>
-        <item name="android:padding">10dp</item>
+        <item name="android:padding">9dp</item>
         <item name="android:background">@drawable/bg_hud_btn</item>
         <item name="android:tint">@color/hud_text</item>
         <item name="android:clickable">true</item>

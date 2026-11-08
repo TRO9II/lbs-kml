@@ -601,8 +601,8 @@
             <LinearLayout
                 android:id="@+id/dockRuler"
                 style="@style/DockItem">
-                <ImageView style="@style/DockIcon" android:src="@drawable/ic_ruler" android:contentDescription="Линейка" />
-                <TextView style="@style/DockLabel" android:text="Линейка" />
+                <ImageView style="@style/DockIcon" android:src="@drawable/ic_tools" android:contentDescription="Инструменты" />
+                <TextView style="@style/DockLabel" android:text="Инструменты" />
             </LinearLayout>
             <LinearLayout
                 android:id="@+id/dockRoute"
@@ -705,6 +705,11 @@
                     style="@style/ToolIcon"
                     android:contentDescription="Таблица"
                     android:src="@drawable/ic_table" />
+                <ImageView
+                    android:id="@+id/toolRoad"
+                    style="@style/ToolIcon"
+                    android:contentDescription="По дорогам"
+                    android:src="@drawable/ic_road" />
                 <ImageView
                     android:id="@+id/toolProfile"
                     style="@style/ToolIcon"
