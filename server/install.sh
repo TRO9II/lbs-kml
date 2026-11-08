@@ -10,8 +10,9 @@ case "$ARCH" in
   *) echo "Неизвестная архитектура: $ARCH"; exit 1 ;;
 esac
 echo "▶ Скачиваю сервер ($BIN)…"
-curl -fsSL -o /usr/local/bin/rubezh-server "https://github.com/TRO9II/lbs-kml/releases/download/server/$BIN"
-chmod +x /usr/local/bin/rubezh-server
+curl -fsSL -o /usr/local/bin/rubezh-server.new "https://github.com/TRO9II/lbs-kml/releases/download/server/$BIN"
+chmod +x /usr/local/bin/rubezh-server.new
+mv -f /usr/local/bin/rubezh-server.new /usr/local/bin/rubezh-server   # замена работающего файла — без ошибки «Text file busy»
 id rubezh >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin rubezh
 mkdir -p /var/lib/rubezh && chown rubezh:rubezh /var/lib/rubezh && chmod 700 /var/lib/rubezh
 cat > /etc/systemd/system/rubezh.service <<UNIT
@@ -34,7 +35,8 @@ ProtectHome=true
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now rubezh
+systemctl enable rubezh >/dev/null 2>&1
+systemctl restart rubezh   # при повторном запуске — обновление до новой версии
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
   ufw allow "$PORT"/tcp >/dev/null
 fi
