@@ -233,6 +233,7 @@ public class MapActivity extends Activity {
         });
         if (prefs.getBoolean("locOn", false) && hasLocPerm()) startLocation(false);
         checkUpdates();
+        maybeShowWhatsNew();
         if (savedInstanceState == null) handleViewIntent(getIntent());
         if (savedInstanceState == null) map.post(() -> handleGroupIntent(getIntent()));
 
@@ -4122,8 +4123,15 @@ public class MapActivity extends Activity {
                 String name = o.optString("name", "") + " " + o.optString("body", "");
                 java.util.regex.Matcher m = java.util.regex.Pattern.compile("v(\\d+(?:\\.\\d+)+)").matcher(name);
                 String ver = m.find() ? m.group(1) : "";
-                prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).putString("updVer", ver).apply();
-                runOnUiThread(this::showUpdateRow);
+                prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).putString("updVer", ver)
+                        .putString("updNotes", notesOf(o.optString("body", ""))).apply();
+                runOnUiThread(() -> {
+                    showUpdateRow();
+                    if (updateAvailable() && !ver.equals(prefs.getString("updShownVer", ""))) {
+                        prefs.edit().putString("updShownVer", ver).apply();
+                        if (!sheetOpen() && !menuOpen()) downloadUpdate();
+                    }
+                });
             } catch (Exception ignored) {
             }
         }).start();
@@ -4181,7 +4189,8 @@ public class MapActivity extends Activity {
                 java.util.regex.Matcher m = java.util.regex.Pattern.compile("v(\\d+(?:\\.\\d+)+)")
                         .matcher(o.optString("name", "") + " " + o.optString("body", ""));
                 String ver = m.find() ? m.group(1) : "";
-                prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).putString("updVer", ver).apply();
+                prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).putString("updVer", ver)
+                        .putString("updNotes", notesOf(o.optString("body", ""))).apply();
                 runOnUiThread(() -> {
                     showUpdateRow();
                     if (updateAvailable()) downloadUpdate();
@@ -4196,7 +4205,7 @@ public class MapActivity extends Activity {
     /** Обновление прямо из приложения: скачать и поставить поверх. */
     private void downloadUpdate() {
         openMenu(false);
-        sheet("Обновление");
+        sheet(updateAvailable() ? "Вышла версия v" + prefs.getString("updVer", "") : "Обновление");
         String mine = "";
         try {
             mine = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
@@ -4206,6 +4215,11 @@ public class MapActivity extends Activity {
         addKV(card, "Установлена", "v" + mine);
         addKV(card, "Доступна", prefs.getString("updVer", "").isEmpty() ? "проверяю…" : "v" + prefs.getString("updVer", ""));
         sheetContent.addView(card);
+        String notes = prefs.getString("updNotes", "");
+        if (!notes.isEmpty() && updateAvailable()) {
+            hSection("ЧТО НОВОГО");
+            changeList(notes);
+        }
         final TextView st = new TextView(this);
         st.setTextColor(getColor(R.color.hud_text2));
         st.setTextSize(13);
@@ -4213,7 +4227,7 @@ public class MapActivity extends Activity {
         String err = prefs.getString("updError", "");
         st.setText(err.isEmpty() ? "Новая версия скачается и встанет поверх — точки, маршруты и группа сохранятся." : err);
         sheetContent.addView(st);
-        footer("Позже", "Скачать и установить", v -> {
+        footer("Позже", "Обновить", v -> {
             if (updBusy) return;
             if (!getPackageManager().canRequestPackageInstalls()) {
                 Toast.makeText(this, "Разрешите «Рубежу» устанавливать приложения и вернитесь сюда", Toast.LENGTH_LONG).show();
@@ -7628,6 +7642,84 @@ public class MapActivity extends Activity {
         for (String x : prefs.getString("emojiRecent", "").trim().split("\\s+"))
             if (!x.isEmpty() && !x.equals(e) && r.size() < 24) r.add(x);
         prefs.edit().putString("emojiRecent", String.join(" ", r)).apply();
+    }
+
+
+    // ================= Список изменений =================
+
+    /** Пункты «- …» из описания выпуска. */
+    private static String notesOf(String body) {
+        StringBuilder sb = new StringBuilder();
+        for (String l : body.split("\n")) {
+            l = l.trim();
+            if (l.startsWith("- ")) sb.append(l.substring(2)).append('\n');
+        }
+        return sb.toString().trim();
+    }
+
+    /** Изменения версии из встроенного файла changes.txt. */
+    private String localNotes(String ver) {
+        try (InputStream in = getAssets().open("changes.txt")) {
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int k;
+            while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+            String all = new String(bo.toByteArray(), StandardCharsets.UTF_8);
+            StringBuilder sb = new StringBuilder();
+            boolean on = false;
+            for (String l : all.split("\n")) {
+                if (l.startsWith("## ")) { on = l.substring(3).trim().equals(ver); continue; }
+                if (on && l.trim().startsWith("- ")) sb.append(l.trim().substring(2)).append('\n');
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private void changeList(String notes) {
+        LinearLayout box = layerBox();
+        box.setPadding((int) dp(14), (int) dp(10), (int) dp(14), (int) dp(10));
+        for (String n : notes.split("\n")) {
+            if (n.trim().isEmpty()) continue;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(0, (int) dp(4), 0, (int) dp(4));
+            TextView dot = new TextView(this);
+            dot.setText("•");
+            dot.setTextSize(15);
+            dot.setTextColor(getColor(R.color.hud_accent));
+            dot.setPadding(0, 0, (int) dp(10), 0);
+            row.addView(dot);
+            TextView t = new TextView(this);
+            t.setText(n.trim());
+            t.setTextSize(14);
+            t.setTextColor(getColor(R.color.hud_text));
+            t.setLineSpacing(dp(2), 1f);
+            row.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            box.addView(row);
+        }
+        sheetContent.addView(box);
+    }
+
+    /** После обновления — один раз «Что нового». */
+    private void maybeShowWhatsNew() {
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            long code = pi.getLongVersionCode();
+            long seen = prefs.getLong("seenVersionCode", 0);
+            prefs.edit().putLong("seenVersionCode", code).remove("updError").apply();
+            if (seen == 0 || seen >= code) return; // первая установка или та же версия
+            String notes = localNotes(pi.versionName);
+            if (notes.isEmpty()) return;
+            map.postDelayed(() -> {
+                if (sheetOpen() || findViewById(R.id.lockView).getVisibility() == View.VISIBLE) return;
+                sheet("Что нового в v" + pi.versionName);
+                changeList(notes);
+                hChipRow(hChip("Понятно", R.drawable.ic_check, true, v -> closeSheet()));
+            }, 900);
+        } catch (Exception ignored) {
+        }
     }
 
     @SuppressWarnings("unused")
