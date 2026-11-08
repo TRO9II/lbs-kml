@@ -150,6 +150,7 @@ public class MapActivity extends Activity {
             @Override public boolean longPressHelper(GeoPoint p) { return onMapLongPress(p); }
         }));
         RotationGestureOverlay rot = new RotationGestureOverlay(map);
+        rotGesture = rot;
         rot.setEnabled(true);
         map.getOverlays().add(rot);
         map.getOverlays().add(lbsFolder);
@@ -583,6 +584,7 @@ public class MapActivity extends Activity {
 
     private void applyStyle(int style) {
         if (style < 0 || style > 3) style = STYLE_SAT;
+        if (style != STYLE_SAT && compareOn()) stopCompare();
         currentStyle = style;
         prefs.edit().putInt("mapStyle", style).apply();
         TextView attr = findViewById(R.id.attribution);
@@ -651,6 +653,8 @@ public class MapActivity extends Activity {
             qrShown = false;
             applyNight();
         }
+        stopRecording();
+        stopPlaying();
         panel.animate().translationY(dp(800)).setDuration(170).withEndAction(() -> host.setVisibility(View.GONE)).start();
         scrim.animate().alpha(0f).setDuration(170).start();
     }
@@ -886,6 +890,9 @@ public class MapActivity extends Activity {
         hRow(hIcon(R.drawable.ic_refresh, getColor(R.color.hud_text), 22), "Дата снимка",
                 prefs.getInt("wbNum", 0) > 0 ? "Архив: " + prefs.getString("wbLabel", "") : "Самый свежий (по умолчанию)",
                 null, v -> showWayback());
+        hRow(hIcon(R.drawable.ic_compare, getColor(R.color.hud_text), 22), "Сравнить два снимка",
+                compareOn() ? "Сейчас включено — нажмите, чтобы выключить" : "Шторка: слева архив, справа текущий",
+                null, v -> { if (compareOn()) { stopCompare(); closeSheet(); } else showWayback(true); });
 
         hSection("ВЫСОТЫ");
         hToggle("Отмывка рельефа", "Тени холмов и балок поверх подложки", prefs.getBoolean("hillshade", false), on -> {
@@ -948,7 +955,7 @@ public class MapActivity extends Activity {
         tt.setOrientation(LinearLayout.VERTICAL);
         tt.setPadding((int) dp(14), 0, 0, 0);
         TextView n = new TextView(this);
-        n.setText("ЛБС KML");
+        n.setText("Рубеж");
         n.setTextSize(22);
         n.setTextColor(getColor(R.color.hud_text));
         n.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
@@ -1678,6 +1685,15 @@ public class MapActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         ntl.topMargin = (int) dp(8);
         sheetContent.addView(note, ntl);
+        final File draftFile = voiceFile(null);
+        draftFile.delete();
+        final File[] vfile = {existing != null ? voiceFile(existing.id) : draftFile};
+        final LinearLayout voiceRow = new LinearLayout(this);
+        LinearLayout.LayoutParams vrl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        vrl.topMargin = (int) dp(8);
+        sheetContent.addView(voiceRow, vrl);
+        fillVoiceRow(voiceRow, vfile, note);
 
         hSection("ЦВЕТ");
         final List<View> swatches = new ArrayList<>();
@@ -1778,6 +1794,7 @@ public class MapActivity extends Activity {
                     .setTitle("Удалить «" + existing.name + "»?")
                     .setPositiveButton("Удалить", (d2, w2) -> {
                         userPoints.remove(existing);
+                        voiceFile(existing.id).delete();
                         savePoints();
                         closeSheet();
                     })
@@ -1800,6 +1817,9 @@ public class MapActivity extends Activity {
             p.note = note.getText().toString().trim();
             p.color = chosen[0];
             p.icon = icon[0];
+            stopRecording();
+            stopPlaying();
+            if (vfile[0] == draftFile && draftFile.exists()) draftFile.renameTo(voiceFile(p.id));
             prefs.edit().putInt("lastColor", chosen[0]).putString("lastIcon", icon[0]).apply();
             savePoints();
             closeSheet();
@@ -2527,7 +2547,7 @@ public class MapActivity extends Activity {
         swDiff.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("optDiff", on).apply());
         swGray.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean("optGray", on).apply());
         try {
-            ((TextView) findViewById(R.id.menuVersion)).setText("Карта линии фронта · v"
+            ((TextView) findViewById(R.id.menuVersion)).setText("Рубеж · v"
                     + getPackageManager().getPackageInfo(getPackageName(), 0).versionName);
         } catch (Exception ignored) {
         }
@@ -2890,6 +2910,10 @@ public class MapActivity extends Activity {
         }
         if (sheetOpen()) {
             closeSheet();
+            return;
+        }
+        if (compareOn()) {
+            stopCompare();
             return;
         }
         if (menuOpen()) {
@@ -3476,7 +3500,7 @@ public class MapActivity extends Activity {
         if (!bioAvailable()) return;
         java.util.concurrent.Executor ex = getMainExecutor();
         android.hardware.biometrics.BiometricPrompt p = new android.hardware.biometrics.BiometricPrompt.Builder(this)
-                .setTitle("Вход в ЛБС KML")
+                .setTitle("Вход в Рубеж")
                 .setNegativeButton("ПИН-код", ex, (d, w) -> { })
                 .build();
         p.authenticate(new android.os.CancellationSignal(), ex, new android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
@@ -3630,6 +3654,18 @@ public class MapActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_DICT) {
+            if (res == RESULT_OK && data != null && dictTarget != null) {
+                java.util.ArrayList<String> r = data.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS);
+                if (r != null && !r.isEmpty()) {
+                    String cur = dictTarget.getText().toString().trim();
+                    String add = r.get(0);
+                    dictTarget.setText(cur.isEmpty() ? Character.toUpperCase(add.charAt(0)) + add.substring(1) : cur + " " + add);
+                    dictTarget.setSelection(dictTarget.getText().length());
+                }
+            }
+            return;
+        }
         if (req == REQ_QR) {
             if (res == RESULT_OK && data != null && data.getStringExtra("qr") != null) onQrResult(data.getStringExtra("qr"));
             return;
@@ -3643,6 +3679,10 @@ public class MapActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int req, String[] perms, int[] grants) {
         super.onRequestPermissionsResult(req, perms, grants);
+        if (req == REQ_MIC) {
+            Toast.makeText(this, checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                    ? "Микрофон разрешён — нажмите «Записать голос» ещё раз" : "Без микрофона голосовые заметки не записать", Toast.LENGTH_LONG).show();
+        }
         if (req == REQ_STEPS) {
             if (pendingGuide != null && checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED)
                 startGuide(pendingGuide, pendingBack, GUIDE_STEPS);
@@ -3767,7 +3807,7 @@ public class MapActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject o = new JSONObject(new String(readUri(uri), StandardCharsets.UTF_8));
-                if (!o.has("points") && !o.has("routes")) throw new Exception("это не резервная копия ЛБС KML");
+                if (!o.has("points") && !o.has("routes")) throw new Exception("это не резервная копия Рубежа");
                 final JSONArray pts = o.optJSONArray("points"), rts = o.optJSONArray("routes");
                 runOnUiThread(() -> {
                     sheet("Восстановление");
@@ -4746,13 +4786,17 @@ public class MapActivity extends Activity {
     private Thread wbThread;
 
     private void showWayback() {
+        showWayback(false);
+    }
+
+    private void showWayback(final boolean compare) {
         if (offline()) {
             Toast.makeText(this, "Архив снимков доступен только с интернетом", Toast.LENGTH_LONG).show();
             return;
         }
         GeoPoint c = (GeoPoint) map.getMapCenter();
         final double lat = c.getLatitude(), lon = c.getLongitude();
-        sheet("Дата снимка");
+        sheet(compare ? "Сравнить: снимок слева" : "Дата снимка");
         TextView head = new TextView(this);
         head.setText("Снимки, которые были в этом месте (центр карты) в разные годы. "
                 + "Выбранная дата применяется ко всей карте — в других местах будет снимок того же выпуска.");
@@ -4762,7 +4806,8 @@ public class MapActivity extends Activity {
         sheetContent.addView(head);
         int cur = prefs.getInt("wbNum", 0);
         hRow(hIcon(cur == 0 ? R.drawable.ic_check : R.drawable.ic_layers, cur == 0 ? getColor(R.color.hud_accent) : getColor(R.color.hud_text), 22),
-                "Самый свежий", "Обычная подложка «Спутник»", null, v -> chooseWayback(0, "", ""));
+                "Самый свежий", "Обычная подложка «Спутник»", null,
+                v -> { if (compare) { closeSheet(); startCompare(0, "", ""); } else chooseWayback(0, "", ""); });
         final TextView st = new TextView(this);
         st.setText("Ищу снимки разных лет…");
         st.setTextColor(getColor(R.color.hud_text2));
@@ -4785,7 +4830,10 @@ public class MapActivity extends Activity {
                                 + "выпуск " + v.rel.date;
                         boolean on = v.rel.num == now;
                         hRow(hIcon(on ? R.drawable.ic_check : R.drawable.ic_layers, on ? getColor(R.color.hud_accent) : getColor(R.color.hud_text), 22),
-                                "Снимок " + date, sub, null, x -> chooseWayback(v.rel.num, v.rel.url, date));
+                                "Снимок " + date, sub, null, x -> {
+                                    if (compare) { closeSheet(); startCompare(v.rel.num, v.rel.url, date); }
+                                    else chooseWayback(v.rel.num, v.rel.url, date);
+                                });
                     }
                 });
             } catch (Exception e) {
@@ -4801,6 +4849,274 @@ public class MapActivity extends Activity {
         closeSheet();
         applyStyle(STYLE_SAT);
         Toast.makeText(this, num == 0 ? "Самый свежий снимок" : "Снимок " + label, Toast.LENGTH_SHORT).show();
+    }
+
+    // ================= Сравнение двух снимков (шторка) =================
+
+    private CompareOverlay cmp;
+    private android.widget.FrameLayout cmpLayer;
+    private RotationGestureOverlay rotGesture;
+
+    private boolean compareOn() {
+        return cmp != null;
+    }
+
+    /** Слева от шторки — снимок num (0 — самый свежий), справа — текущая подложка. */
+    private void startCompare(int num, String url, String label) {
+        stopCompare();
+        if (currentStyle != STYLE_SAT) applyStyle(STYLE_SAT);
+        if (compassMode) setCompassMode(false);
+        resetNorth();
+        if (rotGesture != null) rotGesture.setEnabled(false);
+        OnlineTileSourceBase src = num > 0 ? new WaybackSource(num, url) : SAT;
+        MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), src);
+        cmp = new CompareOverlay(prov, getApplicationContext());
+        map.getOverlays().add(1, cmp);
+
+        View root = findViewById(R.id.mapRoot);
+        cmpLayer = new android.widget.FrameLayout(this);
+        cmpLayer.setElevation(dp(8));
+        ((android.widget.FrameLayout) root).addView(cmpLayer, new android.widget.FrameLayout.LayoutParams(-1, -1));
+
+        // шторка: линия + круглая ручка
+        final android.widget.FrameLayout bar = new android.widget.FrameLayout(this);
+        View line = new View(this);
+        line.setBackgroundColor(Color.WHITE);
+        android.widget.FrameLayout.LayoutParams ll = new android.widget.FrameLayout.LayoutParams((int) dp(2.5f), -1, android.view.Gravity.CENTER_HORIZONTAL);
+        bar.addView(line, ll);
+        TextView knob = new TextView(this);
+        knob.setText("‹ ›");
+        knob.setTextSize(18);
+        knob.setTextColor(0xFF1B1F24);
+        knob.setGravity(android.view.Gravity.CENTER);
+        GradientDrawable kb = new GradientDrawable();
+        kb.setShape(GradientDrawable.OVAL);
+        kb.setColor(Color.WHITE);
+        kb.setStroke((int) dp(2), 0x55000000);
+        knob.setBackground(kb);
+        knob.setElevation(dp(4));
+        bar.addView(knob, new android.widget.FrameLayout.LayoutParams((int) dp(46), (int) dp(46), android.view.Gravity.CENTER));
+        final int barW = (int) dp(52);
+        cmpLayer.addView(bar, new android.widget.FrameLayout.LayoutParams(barW, -1));
+
+        final TextView left = cmpLabel("◀ " + (num > 0 ? "Снимок " + label : "Самый свежий"));
+        final TextView right = cmpLabel((prefs.getInt("wbNum", 0) > 0 ? "Снимок " + prefs.getString("wbLabel", "") : "Сейчас") + " ▶");
+        int top = findViewById(R.id.topBar).getBottom() + (int) dp(64);
+        android.widget.FrameLayout.LayoutParams lp1 = new android.widget.FrameLayout.LayoutParams(-2, -2, android.view.Gravity.START | android.view.Gravity.TOP);
+        lp1.setMargins((int) dp(12), top, 0, 0);
+        cmpLayer.addView(left, lp1);
+        android.widget.FrameLayout.LayoutParams lp2 = new android.widget.FrameLayout.LayoutParams(-2, -2, android.view.Gravity.END | android.view.Gravity.TOP);
+        lp2.setMargins(0, top, (int) dp(12), 0);
+        cmpLayer.addView(right, lp2);
+
+        TextView close = cmpLabel("✕  Закончить сравнение");
+        close.setTextSize(14);
+        int p = (int) dp(14);
+        close.setPadding(p, (int) dp(10), p, (int) dp(10));
+        close.setOnClickListener(v -> stopCompare());
+        android.widget.FrameLayout.LayoutParams lp3 = new android.widget.FrameLayout.LayoutParams(-2, -2, android.view.Gravity.CENTER_HORIZONTAL | android.view.Gravity.BOTTOM);
+        lp3.bottomMargin = findViewById(R.id.bottomBar).getHeight() + (int) dp(12);
+        cmpLayer.addView(close, lp3);
+
+        final float[] pos = {map.getWidth() / 2f};
+        Runnable place = () -> {
+            bar.setTranslationX(pos[0] - barW / 2f);
+            cmp.setSplit(pos[0]);
+            map.invalidate();
+        };
+        bar.setOnTouchListener((v, e) -> {
+            if (e.getActionMasked() == android.view.MotionEvent.ACTION_MOVE || e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
+                pos[0] = Math.max(dp(8), Math.min(map.getWidth() - dp(8), e.getRawX() - root.getLeft()));
+                bar.setTranslationX(pos[0] - barW / 2f);
+                cmp.setSplit(pos[0]);
+                map.invalidate();
+            }
+            return true;
+        });
+        cmpLayer.post(place);
+        Toast.makeText(this, "Двигайте шторку пальцем. Поворот карты на время сравнения выключен", Toast.LENGTH_LONG).show();
+    }
+
+    private TextView cmpLabel(String t) {
+        TextView v = new TextView(this);
+        v.setText(t);
+        v.setTextColor(Color.WHITE);
+        v.setTextSize(12.5f);
+        v.setBackgroundResource(R.drawable.bg_hud_solid_pill);
+        int p = (int) dp(10);
+        v.setPadding(p, (int) dp(6), p, (int) dp(6));
+        v.setElevation(dp(4));
+        return v;
+    }
+
+    private void stopCompare() {
+        if (cmp != null) {
+            map.getOverlays().remove(cmp);
+            cmp.onDetach(map);
+            cmp = null;
+        }
+        if (cmpLayer != null) {
+            ((android.widget.FrameLayout) findViewById(R.id.mapRoot)).removeView(cmpLayer);
+            cmpLayer = null;
+        }
+        if (rotGesture != null) rotGesture.setEnabled(true);
+        map.invalidate();
+    }
+
+    // ================= Голосовые заметки к точкам =================
+
+    private static final int REQ_MIC = 23, REQ_DICT = 34;
+    private android.media.MediaRecorder recorder;
+    private android.media.MediaPlayer player;
+    private long recStart;
+    private EditText dictTarget;
+    private final android.os.Handler recHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+
+    private File voiceFile(String id) {
+        File d = new File(getFilesDir(), "voice");
+        if (!d.exists()) d.mkdirs();
+        return new File(d, (id == null ? "_draft" : id) + ".m4a");
+    }
+
+    private static String mmss(long ms) {
+        long s = ms / 1000;
+        return (s / 60) + ":" + String.format(Locale.US, "%02d", s % 60);
+    }
+
+    private long voiceDuration(File f) {
+        try {
+            android.media.MediaMetadataRetriever r = new android.media.MediaMetadataRetriever();
+            r.setDataSource(f.getAbsolutePath());
+            String d = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+            r.release();
+            return d == null ? 0 : Long.parseLong(d);
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** Ряд кнопок голосовой заметки в окне точки. draft[0] — файл записи (черновик или файл точки). */
+    private void fillVoiceRow(LinearLayout row, File[] file, EditText note) {
+        row.removeAllViews();
+        List<View> chips = new ArrayList<>();
+        chips.add(hChip("Надиктовать", R.drawable.ic_mic, false, v -> dictate(note)));
+        if (recorder != null) {
+            TextView stop = hChip("Стоп " + mmss(System.currentTimeMillis() - recStart), R.drawable.ic_stop, true, v -> {
+                stopRecording();
+                fillVoiceRow(row, file, note);
+            });
+            chips.add(stop);
+            recHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (recorder == null || !stop.isAttachedToWindow()) return;
+                    long el = System.currentTimeMillis() - recStart;
+                    stop.setText("Стоп " + mmss(el));
+                    if (el > 180_000) { stopRecording(); fillVoiceRow(row, file, note); return; }
+                    recHandler.postDelayed(this, 500);
+                }
+            }, 500);
+        } else if (file[0].exists() && file[0].length() > 0) {
+            boolean playing = player != null && player.isPlaying();
+            chips.add(hChip(playing ? "Стоп" : "Слушать " + mmss(voiceDuration(file[0])), playing ? R.drawable.ic_stop : R.drawable.ic_play,
+                    true, v -> {
+                        if (player != null) stopPlaying();
+                        else playVoice(file[0], () -> fillVoiceRow(row, file, note));
+                        fillVoiceRow(row, file, note);
+                    }));
+            chips.add(hChip("Удалить", R.drawable.ic_delete, false, v -> {
+                stopPlaying();
+                file[0].delete();
+                fillVoiceRow(row, file, note);
+            }));
+        } else {
+            chips.add(hChip("Записать голос", R.drawable.ic_rec, false, v -> {
+                if (startRecording(file[0])) fillVoiceRow(row, file, note);
+            }));
+        }
+        for (int i = 0; i < chips.size(); i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(42), 1);
+            if (i < chips.size() - 1) lp.setMarginEnd((int) dp(8));
+            row.addView(chips.get(i), lp);
+        }
+    }
+
+    private boolean startRecording(File f) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+            return false;
+        }
+        stopPlaying();
+        try {
+            recorder = Build.VERSION.SDK_INT >= 31 ? new android.media.MediaRecorder(this) : new android.media.MediaRecorder();
+            recorder.setAudioSource(android.media.MediaRecorder.AudioSource.MIC);
+            recorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4);
+            recorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC);
+            recorder.setAudioEncodingBitRate(48000);
+            recorder.setAudioSamplingRate(22050);
+            recorder.setOutputFile(f.getAbsolutePath());
+            recorder.prepare();
+            recorder.start();
+            recStart = System.currentTimeMillis();
+            vibrate(60);
+            return true;
+        } catch (Exception e) {
+            if (recorder != null) recorder.release();
+            recorder = null;
+            Toast.makeText(this, "Микрофон недоступен: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            return false;
+        }
+    }
+
+    private void stopRecording() {
+        if (recorder == null) return;
+        try {
+            recorder.stop();
+        } catch (Exception ignored) {
+        }
+        recorder.release();
+        recorder = null;
+        vibrate(60);
+    }
+
+    private void playVoice(File f, Runnable onDone) {
+        stopPlaying();
+        try {
+            player = new android.media.MediaPlayer();
+            player.setDataSource(f.getAbsolutePath());
+            player.setOnCompletionListener(mp -> { stopPlaying(); onDone.run(); });
+            player.prepare();
+            player.start();
+        } catch (Exception e) {
+            stopPlaying();
+            Toast.makeText(this, "Не удалось воспроизвести", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void stopPlaying() {
+        if (player != null) {
+            try {
+                player.stop();
+            } catch (Exception ignored) {
+            }
+            player.release();
+            player = null;
+        }
+    }
+
+    /** Надиктовать текст заметки (распознавание речи телефона). */
+    private void dictate(EditText note) {
+        Intent i = new Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "ru-RU");
+        i.putExtra(android.speech.RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
+        i.putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Говорите заметку");
+        dictTarget = note;
+        try {
+            startActivityForResult(i, REQ_DICT);
+        } catch (Exception e) {
+            Toast.makeText(this, "В телефоне нет распознавания речи — используйте «Записать голос»", Toast.LENGTH_LONG).show();
+        }
     }
 
     @SuppressWarnings("unused")

@@ -54,7 +54,7 @@ public class QrScanActivity extends Activity implements SurfaceHolder.Callback {
         root.addView(surface, new FrameLayout.LayoutParams(-1, -1));
         root.addView(new Frame(this), new FrameLayout.LayoutParams(-1, -1));
         TextView hint = new TextView(this);
-        hint.setText("Наведите камеру на QR-код ЛБС KML");
+        hint.setText("Наведите камеру на QR-код Рубеж");
         hint.setTextColor(Color.WHITE);
         hint.setTextSize(16);
         hint.setGravity(Gravity.CENTER);

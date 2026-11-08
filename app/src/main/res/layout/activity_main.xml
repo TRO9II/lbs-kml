@@ -39,7 +39,7 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:fontFamily="sans-serif-medium"
-                    android:text="ЛБС KML"
+                    android:text="Рубеж"
                     android:textColor="@color/text"
                     android:textSize="30sp" />
 

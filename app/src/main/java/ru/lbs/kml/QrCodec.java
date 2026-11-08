@@ -58,7 +58,7 @@ final class QrCodec {
     }
 
     static Item decode(String s) throws Exception {
-        if (s == null || !s.startsWith(PREFIX)) throw new Exception("это не QR-код ЛБС KML");
+        if (s == null || !s.startsWith(PREFIX)) throw new Exception("это не QR-код Рубеж");
         String[] f = unpack(s.substring(PREFIX.length())).split("\t", -1);
         Item it = new Item();
         if (f[0].equals("P") && f.length >= 7) {
