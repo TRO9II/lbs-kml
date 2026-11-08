@@ -79,6 +79,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.Locale;
 
 /** Главный экран: карта со всеми инструментами. ЛБС — в меню. */
@@ -926,99 +928,244 @@ public class MapActivity extends Activity {
 
     private void showLayers() {
         sheet("Слои");
+        // ---------- подложка: карточки с миниатюрой текущего места ----------
         hSection("ПОДЛОЖКА");
         LinearLayout seg = new LinearLayout(this);
         seg.setOrientation(LinearLayout.HORIZONTAL);
-        final List<TextView> btns = new ArrayList<>();
         final String[] names = {"Спутник", "Рельеф", "Топо", "Схема"};
         final int[] idx = {STYLE_SAT, STYLE_RELIEF, STYLE_TOPO, STYLE_SCHEME};
         final int[] icons = {R.drawable.ic_layers, R.drawable.ic_mountain, R.drawable.ic_lbs, R.drawable.ic_grid};
+        final List<View> cards = new ArrayList<>();
         for (int i = 0; i < 4; i++) {
+            final int st = idx[i];
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+            card.setPadding((int) dp(3), (int) dp(3), (int) dp(3), (int) dp(6));
+            ImageView img = new ImageView(this);
+            img.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            img.setImageResource(icons[i]);
+            img.setImageTintList(ColorStateList.valueOf(getColor(R.color.hud_text2)));
+            int ip = (int) dp(18);
+            img.setPadding(ip, ip, ip, ip);
+            GradientDrawable ib = new GradientDrawable();
+            ib.setCornerRadius(dp(10));
+            ib.setColor(0xFF22262C);
+            img.setBackground(ib);
+            img.setClipToOutline(true);
+            card.addView(img, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) dp(62)));
             TextView t = new TextView(this);
             t.setText(names[i]);
-            t.setTextSize(13.5f);
+            t.setTextSize(12.5f);
             t.setGravity(android.view.Gravity.CENTER);
-            android.graphics.drawable.Drawable d = getDrawable(icons[i]).mutate();
-            int s = (int) dp(22);
-            d.setBounds(0, 0, s, s);
-            t.setCompoundDrawables(null, d, null, null);
-            t.setCompoundDrawablePadding((int) dp(4));
-            t.setPadding(0, (int) dp(12), 0, (int) dp(10));
+            LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            tl.topMargin = (int) dp(5);
+            card.addView(t, tl);
+            card.setTag(st);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-            if (i < 3) lp.setMarginEnd((int) dp(6));
-            final int st = idx[i];
-            t.setOnClickListener(v -> {
+            if (i < 3) lp.setMarginEnd((int) dp(8));
+            card.setOnClickListener(v -> {
                 applyStyle(st);
-                for (int k = 0; k < btns.size(); k++) styleSegHud(btns.get(k), idx[k] == currentStyle);
+                for (View c : cards) styleLayerCard(c, (int) c.getTag() == currentStyle);
+                showLayers();
             });
-            btns.add(t);
-            seg.addView(t, lp);
-            styleSegHud(t, st == currentStyle);
+            cards.add(card);
+            seg.addView(card, lp);
+            styleLayerCard(card, st == currentStyle);
+            loadThumb(st, img);
         }
         sheetContent.addView(seg);
-        hRow(hIcon(R.drawable.ic_refresh, getColor(R.color.hud_text), 22), "Дата снимка",
-                prefs.getInt("wbNum", 0) > 0 ? "Архив: " + prefs.getString("wbLabel", "") : "Самый свежий (по умолчанию)",
-                null, v -> showWayback());
-        hRow(hIcon(R.drawable.ic_compare, getColor(R.color.hud_text), 22), "Сравнить два снимка",
-                compareOn() ? "Сейчас включено — нажмите, чтобы выключить" : "Шторка: слева архив, справа текущий",
-                null, v -> { if (compareOn()) { stopCompare(); closeSheet(); } else showWayback(true); });
 
-        hSection("ВЫСОТЫ");
-        hToggle("Отмывка рельефа", "Тени холмов и балок поверх подложки", prefs.getBoolean("hillshade", false), on -> {
-            prefs.edit().putBoolean("hillshade", on).apply();
-            applyHillshade();
-            map.invalidate();
-        });
-        TextView hint = new TextView(this);
-        hint.setText("Подложка «Рельеф» — горизонтали и отметки высот. Высота центра карты показана в плашке координат.");
-        hint.setTextColor(getColor(R.color.hud_text2));
-        hint.setTextSize(12);
-        hint.setPadding((int) dp(12), (int) dp(2), (int) dp(12), 0);
-        sheetContent.addView(hint);
-
-        hSection("ПОВЕРХ КАРТЫ");
-        for (int i = 0; i < OV_KEYS.length; i++) {
-            final String key = OV_KEYS[i];
-            hToggle(OV_NAMES[i], OV_SUBS[i], prefs.getBoolean(key, false), on -> {
-                prefs.edit().putBoolean(key, on).apply();
-                applyOverlays();
-            });
+        if (currentStyle == STYLE_SAT) {
+            LinearLayout box = layerBox();
+            layerLink(box, R.drawable.ic_refresh, "Дата снимка",
+                    prefs.getInt("wbNum", 0) > 0 ? "архив · " + prefs.getString("wbLabel", "") : "самый свежий", v -> showWayback());
+            layerDivider(box);
+            layerLink(box, R.drawable.ic_compare, "Сравнить два снимка", compareOn() ? "включено" : "шторкой",
+                    v -> { if (compareOn()) { stopCompare(); closeSheet(); } else showWayback(true); });
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            bl.topMargin = (int) dp(10);
+            sheetContent.addView(box, bl);
         }
-        TextView ovHint = new TextView(this);
-        ovHint.setText("Слои работают на любой подложке и сохраняются в памяти по мере просмотра. "
-                + "«Схема поверх» удобна на спутнике: видно названия улиц, реки и лесополосы.");
-        ovHint.setTextColor(getColor(R.color.hud_text2));
-        ovHint.setTextSize(12);
-        ovHint.setPadding((int) dp(12), (int) dp(2), (int) dp(12), 0);
-        sheetContent.addView(ovHint);
 
-        hSection("НА КАРТЕ");
-        hToggle("Подписи на русском", "Названия населённых пунктов", labelsOn(), on -> {
-            prefs.edit().putBoolean("labelsRu", on).apply();
-            applyStyle(currentStyle);
-        });
-        hToggle("Сетка СК-42", "Километровая сетка и круг-компас", gridOn(), on -> {
-            prefs.edit().putBoolean("gridOn", on).apply();
-            applyGrid();
-        });
-        hToggle("Кнопки направлений", "Строка с областями под поиском", prefs.getBoolean("showChips", false), on -> {
-            prefs.edit().putBoolean("showChips", on).apply();
-            findViewById(R.id.chipsScroll).setVisibility(on ? View.VISIBLE : View.GONE);
-        });
+        // ---------- слои плитками-переключателями ----------
+        hSection("ПОВЕРХ КАРТЫ");
+        layerGrid(
+                layerTile(R.drawable.ic_road, "Дороги", OV_KEYS[0], this::applyOverlays),
+                layerTile(R.drawable.ic_rail, "Ж/д пути", OV_KEYS[1], this::applyOverlays),
+                layerTile(R.drawable.ic_mountain, "Отмывка рельефа", "hillshade", () -> { applyHillshade(); map.invalidate(); }),
+                layerTile(R.drawable.ic_grid, "Сетка СК-42", "gridOn", this::applyGrid),
+                layerTile(R.drawable.ic_label, "Подписи (рус.)", "labelsRu", true, () -> applyStyle(currentStyle)),
+                layerTile(R.drawable.ic_border, "Границы (лат.)", OV_KEYS[3], this::applyOverlays),
+                layerTile(R.drawable.ic_layers, "Схема поверх", OV_KEYS[2], this::applyOverlays),
+                layerTile(R.drawable.ic_nav, "Кнопки областей", "showChips", () ->
+                        findViewById(R.id.chipsScroll).setVisibility(prefs.getBoolean("showChips", false) ? View.VISIBLE : View.GONE)));
 
-        hSection("ЛИНИЯ ФРОНТА");
-        hToggle("ЛБС", lbsDate.isEmpty() ? "не загружена" : "снимок " + lbsDate, prefs.getBoolean("showLbs", true), on -> {
-            prefs.edit().putBoolean("showLbs", on).apply();
-            forceReloadLbs();
+        hSection("ЛИНИЯ ФРОНТА" + (lbsDate.isEmpty() ? "" : " · " + lbsDate));
+        layerGrid(
+                layerTile(R.drawable.ic_lbs, "ЛБС", "showLbs", true, this::forceReloadLbs),
+                layerTile(R.drawable.ic_refresh, "Изменения", "showDiff", true, this::forceReloadLbs),
+                layerTile(R.drawable.ic_area, "Серая зона", "showGray", true, this::forceReloadLbs));
+    }
+
+    private void styleLayerCard(View card, boolean on) {
+        LinearLayout c = (LinearLayout) card;
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(13));
+        g.setColor(on ? 0x33FF5A4E : Color.TRANSPARENT);
+        g.setStroke((int) dp(on ? 2 : 1), on ? getColor(R.color.hud_accent) : getColor(R.color.hud_line));
+        c.setBackground(g);
+        ((TextView) c.getChildAt(1)).setTextColor(on ? getColor(R.color.hud_text) : getColor(R.color.hud_text2));
+        ((TextView) c.getChildAt(1)).setTypeface(on ? android.graphics.Typeface.DEFAULT_BOLD : android.graphics.Typeface.DEFAULT);
+    }
+
+    private final Map<String, android.graphics.Bitmap> thumbs = new HashMap<>();
+
+    /** Миниатюра подложки: квадрат z13 вокруг центра карты. */
+    private void loadThumb(int style, ImageView img) {
+        GeoPoint c = (GeoPoint) map.getMapCenter();
+        int z = style == STYLE_RELIEF ? 13 : 14, n = 1 << z;
+        int x = (int) Math.floor((c.getLongitude() + 180) / 360 * n);
+        double r = Math.toRadians(c.getLatitude());
+        int y = (int) Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n);
+        OnlineTileSourceBase src = style == STYLE_SAT ? satSource() : style == STYLE_TOPO ? TOPO : style == STYLE_RELIEF ? RELIEF
+                : labelsOn() ? CARTO_NOLABELS : TileSourceFactory.MAPNIK;
+        final String url = src.getTileURLString(MapTileIndex.getTileIndex(z, x, y));
+        android.graphics.Bitmap have = thumbs.get(url);
+        if (have != null) { setThumb(img, have); return; }
+        if (offline()) return;
+        new Thread(() -> {
+            try {
+                HttpURLConnection con = (HttpURLConnection) new URL(url).openConnection();
+                con.setRequestProperty("User-Agent", getPackageName() + " (https://github.com/TRO9II/lbs-kml)");
+                con.setConnectTimeout(8000);
+                con.setReadTimeout(10000);
+                android.graphics.Bitmap b;
+                try (InputStream in = con.getInputStream()) {
+                    b = android.graphics.BitmapFactory.decodeStream(in);
+                }
+                if (b == null) return;
+                runOnUiThread(() -> {
+                    thumbs.put(url, b);
+                    setThumb(img, b);
+                });
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
+    private void setThumb(ImageView img, android.graphics.Bitmap b) {
+        img.setImageTintList(null);
+        img.setPadding(0, 0, 0, 0);
+        img.setImageBitmap(b);
+    }
+
+    private LinearLayout layerBox() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(14));
+        g.setColor(0xFF1E2228);
+        g.setStroke((int) dp(1), getColor(R.color.hud_line));
+        box.setBackground(g);
+        return box;
+    }
+
+    private void layerDivider(LinearLayout box) {
+        View v = new View(this);
+        v.setBackgroundColor(getColor(R.color.hud_line));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1);
+        lp.setMarginStart((int) dp(48));
+        box.addView(v, lp);
+    }
+
+    private void layerLink(LinearLayout box, int icon, String title, String value, View.OnClickListener click) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding((int) dp(14), (int) dp(12), (int) dp(10), (int) dp(12));
+        row.setBackgroundResource(R.drawable.bg_hud_btn);
+        row.addView(hIcon(icon, getColor(R.color.hud_text), 20));
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(14.5f);
+        t.setTextColor(getColor(R.color.hud_text));
+        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        tl.setMarginStart((int) dp(14));
+        row.addView(t, tl);
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextSize(13);
+        v.setTextColor(getColor(R.color.hud_text2));
+        v.setSingleLine(true);
+        row.addView(v);
+        row.addView(hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18));
+        row.setOnClickListener(click);
+        box.addView(row);
+    }
+
+    private View layerTile(int icon, String title, String key, Runnable apply) {
+        return layerTile(icon, title, key, false, apply);
+    }
+
+    /** Плитка-переключатель: значок и название, включена — подсвечена. */
+    private View layerTile(int icon, String title, String key, boolean def, Runnable apply) {
+        LinearLayout t = new LinearLayout(this);
+        t.setOrientation(LinearLayout.HORIZONTAL);
+        t.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        t.setPadding((int) dp(12), 0, (int) dp(10), 0);
+        ImageView iv = hIcon(icon, 0, 20);
+        t.addView(iv);
+        TextView tv = new TextView(this);
+        tv.setText(title);
+        tv.setTextSize(13.5f);
+        tv.setSingleLine(true);
+        tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        tl.setMarginStart((int) dp(10));
+        t.addView(tv, tl);
+        View dot = new View(this);
+        t.addView(dot, new LinearLayout.LayoutParams((int) dp(8), (int) dp(8)));
+        Runnable paint = () -> {
+            boolean on = prefs.getBoolean(key, def);
+            GradientDrawable g = new GradientDrawable();
+            g.setCornerRadius(dp(12));
+            g.setColor(on ? 0x26FF5A4E : 0xFF1E2228);
+            g.setStroke((int) dp(1), on ? getColor(R.color.hud_accent) : getColor(R.color.hud_line));
+            t.setBackground(g);
+            int col = on ? getColor(R.color.hud_text) : getColor(R.color.hud_text2);
+            iv.setImageTintList(ColorStateList.valueOf(on ? getColor(R.color.hud_accent) : getColor(R.color.hud_text2)));
+            tv.setTextColor(col);
+            GradientDrawable dg = new GradientDrawable();
+            dg.setShape(GradientDrawable.OVAL);
+            dg.setColor(on ? getColor(R.color.hud_accent) : 0x00000000);
+            dg.setStroke((int) dp(1.2f), on ? getColor(R.color.hud_accent) : getColor(R.color.hud_line));
+            dot.setBackground(dg);
+        };
+        paint.run();
+        t.setOnClickListener(v -> {
+            prefs.edit().putBoolean(key, !prefs.getBoolean(key, def)).apply();
+            paint.run();
+            apply.run();
         });
-        hToggle("Изменения", "Новое положение — жёлтым, прежнее — серым", prefs.getBoolean("showDiff", true), on -> {
-            prefs.edit().putBoolean("showDiff", on).apply();
-            forceReloadLbs();
-        });
-        hToggle("Серая зона", "Статус неизвестен", prefs.getBoolean("showGray", true), on -> {
-            prefs.edit().putBoolean("showGray", on).apply();
-            forceReloadLbs();
-        });
+        return t;
+    }
+
+    /** Плитки по две в ряд (последний ряд может быть из одной). */
+    private void layerGrid(View... tiles) {
+        for (int i = 0; i < tiles.length; i += 2) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (int k = i; k < Math.min(i + 2, tiles.length); k++) {
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(48), 1);
+                if (k == i) lp.setMarginEnd((int) dp(8));
+                row.addView(tiles[k], lp);
+            }
+            if (tiles.length - i == 1) row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+            LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            rl.bottomMargin = (int) dp(8);
+            sheetContent.addView(row, rl);
+        }
     }
 
     // ================= Меню =================
