@@ -6466,10 +6466,15 @@ public class MapActivity extends Activity {
             pc.addView(pt);
             b.addView(pc);
         }
+        final boolean bigEmoji = m.kind.equals("msg") && onlyEmoji(m.text);
+        if (bigEmoji) {
+            g.setColor(Color.TRANSPARENT);
+            b.setPadding((int) dp(2), 0, (int) dp(2), 0);
+        }
         if (!m.text.isEmpty() && !st && !sos) {
             TextView t = new TextView(this);
             t.setText(m.text);
-            t.setTextSize(15.5f);
+            t.setTextSize(bigEmoji ? 44f : 15.5f);
             t.setTextColor(Color.WHITE);
             t.setLineSpacing(dp(1), 1f);
             b.addView(t);
@@ -6522,6 +6527,26 @@ public class MapActivity extends Activity {
         LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         rl.topMargin = (int) dp(cont ? 2 : 8);
         chatList.addView(row, rl);
+    }
+
+    /** Сообщение только из 1–3 смайлов — показываем крупно, без пузыря. */
+    private static boolean onlyEmoji(String t) {
+        String s = t.replaceAll("\\s", "");
+        if (s.isEmpty() || s.length() > 24) return false;
+        int count = 0;
+        boolean afterZwj = false;
+        for (int i = 0; i < s.length(); ) {
+            int cp = s.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp == 0x200D) { afterZwj = true; continue; }       // склейка составного смайла
+            if (cp == 0xFE0F || (cp >= 0x1F3FB && cp <= 0x1F3FF)) continue; // вариант, оттенок кожи
+            boolean emoji = Character.getType(cp) == Character.OTHER_SYMBOL || (cp >= 0x1F000 && cp <= 0x1FAFF)
+                    || (cp >= 0x2600 && cp <= 0x27BF) || cp == 0x203C || cp == 0x2049;
+            if (!emoji) return false;
+            if (!afterZwj) count++;
+            afterZwj = false;
+        }
+        return count >= 1 && count <= 3;
     }
 
     /** Общая карта группы: список точек, маршрутов и зон. */
