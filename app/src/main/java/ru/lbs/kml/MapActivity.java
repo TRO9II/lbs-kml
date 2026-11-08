@@ -558,6 +558,62 @@ public class MapActivity extends Activity {
     private static final OnlineTileSourceBase HILLSHADE = new EsriSource("EsriHillshade", "Elevation/World_Hillshade", ".jpg");
 
     private TilesOverlay esriLabels, hillshade;
+
+    // ---------- слои поверх подложки ----------
+    private static final class OvSource extends OnlineTileSourceBase {
+        private final boolean zyx;
+
+        OvSource(String name, int maxZ, String ext, boolean zyx, String... urls) {
+            super(name, 0, maxZ, 256, ext, urls);
+            this.zyx = zyx;
+        }
+
+        @Override
+        public String getTileURLString(long idx) {
+            int z = MapTileIndex.getZoom(idx), x = MapTileIndex.getX(idx), y = MapTileIndex.getY(idx);
+            return getBaseUrl() + z + "/" + (zyx ? y + "/" + x : x + "/" + y + imageFilenameEnding());
+        }
+    }
+
+    /** Ключ, название, описание, источник, прозрачность (0..1). */
+    private static final String[] OV_KEYS = {"ovRoads", "ovRail", "ovOsm", "ovPlaces"};
+    private static final String[] OV_NAMES = {"Дороги", "Железные дороги", "Схема поверх (полупрозрачно)", "Границы и названия"};
+    private static final String[] OV_SUBS = {"Трассы, улицы, номера дорог (Esri)", "Пути, станции, переезды (OpenRailwayMap)",
+            "Всё из OpenStreetMap: реки, лес, дома, дороги", "Границы областей, названия (Esri, латиницей)"};
+    private static final OnlineTileSourceBase[] OV_SRC = {
+            new OvSource("OvRoads", 19, ".png", true, ESRI + "Reference/World_Transportation/MapServer/tile/"),
+            new OvSource("OvRail", 19, ".png", false, "https://a.tiles.openrailwaymap.org/standard/",
+                    "https://b.tiles.openrailwaymap.org/standard/", "https://c.tiles.openrailwaymap.org/standard/"),
+            new OvSource("OvOsm", 19, ".png", false, "https://tile.openstreetmap.org/"),
+            new OvSource("OvPlaces", 19, ".png", true, ESRI + "Reference/World_Boundaries_and_Places/MapServer/tile/")};
+    private static final float[] OV_ALPHA = {1f, 0.95f, 0.45f, 1f};
+    private final List<TilesOverlay> ovLayers = new ArrayList<>();
+
+    private void applyOverlays() {
+        for (TilesOverlay o : ovLayers) {
+            map.getOverlays().remove(o);
+            o.onDetach(map);
+        }
+        ovLayers.clear();
+        int at = map.getOverlays().indexOf(lbsFolder);
+        if (at < 0) at = 2;
+        for (int i = 0; i < OV_KEYS.length; i++) {
+            if (!prefs.getBoolean(OV_KEYS[i], false)) continue;
+            if (i == 3 && esriLabels != null) continue; // уже показаны как подписи
+            MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), OV_SRC[i]);
+            TilesOverlay o = new TilesOverlay(prov, getApplicationContext());
+            o.setLoadingBackgroundColor(Color.TRANSPARENT);
+            o.setLoadingLineColor(Color.TRANSPARENT);
+            if (OV_ALPHA[i] < 1f) {
+                android.graphics.ColorMatrix cm = new android.graphics.ColorMatrix();
+                cm.setScale(1f, 1f, 1f, OV_ALPHA[i]);
+                o.setColorFilter(new android.graphics.ColorMatrixColorFilter(cm));
+            }
+            map.getOverlays().add(at++, o);
+            ovLayers.add(o);
+        }
+        map.invalidate();
+    }
     private int currentStyle = STYLE_SAT;
 
     /** Отмывка рельефа поверх любой подложки (полупрозрачная). */
@@ -618,6 +674,7 @@ public class MapActivity extends Activity {
                     : "Esri, Maxar, Earthstar Geographics");
         }
         applyHillshade();
+        applyOverlays();
         placesOverlay.setEnabled(ru);
         updateCoords();
         map.invalidate();
@@ -906,6 +963,22 @@ public class MapActivity extends Activity {
         hint.setTextSize(12);
         hint.setPadding((int) dp(12), (int) dp(2), (int) dp(12), 0);
         sheetContent.addView(hint);
+
+        hSection("ПОВЕРХ КАРТЫ");
+        for (int i = 0; i < OV_KEYS.length; i++) {
+            final String key = OV_KEYS[i];
+            hToggle(OV_NAMES[i], OV_SUBS[i], prefs.getBoolean(key, false), on -> {
+                prefs.edit().putBoolean(key, on).apply();
+                applyOverlays();
+            });
+        }
+        TextView ovHint = new TextView(this);
+        ovHint.setText("Слои работают на любой подложке и сохраняются в памяти по мере просмотра. "
+                + "«Схема поверх» удобна на спутнике: видно названия улиц, реки и лесополосы.");
+        ovHint.setTextColor(getColor(R.color.hud_text2));
+        ovHint.setTextSize(12);
+        ovHint.setPadding((int) dp(12), (int) dp(2), (int) dp(12), 0);
+        sheetContent.addView(ovHint);
 
         hSection("НА КАРТЕ");
         hToggle("Подписи на русском", "Названия населённых пунктов", labelsOn(), on -> {
