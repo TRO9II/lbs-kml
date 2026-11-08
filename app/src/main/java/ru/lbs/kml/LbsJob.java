@@ -116,7 +116,7 @@ public class LbsJob extends JobService {
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm == null) return;
 
-        Intent app = new Intent(this, MainActivity.class)
+        Intent app = new Intent(this, MapActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent piApp = PendingIntent.getActivity(this, 0, app,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);

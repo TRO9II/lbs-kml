@@ -11,4 +11,11 @@
     <color name="icon_bg">#1F2A36</color>
     <color name="bar">#EBF2F3F5</color>
     <color name="info">#E6F2F3F5</color>
+    <color name="hud">#EB15181D</color>
+    <color name="hud_solid">#FF15181D</color>
+    <color name="hud_text">#FFF1F3F5</color>
+    <color name="hud_text2">#FF9AA3AD</color>
+    <color name="hud_line">#33FFFFFF</color>
+    <color name="hud_accent">#FFFF5A4E</color>
+    <color name="hud_amber">#FFFFB300</color>
 </resources>

@@ -61,7 +61,7 @@ public class MainActivity extends Activity {
         btnOpen = findViewById(R.id.btnOpen);
         btnShare = findViewById(R.id.btnShare);
         btnMap = findViewById(R.id.btnMap);
-        btnMap.setOnClickListener(v -> startActivity(new Intent(this, MapActivity.class)));
+        btnMap.setOnClickListener(v -> finish());
         autoCheck = findViewById(R.id.autoCheck);
         optDiff = findViewById(R.id.optDiff);
         optGray = findViewById(R.id.optGray);
@@ -154,7 +154,6 @@ public class MainActivity extends Activity {
         lastUri = Uri.parse(last);
         btnOpen.setEnabled(true);
         btnShare.setEnabled(true);
-        btnMap.setEnabled(LbsCore.mapFile(this).exists());
 
         String date = p.getString("lastDate", null);
         tvDate.setText(date != null ? prettyDate(date) : "—");

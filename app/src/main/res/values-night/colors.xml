@@ -10,4 +10,11 @@
     <color name="ok">#81C784</color>
     <color name="bar">#EB121314</color>
     <color name="info">#E61E1F22</color>
+    <color name="hud">#EB15181D</color>
+    <color name="hud_solid">#FF15181D</color>
+    <color name="hud_text">#FFF1F3F5</color>
+    <color name="hud_text2">#FF9AA3AD</color>
+    <color name="hud_line">#33FFFFFF</color>
+    <color name="hud_accent">#FFFF5A4E</color>
+    <color name="hud_amber">#FFFFB300</color>
 </resources>

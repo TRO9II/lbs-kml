@@ -16,7 +16,7 @@ public class ScaleBarView extends View {
         super(c, a);
         p.setStrokeWidth(2.2f * getResources().getDisplayMetrics().density);
         p.setStrokeCap(Paint.Cap.SQUARE);
-        p.setColor(c.getColor(R.color.text));
+        p.setColor(c.getColor(R.color.hud_text));
     }
 
     void setBarPx(float px) {
