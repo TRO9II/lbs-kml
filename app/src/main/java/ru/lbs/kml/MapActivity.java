@@ -1339,7 +1339,7 @@ public class MapActivity extends Activity {
 
     private void showCoordLine() {
         ((TextView) findViewById(R.id.coordWgs)).setText(coordWgsText
-                + (Double.isNaN(centerElev) ? "" : "   ↑ " + Math.round(centerElev) + " м"));
+                + (Double.isNaN(centerElev) ? (offline() ? "   ↑ нет данных" : "   ↑ …") : "   ↑ " + Math.round(centerElev) + " м"));
     }
 
     private void updateCoords() {
@@ -1477,7 +1477,51 @@ public class MapActivity extends Activity {
             newPointAtCenter();
             return true;
         }
+        Routes.Route hit = routeAt(a.x, a.y);
+        if (hit != null) {
+            routeActions(hit);
+            return true;
+        }
         return false;
+    }
+
+    /** Маршрут или зона под пальцем (линия в пределах ~16 dp или нажатие внутри зоны). */
+    private Routes.Route routeAt(float x, float y) {
+        Projection pj = map.getProjection();
+        float tol = dp(16);
+        Routes.Route best = null, inside = null;
+        double bestD = tol;
+        GeoPoint g = new GeoPoint(0.0, 0.0);
+        for (Routes.Route r : routes) {
+            if (!r.visible || r.pts.size() < 2) continue;
+            int n = r.pts.size();
+            float[] xs = new float[n], ys = new float[n];
+            for (int i = 0; i < n; i++) {
+                g.setCoords(r.pts.get(i)[0], r.pts.get(i)[1]);
+                android.graphics.Point q = pj.toPixels(g, null);
+                xs[i] = q.x;
+                ys[i] = q.y;
+            }
+            int segs = r.area ? n : n - 1;
+            for (int i = 0; i < segs; i++) {
+                int j = (i + 1) % n;
+                double d = segDist(x, y, xs[i], ys[i], xs[j], ys[j]);
+                if (d < bestD) { bestD = d; best = r; }
+            }
+            if (r.area && inside == null) {
+                boolean in = false;
+                for (int i = 0, j = n - 1; i < n; j = i++)
+                    if ((ys[i] > y) != (ys[j] > y) && x < (xs[j] - xs[i]) * (y - ys[i]) / (ys[j] - ys[i]) + xs[i]) in = !in;
+                if (in) inside = r;
+            }
+        }
+        return best != null ? best : inside;
+    }
+
+    private static double segDist(float px, float py, float ax, float ay, float bx, float by) {
+        double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+        double t = l2 == 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
+        return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
     }
 
     private void newPointAtCenter() {
@@ -2378,13 +2422,8 @@ public class MapActivity extends Activity {
         findViewById(R.id.lbsUpdate).setOnClickListener(v -> startLbsUpdate());
         findViewById(R.id.lbsOpen).setOnClickListener(v -> openLbsFile(false));
         findViewById(R.id.lbsShare).setOnClickListener(v -> openLbsFile(true));
-        findViewById(R.id.tileLayers).setOnClickListener(v -> { openMenu(false); showLayers(); });
-        findViewById(R.id.tileImport).setOnClickListener(v -> { openMenu(false); pickFile(REQ_IMPORT); });
         findViewById(R.id.tileBackup).setOnClickListener(v -> { openMenu(false); makeBackup(); });
         findViewById(R.id.tileRestore).setOnClickListener(v -> { openMenu(false); pickFile(REQ_RESTORE); });
-        findViewById(R.id.tileArea).setOnClickListener(v -> { openMenu(false); startTool(TOOL_AREA, null); });
-        findViewById(R.id.tileQrScan).setOnClickListener(v -> { openMenu(false); scanQr(); });
-        findViewById(R.id.tileSun).setOnClickListener(v -> { openMenu(false); showSun(); });
         findViewById(R.id.updateRow).setOnClickListener(v -> downloadUpdate());
         findViewById(R.id.pinRow).setOnClickListener(v -> { openMenu(false); showPinSettings(); });
         updatePinRow();
@@ -2400,8 +2439,6 @@ public class MapActivity extends Activity {
         swNight.setOnCheckedChangeListener((b, on) -> { prefs.edit().putBoolean("night", on).apply(); applyNight(); });
         swTrack.setOnCheckedChangeListener((b, on) -> setTracking(on));
         findViewById(R.id.tileOffline).setOnClickListener(v -> { openMenu(false); chooseDownload(); });
-        findViewById(R.id.tileRoutes).setOnClickListener(v -> { openMenu(false); showRoutes(); });
-        findViewById(R.id.tilePoints).setOnClickListener(v -> { openMenu(false); showExport(); });
         findViewById(R.id.tileInfo).setOnClickListener(v -> { openMenu(false); showInfo(); });
         findViewById(R.id.tileAbout).setOnClickListener(v -> { openMenu(false); showAbout(); });
 

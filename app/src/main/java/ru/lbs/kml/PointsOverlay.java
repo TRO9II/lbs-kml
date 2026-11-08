@@ -77,10 +77,10 @@ public class PointsOverlay extends Overlay {
         Bitmap b = UserPoints.pin(p.color, density, p.icon);
         c.save();
         if (orient != 0f) c.rotate(-orient, pt.x, pt.y);
-        c.drawBitmap(b, pt.x - b.getWidth() / 2f, pt.y - b.getHeight(), bmp);
+        c.drawBitmap(b, pt.x - b.getWidth() / 2f, pt.y - b.getHeight() / 2f, bmp);
         if (withName && p.name != null && !p.name.isEmpty()) {
-            float tx = pt.x + b.getWidth() / 2f + 2 * density;
-            float ty = pt.y - b.getHeight() * 0.55f;
+            float tx = pt.x + b.getWidth() / 2f + 1 * density;
+            float ty = pt.y + text.getTextSize() * 0.35f;
             c.drawText(p.name, tx, ty, halo);
             c.drawText(p.name, tx, ty, text);
         }
@@ -99,7 +99,7 @@ public class PointsOverlay extends Overlay {
     private UserPoints.Point hitTest(MotionEvent e, MapView mv) {
         Projection pj = mv.getProjection();
         float orient = mv.getMapOrientation();
-        float w = 26 * density, h = 35 * density, slop = 10 * density;
+        float w = 30 * density, h = 30 * density, slop = 10 * density;
         UserPoints.Point best = null;
         float bestD = Float.MAX_VALUE;
         List<UserPoints.Point> all = new ArrayList<>(points);
@@ -108,10 +108,10 @@ public class PointsOverlay extends Overlay {
             gp.setCoords(p.lat, p.lon);
             pj.toPixels(gp, pt);
             if (orient != 0f) pj.rotateAndScalePoint(pt.x, pt.y, sp); else sp.set(pt.x, pt.y);
-            // булавка стоит над точкой: прямоугольник [x-w/2, y-h] .. [x+w/2, y]
+            // метка круглая, центр — в самой точке
             float dx = e.getX() - sp.x, dy = e.getY() - sp.y;
-            if (dx >= -w / 2 - slop && dx <= w / 2 + slop && dy >= -h - slop && dy <= slop) {
-                float d = dx * dx + (dy + h / 2) * (dy + h / 2);
+            if (Math.abs(dx) <= w / 2 + slop && Math.abs(dy) <= h / 2 + slop) {
+                float d = dx * dx + dy * dy;
                 if (d < bestD) { bestD = d; best = p; }
             }
         }

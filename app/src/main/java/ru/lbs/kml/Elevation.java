@@ -36,7 +36,7 @@ final class Elevation {
     private static final Map<String, int[]> MEM = new LinkedHashMap<String, int[]>(32, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, int[]> e) {
-            return size() > 24;
+            return size() > 64;
         }
     };
 
@@ -50,6 +50,8 @@ final class Elevation {
         });
     }
 
+    /** Отдельный поток для упреждающей подгрузки, чтобы она не задерживала запрошенные высоты. */
+    private static final ExecutorService PRE = Executors.newSingleThreadExecutor();
     private static final java.util.Set<String> PENDING = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
 
     /**
@@ -80,8 +82,9 @@ final class Elevation {
                 synchronized (MEM) {
                     if (MEM.containsKey(key)) continue;
                 }
+                if (PENDING.size() > 12 && (dx != 0 || dy != 0)) continue; // не копим очередь при быстром движении
                 if (!PENDING.add(key)) continue;
-                EXEC.execute(() -> {
+                (dx == 0 && dy == 0 ? EXEC : PRE).execute(() -> {
                     try {
                         tile(app, x, y);
                     } catch (Exception ignored) {
@@ -157,15 +160,20 @@ final class Elevation {
                 bytes = bo.toByteArray();
             }
             if (!dir.exists()) dir.mkdirs();
-            try (FileOutputStream os = new FileOutputStream(f)) {
+            File tmp = new File(dir, key + ".tmp");
+            try (FileOutputStream os = new FileOutputStream(tmp)) {
                 os.write(bytes);
             }
+            if (!tmp.renameTo(f)) tmp.delete();
         }
         BitmapFactory.Options o = new BitmapFactory.Options();
         o.inPremultiplied = false;
         o.inPreferredConfig = Bitmap.Config.ARGB_8888;
         Bitmap b = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
-        if (b == null || b.getWidth() != 256) return null;
+        if (b == null || b.getWidth() != 256) {
+            f.delete(); // битый файл в кэше — скачаем заново в следующий раз
+            return null;
+        }
         int[] px = new int[256 * 256];
         b.getPixels(px, 0, 256, 0, 0, 256, 256);
         b.recycle();

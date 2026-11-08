@@ -5,7 +5,6 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Path;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -111,41 +110,45 @@ final class UserPoints {
         return pin(color, density, "");
     }
 
-    /** Булавка заданного цвета с белой обводкой и значком (или точкой); острие — в центре низа картинки. */
+    /** Яркий цвет — значок тёмный, тёмный цвет — значок белый. */
+    static boolean light(int color) {
+        int r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, bl = color & 0xFF;
+        return 0.299 * r + 0.587 * g + 0.114 * bl > 170;
+    }
+
+    /**
+     * Метка точки: круглый знак со значком, белым ободком и тенью.
+     * Центр картинки = координата точки (не «капля» с острием).
+     */
     static synchronized Bitmap pin(int color, float density, String icon) {
         if (icon == null) icon = "";
         String key = color + "|" + density + "|" + icon;
         Bitmap b = PIN_CACHE.get(key);
         if (b != null) return b;
-        int w = Math.round(26 * density), h = Math.round(35 * density);
-        b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        int s = Math.round(30 * density);
+        b = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        float cx = w / 2f, r = w / 2f - 2 * density, cy = r + 2 * density;
-        Path p = new Path();
-        p.addCircle(cx, cy, r, Path.Direction.CW);
-        Path tip = new Path();
-        tip.moveTo(cx - r * 0.62f, cy + r * 0.72f);
-        tip.lineTo(cx, h - 1.5f * density);
-        tip.lineTo(cx + r * 0.62f, cy + r * 0.72f);
-        tip.close();
-        p.op(tip, Path.Op.UNION);
+        float cx = s / 2f, cy = s / 2f, r = 11.5f * density;
 
         Paint shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        shadow.setColor(Color.argb(70, 0, 0, 0));
-        c.save();
-        c.translate(0, 1.2f * density);
-        c.drawPath(p, shadow);
-        c.restore();
+        shadow.setColor(Color.argb(90, 0, 0, 0));
+        shadow.setMaskFilter(new android.graphics.BlurMaskFilter(2.2f * density, android.graphics.BlurMaskFilter.Blur.NORMAL));
+        c.drawCircle(cx, cy + 1.2f * density, r + 1f * density, shadow);
 
+        Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+        edge.setColor(Color.WHITE);
+        c.drawCircle(cx, cy, r + 0.5f * density, edge);
         Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         fill.setColor(color);
-        c.drawPath(p, fill);
-        Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
-        stroke.setStyle(Paint.Style.STROKE);
-        stroke.setStrokeWidth(2f * density);
-        stroke.setColor(Color.WHITE);
-        c.drawPath(p, stroke);
-        PinIcons.draw(c, icon, cx, cy, r * 0.56f, Color.WHITE, color);
+        c.drawCircle(cx, cy, r - 1.6f * density, fill);
+        // лёгкий блик сверху для объёма
+        Paint gloss = new Paint(Paint.ANTI_ALIAS_FLAG);
+        gloss.setShader(new android.graphics.LinearGradient(0, cy - r, 0, cy + r,
+                Color.argb(60, 255, 255, 255), Color.argb(0, 255, 255, 255), android.graphics.Shader.TileMode.CLAMP));
+        c.drawCircle(cx, cy, r - 1.6f * density, gloss);
+
+        boolean lt = light(color);
+        PinIcons.draw(c, icon, cx, cy, (r - 1.6f * density) * 0.6f, lt ? 0xFF1B1F24 : Color.WHITE, color);
         PIN_CACHE.put(key, b);
         return b;
     }
