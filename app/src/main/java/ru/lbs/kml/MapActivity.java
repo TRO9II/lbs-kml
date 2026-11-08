@@ -157,6 +157,7 @@ public class MapActivity extends Activity {
         map.getOverlays().add(rot);
         roadsOverlay = new RoadsOverlay(this, d);
         roadsOverlay.setEnabled(false);
+        roadsOverlay.setLevel(prefs.getInt("roadsLevel", 1));
         roadsOverlay.setStatus(t -> {
             TextView at = findViewById(R.id.attribution);
             if (attrBase.isEmpty() || !at.getText().toString().startsWith(attrBase)) attrBase = at.getText().toString();
@@ -991,7 +992,13 @@ public class MapActivity extends Activity {
         // ---------- слои плитками-переключателями ----------
         hSection("ПОВЕРХ КАРТЫ");
         layerGrid(
-                layerTile(R.drawable.ic_road, "Дороги", OV_KEYS[0], this::applyOverlays),
+                layerTile(R.drawable.ic_road, "Дороги", OV_KEYS[0], () -> {
+                    applyOverlays();
+                    final ScrollView sc = findViewById(R.id.genScroll);
+                    final int y = sc.getScrollY();
+                    showLayers();
+                    sc.post(() -> sc.scrollTo(0, y));
+                }),
                 layerTile(R.drawable.ic_rail, "Ж/д пути", OV_KEYS[1], this::applyOverlays),
                 layerTile(R.drawable.ic_mountain, "Отмывка рельефа", "hillshade", () -> { applyHillshade(); map.invalidate(); }),
                 layerTile(R.drawable.ic_grid, "Сетка СК-42", "gridOn", this::applyGrid),
@@ -1000,6 +1007,18 @@ public class MapActivity extends Activity {
                 layerTile(R.drawable.ic_layers, "Схема поверх", OV_KEYS[2], this::applyOverlays),
                 layerTile(R.drawable.ic_nav, "Кнопки областей", "showChips", () ->
                         findViewById(R.id.chipsScroll).setVisibility(prefs.getBoolean("showChips", false) ? View.VISIBLE : View.GONE)));
+
+        if (prefs.getBoolean(OV_KEYS[0], false)) {
+            final double[] lv = {prefs.getInt("roadsLevel", 1)};
+            heightChipsUnits("Насыщенность дорог: 0 — едва видно, 2 — заметно", new double[]{0, 1, 2}, lv, "", v -> {
+                prefs.edit().putInt("roadsLevel", (int) v).apply();
+                roadsOverlay.setLevel((int) v);
+                map.invalidate();
+            });
+            LinearLayout last = (LinearLayout) sheetContent.getChildAt(sheetContent.getChildCount() - 1);
+            String[] lbl = {"Слабо", "Средне", "Ярко"};
+            for (int i = 0; i < last.getChildCount(); i++) ((TextView) last.getChildAt(i)).setText(lbl[i]);
+        }
 
         hSection("ЛИНИЯ ФРОНТА" + (lbsDate.isEmpty() ? "" : " · " + lbsDate));
         layerGrid(

@@ -55,8 +55,16 @@ public class RoadsOverlay extends Overlay {
     private volatile String tpl;
 
     // классы: 0 магистраль, 1 главная, 2 второстепенная, 3 местная, 4 улица, 5 грунтовка
-    private static final int[] COLOR = {0xFFFF6D00, 0xFFFFA000, 0xFFFFD54F, 0xFFFFF59D, 0xEEFFFFFF, 0xFFD7CCC8};
-    private static final float[] WIDTH = {3.4f, 3.0f, 2.4f, 2.0f, 1.5f, 1.4f};
+    // приглушённые тона: крупные дороги — тёплый песочный, мелкие — светло-серый, как карандаш по снимку
+    private static final int[] COLOR = {0xFFE8C07A, 0xFFE3C58E, 0xFFDCCDA6, 0xFFD6D0BE, 0xFFE6E6E6, 0xFFCFC3AE};
+    private static final float[] WIDTH = {2.3f, 2.0f, 1.7f, 1.4f, 1.1f, 1.0f};
+    /** Насыщенность линий: 0 — едва видно, 1 — средне, 2 — заметно. */
+    private static final int[][] ALPHA = {{110, 100, 90, 80, 70, 80}, {170, 160, 145, 130, 115, 125}, {235, 225, 210, 195, 175, 185}};
+    private volatile int level = 1;
+
+    void setLevel(int l) {
+        level = Math.max(0, Math.min(2, l));
+    }
     private static final int[] MIN_ZOOM = {0, 0, 0, 0, 11, 12};
 
     private final Context app;
@@ -87,8 +95,8 @@ public class RoadsOverlay extends Overlay {
         line.setStrokeCap(Paint.Cap.ROUND);
         line.setStrokeJoin(Paint.Join.ROUND);
         halo.set(line);
-        halo.setColor(Color.argb(130, 0, 0, 0));
-        dash = new DashPathEffect(new float[]{6 * density, 4 * density}, 0);
+        halo.setColor(Color.argb(55, 0, 0, 0));
+        dash = new DashPathEffect(new float[]{4 * density, 4 * density}, 0);
     }
 
     void setOffline(boolean off) { offline = off; }
@@ -308,13 +316,15 @@ public class RoadsOverlay extends Overlay {
         List<String> keys = keysFor(bb, zoom, 24);
         Projection pj = mv.getProjection();
         float sN = (float) bb.getLatNorth(), sS = (float) bb.getLatSouth(), sE = (float) bb.getLonEast(), sW = (float) bb.getLonWest();
-        float zf = (float) Math.max(0.75, Math.min(1.25, (zoom - 10) / 6 + 0.8));
+        float zf = (float) Math.max(0.7, Math.min(1.15, (zoom - 10) / 6 + 0.75));
+        int[] al = ALPHA[level];
         for (int pass = 0; pass < 2; pass++) {
             for (int cl = 5; cl >= 0; cl--) {
                 if (zoom < MIN_ZOOM[cl]) continue;
                 Paint p = pass == 0 ? halo : line;
-                p.setStrokeWidth((WIDTH[cl] * zf + (pass == 0 ? 1.6f : 0)) * d);
-                if (pass == 1) p.setColor(COLOR[cl]);
+                p.setStrokeWidth((WIDTH[cl] * zf + (pass == 0 ? 1.0f : 0)) * d);
+                if (pass == 1) p.setColor((COLOR[cl] & 0x00FFFFFF) | (al[cl] << 24));
+                else p.setColor(Color.argb(level == 0 ? 25 : level == 1 ? 45 : 70, 0, 0, 0));
                 p.setPathEffect(pass == 1 && cl == 5 ? dash : null);
                 for (String k : keys) {
                     List<Mvt.Line> ws = mem.get(k);
