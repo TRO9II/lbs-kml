@@ -5889,6 +5889,10 @@ public class MapActivity extends Activity {
             @Override
             public void onStatus(String status, boolean ok) {
                 if (chatStatus != null) {
+                    setChatStatus(status, ok);
+                    return;
+                }
+                if (chatStatus != null) {
                     chatStatus.setText((ok ? "● " : "○ ") + status);
                     chatStatus.setTextColor(ok ? 0xFF66BB6A : 0xFFFFB74D);
                 }
@@ -6054,14 +6058,46 @@ public class MapActivity extends Activity {
         sheetContent.addView(chatList);
         List<ChatClient.Msg> hist = chat.history();
         if (hist.isEmpty()) {
-            TextView t = new TextView(this);
-            t.setText("Сообщений пока нет.\n\nВсё шифруется на телефоне —\nсервер видит только набор символов.");
-            t.setTextColor(getColor(R.color.hud_text2));
-            t.setTextSize(13);
-            t.setGravity(android.view.Gravity.CENTER);
-            t.setPadding(0, (int) dp(40), 0, 0);
-            t.setTag("empty");
-            chatList.addView(t);
+            LinearLayout em = new LinearLayout(this);
+            em.setOrientation(LinearLayout.VERTICAL);
+            em.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+            em.setPadding((int) dp(16), (int) dp(48), (int) dp(16), 0);
+            em.setTag("empty");
+            ImageView ic = hIcon(R.drawable.ic_chat, getColor(R.color.hud_text2), 30);
+            GradientDrawable cg = new GradientDrawable();
+            cg.setShape(GradientDrawable.OVAL);
+            cg.setColor(0xFF22262C);
+            ic.setBackground(cg);
+            int ip = (int) dp(16);
+            ic.setPadding(ip, ip, ip, ip);
+            em.addView(ic, new LinearLayout.LayoutParams((int) dp(64), (int) dp(64)));
+            TextView t1 = new TextView(this);
+            t1.setText("Сообщений пока нет");
+            t1.setTextSize(16);
+            t1.setTextColor(getColor(R.color.hud_text));
+            t1.setPadding(0, (int) dp(14), 0, (int) dp(4));
+            em.addView(t1);
+            TextView t2 = new TextView(this);
+            t2.setText("Всё шифруется на телефоне — посторонние,\nв том числе сервер, видят только набор символов.");
+            t2.setTextSize(12.5f);
+            t2.setGravity(android.view.Gravity.CENTER);
+            t2.setTextColor(getColor(R.color.hud_text2));
+            em.addView(t2);
+            LinearLayout qa = new LinearLayout(this);
+            qa.setOrientation(LinearLayout.HORIZONTAL);
+            qa.setGravity(android.view.Gravity.CENTER);
+            qa.setPadding(0, (int) dp(18), 0, 0);
+            TextView q1 = headChip("📍 Моё место", getColor(R.color.hud_text), v -> {
+                android.location.Location me = myLoc.getLocation();
+                if (me == null) { Toast.makeText(this, "Включите GPS кнопкой ◎ на карте", Toast.LENGTH_SHORT).show(); return; }
+                sendPoint("Я здесь", me.getLatitude(), me.getLongitude());
+            });
+            TextView q2 = headChip("⚑ Статус", getColor(R.color.hud_text), v -> showStatuses());
+            qa.addView(q1);
+            qa.addView(q2);
+            if (chat.isAdmin()) qa.addView(headChip("＋ Пригласить", getColor(R.color.hud_text), v -> showInvite()));
+            em.addView(qa);
+            chatList.addView(em);
         }
         int from = Math.max(0, hist.size() - 200);
         for (int i = from; i < hist.size(); i++) addBubble(hist.get(i));
@@ -6134,28 +6170,28 @@ public class MapActivity extends Activity {
         if (chatScroll != null) chatScroll.post(() -> chatScroll.fullScroll(View.FOCUS_DOWN));
     }
 
-    /** Неподвижная строка под заголовком чата: связь, люди на карте, карта группы, настройки. */
+    /** Неподвижная строка под заголовком чата: связь и участники слева, значки справа. */
     private void buildChatHeader() {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        head.setPadding(0, (int) dp(2), 0, (int) dp(8));
+        head.setPadding(0, 0, 0, (int) dp(8));
         chatStatus = new TextView(this);
-        chatStatus.setText((chat.lastOk() ? "● " : "○ ") + chat.lastStatus());
-        chatStatus.setTextColor(chat.lastOk() ? 0xFF66BB6A : 0xFFFFB74D);
-        chatStatus.setTextSize(12);
+        setChatStatus(chat.lastStatus(), chat.lastOk());
+        chatStatus.setTextSize(12.5f);
         chatStatus.setSingleLine(true);
         chatStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
         head.addView(chatStatus, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        chatStatus.setOnClickListener(v -> Toast.makeText(this, chat.lastStatus() + "\nСервер: " + chat.server(), Toast.LENGTH_LONG).show());
-        head.addView(headChip((sharing() ? "📍 " : "") + "Люди " + chat.members().size(), sharing() ? 0xFF66BB6A : getColor(R.color.hud_text),
+        chatStatus.setOnClickListener(v -> {
+            if (chat.isAdmin()) Toast.makeText(this, chat.lastStatus() + (chat.lastError().isEmpty() ? "" : "\n" + chat.lastError()), Toast.LENGTH_LONG).show();
+        });
+        head.addView(headIcon(R.drawable.ic_my_location, chat.members().size(), sharing() ? 0xFF66BB6A : getColor(R.color.hud_text), "Люди на карте",
                 v -> { chatOpen = false; sheetFooter.setVisibility(View.GONE); showMembers(); }));
-        head.addView(headChip("Карта группы " + chat.objects().size(), getColor(R.color.hud_text),
+        head.addView(headIcon(R.drawable.ic_place, chat.objects().size(), getColor(R.color.hud_text), "Карта группы",
                 v -> { chatOpen = false; sheetFooter.setVisibility(View.GONE); showGroupObjects(); }));
-        ImageView set = hIconButton(R.drawable.ic_menu, getColor(R.color.hud_text), v -> chatSettings());
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams((int) dp(36), (int) dp(36));
-        slp.setMarginStart((int) dp(6));
-        head.addView(set, slp);
+        int pend = 0;
+        if (chat.isAdmin()) for (ChatClient.Person p : chat.people()) if (p.role.equals("pending")) pend++;
+        head.addView(headIcon(R.drawable.ic_menu, pend, pend > 0 ? 0xFFFFB74D : getColor(R.color.hud_text), "Настройки группы", v -> chatSettings()));
         View line = new View(this);
         line.setBackgroundColor(getColor(R.color.hud_line));
         LinearLayout box = new LinearLayout(this);
@@ -6163,9 +6199,57 @@ public class MapActivity extends Activity {
         box.addView(head);
         box.addView(line, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1));
         LinearLayout panel = findViewById(R.id.genPanel);
-        int at = panel.indexOfChild(findViewById(R.id.genScroll));
-        panel.addView(box, at);
+        panel.addView(box, panel.indexOfChild(findViewById(R.id.genScroll)));
         chatHeader = box;
+    }
+
+    /** Статус связи без технических подробностей. */
+    private void setChatStatus(String st, boolean ok) {
+        if (chatStatus == null) return;
+        int people = 0;
+        for (ChatClient.Person p : chat.people()) if (p.active()) people++;
+        String txt = ok ? (st.contains("ждём") ? "ждём подтверждения" : "на связи" + (people > 0 ? " · " + people + " " + plural(people, "участник", "участника", "участников") : ""))
+                : "нет связи — переподключаюсь";
+        chatStatus.setText((ok ? "● " : "○ ") + txt);
+        chatStatus.setTextColor(ok ? 0xFF66BB6A : 0xFFFFB74D);
+    }
+
+    private static String plural(int n, String one, String few, String many) {
+        int a = n % 100, b = n % 10;
+        if (a >= 11 && a <= 14) return many;
+        if (b == 1) return one;
+        if (b >= 2 && b <= 4) return few;
+        return many;
+    }
+
+    /** Круглый значок в шапке чата со счётчиком. */
+    private View headIcon(int icon, int count, int tint, String desc, View.OnClickListener click) {
+        android.widget.FrameLayout f = new android.widget.FrameLayout(this);
+        ImageView iv = hIconButton(icon, tint, click);
+        iv.setContentDescription(desc);
+        iv.setOnLongClickListener(v -> { Toast.makeText(this, desc, Toast.LENGTH_SHORT).show(); return true; });
+        f.addView(iv, new android.widget.FrameLayout.LayoutParams((int) dp(40), (int) dp(40)));
+        if (count > 0) {
+            TextView b = new TextView(this);
+            b.setText(count > 99 ? "99+" : Integer.toString(count));
+            b.setTextSize(10);
+            b.setTextColor(Color.WHITE);
+            b.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            b.setGravity(android.view.Gravity.CENTER);
+            GradientDrawable g = new GradientDrawable();
+            g.setCornerRadius(dp(8));
+            g.setColor(getColor(R.color.hud_accent));
+            b.setBackground(g);
+            b.setPadding((int) dp(4), 0, (int) dp(4), 0);
+            android.widget.FrameLayout.LayoutParams bl = new android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, (int) dp(16), android.view.Gravity.TOP | android.view.Gravity.END);
+            b.setMinWidth((int) dp(16));
+            f.addView(b, bl);
+        }
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams((int) dp(44), (int) dp(40));
+        lp.setMarginStart((int) dp(4));
+        f.setLayoutParams(lp);
+        return f;
     }
 
     private TextView headChip(String text, int color, View.OnClickListener click) {
@@ -6816,7 +6900,8 @@ public class MapActivity extends Activity {
         String[] ttl = {"Выкл", "1 час", "24 часа", "7 дней"};
         for (int i = 0; i < ttr.getChildCount(); i++) ((TextView) ttr.getChildAt(i)).setText(ttl[i]);
         hSection("ГРУППА");
-        hRow(hIcon(R.drawable.ic_info, tx, 22), "Сервер", chat.server(), null, null);
+        hRow(hIcon(R.drawable.ic_info, tx, 22), "Сервер", (chat.lastOk() ? "в работе" : "нет связи — переподключаюсь")
+                + (chat.role().equals("owner") ? " · " + chat.server().replace("http://", "") : ""), null, null);
         hRow(hIcon(R.drawable.ic_close, 0xFFFF6B60, 22), "Выйти из группы", "Переписка на этом телефоне удалится", null, v ->
                 new AlertDialog.Builder(this)
                         .setTitle("Выйти из группы?")

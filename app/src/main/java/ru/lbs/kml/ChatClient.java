@@ -425,6 +425,11 @@ final class ChatClient {
 
     String lastStatus() { return lastStatus; }
 
+    private volatile String lastError = "";
+
+    /** Техническая причина последней ошибки связи (для администратора). */
+    String lastError() { return lastError; }
+
     boolean lastOk() { return lastOk; }
 
     private void status(String st, boolean ok) {
@@ -1236,7 +1241,8 @@ final class ChatClient {
                     if (!running) break;
                     wasOk = false;
                     final String msg = e.getMessage();
-                    status("нет связи с сервером" + (msg == null ? "" : " (" + msg + ")"), false);
+                    lastError = msg == null ? "" : msg;
+                    status("нет связи", false);
                     try {
                         Thread.sleep(backoff * 1000L);
                     } catch (InterruptedException ie) {
