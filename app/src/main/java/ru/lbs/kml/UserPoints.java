@@ -125,14 +125,14 @@ final class UserPoints {
         String key = color + "|" + density + "|" + icon;
         Bitmap b = PIN_CACHE.get(key);
         if (b != null) return b;
-        int s = Math.round(30 * density);
+        int s = Math.round(23 * density);
         b = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        float cx = s / 2f, cy = s / 2f, r = 11.5f * density;
+        float cx = s / 2f, cy = s / 2f, r = 8.6f * density;
 
         Paint shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
         shadow.setColor(Color.argb(90, 0, 0, 0));
-        shadow.setMaskFilter(new android.graphics.BlurMaskFilter(2.2f * density, android.graphics.BlurMaskFilter.Blur.NORMAL));
+        shadow.setMaskFilter(new android.graphics.BlurMaskFilter(1.6f * density, android.graphics.BlurMaskFilter.Blur.NORMAL));
         c.drawCircle(cx, cy + 1.2f * density, r + 1f * density, shadow);
 
         Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -140,15 +140,15 @@ final class UserPoints {
         c.drawCircle(cx, cy, r + 0.5f * density, edge);
         Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         fill.setColor(color);
-        c.drawCircle(cx, cy, r - 1.6f * density, fill);
+        c.drawCircle(cx, cy, r - 1.4f * density, fill);
         // лёгкий блик сверху для объёма
         Paint gloss = new Paint(Paint.ANTI_ALIAS_FLAG);
         gloss.setShader(new android.graphics.LinearGradient(0, cy - r, 0, cy + r,
                 Color.argb(60, 255, 255, 255), Color.argb(0, 255, 255, 255), android.graphics.Shader.TileMode.CLAMP));
-        c.drawCircle(cx, cy, r - 1.6f * density, gloss);
+        c.drawCircle(cx, cy, r - 1.4f * density, gloss);
 
         boolean lt = light(color);
-        PinIcons.draw(c, icon, cx, cy, (r - 1.6f * density) * 0.6f, lt ? 0xFF1B1F24 : Color.WHITE, color);
+        PinIcons.draw(c, icon, cx, cy, (r - 1.4f * density) * 0.62f, lt ? 0xFF1B1F24 : Color.WHITE, color);
         PIN_CACHE.put(key, b);
         return b;
     }

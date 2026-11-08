@@ -37,7 +37,7 @@ public class PointsOverlay extends Overlay {
     public PointsOverlay(float density) {
         this.density = density;
         text.setColor(Color.WHITE);
-        text.setTextSize(13 * density);
+        text.setTextSize(12 * density);
         text.setTypeface(Typeface.DEFAULT_BOLD);
         halo.set(text);
         halo.setStyle(Paint.Style.STROKE);

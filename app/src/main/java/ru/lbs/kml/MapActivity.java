@@ -1661,8 +1661,7 @@ public class MapActivity extends Activity {
             }
             final int col = UserPoints.COLORS[i];
             View sw = new View(this);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(32), 1);
-            lp.setMarginEnd((int) dp(7));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(38), 1);
             sw.setContentDescription(UserPoints.COLOR_NAMES[i]);
             sw.setOnClickListener(v -> {
                 chosen[0] = col;
@@ -1791,12 +1790,52 @@ public class MapActivity extends Activity {
         return "Свой";
     }
 
-    private GradientDrawable swatchHud(int color, boolean sel) {
-        GradientDrawable g = new GradientDrawable();
-        g.setShape(GradientDrawable.OVAL);
-        g.setColor(color);
-        g.setStroke((int) dp(sel ? 3 : 1), sel ? Color.WHITE : getColor(R.color.hud_line));
-        return g;
+    /** Круглый образец цвета: всегда ровный круг; выбранный — с кольцом и галочкой. */
+    private android.graphics.drawable.Drawable swatchHud(int color, boolean sel) {
+        final float d = getResources().getDisplayMetrics().density;
+        final int accent = getColor(R.color.hud_accent), line = getColor(R.color.hud_line);
+        return new android.graphics.drawable.Drawable() {
+            private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+            @Override
+            public void draw(Canvas c) {
+                android.graphics.Rect b = getBounds();
+                float cx = b.exactCenterX(), cy = b.exactCenterY();
+                float r = Math.min(Math.min(b.width(), b.height()) / 2f, 17 * d);
+                p.setStyle(Paint.Style.FILL);
+                if (sel) {
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeWidth(2.2f * d);
+                    p.setColor(Color.WHITE);
+                    c.drawCircle(cx, cy, r - 1.1f * d, p);
+                    p.setStyle(Paint.Style.FILL);
+                    p.setColor(color);
+                    c.drawCircle(cx, cy, r - 4.5f * d, p);
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeWidth(2.2f * d);
+                    p.setStrokeCap(Paint.Cap.ROUND);
+                    p.setStrokeJoin(Paint.Join.ROUND);
+                    p.setColor(UserPoints.light(color) ? 0xFF1B1F24 : Color.WHITE);
+                    float k = r * 0.32f;
+                    android.graphics.Path ck = new android.graphics.Path();
+                    ck.moveTo(cx - k, cy + 0.05f * k);
+                    ck.lineTo(cx - 0.3f * k, cy + 0.72f * k);
+                    ck.lineTo(cx + k, cy - 0.6f * k);
+                    c.drawPath(ck, p);
+                } else {
+                    p.setColor(color);
+                    c.drawCircle(cx, cy, r - 4.5f * d, p);
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeWidth(1f * d);
+                    p.setColor(line);
+                    c.drawCircle(cx, cy, r - 4.5f * d, p);
+                }
+            }
+
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        };
     }
 
     private void showPointsList() {
