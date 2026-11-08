@@ -1,0 +1,27 @@
+name: Build server
+on:
+  push:
+    paths: ["server/**", ".github/workflows/server.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Build
+        working-directory: server
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../rubezh-server-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../rubezh-server-linux-arm64 .
+      - name: Publish to release "server"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete server --yes --cleanup-tag || true
+          gh release create server rubezh-server-linux-amd64 rubezh-server-linux-arm64 \
+            --title "Рубеж — сервер" --notes "Сервер для чата. Установка: curl -fsSL https://raw.githubusercontent.com/TRO9II/lbs-kml/main/server/install.sh | sudo bash" --latest=false
