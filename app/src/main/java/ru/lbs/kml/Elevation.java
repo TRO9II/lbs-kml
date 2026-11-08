@@ -50,6 +50,60 @@ final class Elevation {
         });
     }
 
+    private static final java.util.Set<String> PENDING = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+    /**
+     * Мгновенная высота — только из тайлов в памяти (для показа «на лету» при движении карты).
+     * Если тайла нет — NaN, а тайл и соседние подгружаются в фоне.
+     */
+    static double peek(Context c, double lat, double lon) {
+        int n = 1 << Z;
+        double xf = (lon + 180) / 360 * n;
+        double yf = (1 - Math.log(Math.tan(Math.toRadians(lat)) + 1 / Math.cos(Math.toRadians(lat))) / Math.PI) / 2 * n;
+        int tx = (int) Math.floor(xf), ty = (int) Math.floor(yf);
+        int[] px;
+        synchronized (MEM) {
+            px = MEM.get(Z + "_" + tx + "_" + ty);
+        }
+        prefetch(c, tx, ty);
+        if (px == null) return Double.NaN;
+        return interp(px, xf, yf, tx, ty);
+    }
+
+    /** Подгрузка тайла и 8 соседних, чтобы высота шла без пауз при переходе через границу тайла. */
+    private static void prefetch(Context c, int tx, int ty) {
+        final Context app = c.getApplicationContext();
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                final int x = tx + dx, y = ty + dy;
+                String key = Z + "_" + x + "_" + y;
+                synchronized (MEM) {
+                    if (MEM.containsKey(key)) continue;
+                }
+                if (!PENDING.add(key)) continue;
+                EXEC.execute(() -> {
+                    try {
+                        tile(app, x, y);
+                    } catch (Exception ignored) {
+                    } finally {
+                        PENDING.remove(key);
+                    }
+                });
+            }
+        }
+    }
+
+    private static double interp(int[] px, double xf, double yf, int tx, int ty) {
+        double fx = (xf - tx) * 256 - 0.5, fy = (yf - ty) * 256 - 0.5;
+        fx = Math.max(0, Math.min(255, fx));
+        fy = Math.max(0, Math.min(255, fy));
+        int x0 = (int) fx, y0 = (int) fy, x1 = Math.min(255, x0 + 1), y1 = Math.min(255, y0 + 1);
+        double ax = fx - x0, ay = fy - y0;
+        double h00 = h(px[y0 * 256 + x0]), h10 = h(px[y0 * 256 + x1]);
+        double h01 = h(px[y1 * 256 + x0]), h11 = h(px[y1 * 256 + x1]);
+        return (h00 * (1 - ax) + h10 * ax) * (1 - ay) + (h01 * (1 - ax) + h11 * ax) * ay;
+    }
+
     /** Высота с билинейной интерполяцией внутри тайла. */
     static double sync(Context c, double lat, double lon) {
         try {

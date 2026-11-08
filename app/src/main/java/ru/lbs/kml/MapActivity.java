@@ -1324,10 +1324,13 @@ public class MapActivity extends Activity {
 
     private void updateCoords() {
         if (reticleOverlay == null || map == null) return;
-        elevHandler.removeCallbacks(elevTask);
-        elevHandler.postDelayed(elevTask, 250);
         GeoPoint c = (GeoPoint) map.getMapCenter();
         double lat = c.getLatitude(), lon = c.getLongitude();
+        // высота «на лету» из тайлов в памяти; если тайла ещё нет — догружаем и показываем чуть позже
+        elevHandler.removeCallbacks(elevTask);
+        double hNow = Elevation.peek(this, lat, lon);
+        centerElev = hNow;
+        if (Double.isNaN(hNow)) elevHandler.postDelayed(elevTask, 120);
         if (findViewById(R.id.coordCard).getVisibility() == View.VISIBLE) {
             double[] r = Sk42.fromWgs(lat, lon);
             ((TextView) findViewById(R.id.coordSk)).setText("X " + Math.round(r[0]) + "   Y " + Math.round(r[1]));
