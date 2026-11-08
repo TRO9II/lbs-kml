@@ -666,8 +666,8 @@ public class MapActivity extends Activity {
         boolean ru = labelsOn();
         map.setTilesScaledToDpi(style != STYLE_SAT);
         if (style == STYLE_SCHEME) {
-            map.setTileSource(ru ? CARTO_NOLABELS : TileSourceFactory.MAPNIK);
-            attr.setText(ru ? "© OpenStreetMap, © CARTO" : "© OpenStreetMap");
+            map.setTileSource(TileSourceFactory.MAPNIK); // CARTO теперь требует ключ
+            attr.setText("© OpenStreetMap");
         } else if (style == STYLE_TOPO) {
             map.setTileSource(TOPO);
             attr.setText("Esri, HERE, Garmin, USGS, © OpenStreetMap");
@@ -690,7 +690,7 @@ public class MapActivity extends Activity {
         attrBase = attr.getText().toString();
         applyHillshade();
         applyOverlays();
-        placesOverlay.setEnabled(ru);
+        placesOverlay.setEnabled(ru && style != STYLE_SCHEME); // на схеме свои подписи уже есть
         updateCoords();
         map.invalidate();
     }
@@ -991,14 +991,8 @@ public class MapActivity extends Activity {
 
         // ---------- слои плитками-переключателями ----------
         hSection("ПОВЕРХ КАРТЫ");
+        roadsCard();
         layerGrid(
-                layerTile(R.drawable.ic_road, "Дороги", OV_KEYS[0], () -> {
-                    applyOverlays();
-                    final ScrollView sc = findViewById(R.id.genScroll);
-                    final int y = sc.getScrollY();
-                    showLayers();
-                    sc.post(() -> sc.scrollTo(0, y));
-                }),
                 layerTile(R.drawable.ic_rail, "Ж/д пути", OV_KEYS[1], this::applyOverlays),
                 layerTile(R.drawable.ic_mountain, "Отмывка рельефа", "hillshade", () -> { applyHillshade(); map.invalidate(); }),
                 layerTile(R.drawable.ic_grid, "Сетка СК-42", "gridOn", this::applyGrid),
@@ -1008,23 +1002,82 @@ public class MapActivity extends Activity {
                 layerTile(R.drawable.ic_nav, "Кнопки областей", "showChips", () ->
                         findViewById(R.id.chipsScroll).setVisibility(prefs.getBoolean("showChips", false) ? View.VISIBLE : View.GONE)));
 
-        if (prefs.getBoolean(OV_KEYS[0], false)) {
-            final double[] lv = {prefs.getInt("roadsLevel", 1)};
-            heightChipsUnits("Насыщенность дорог: 0 — едва видно, 2 — заметно", new double[]{0, 1, 2}, lv, "", v -> {
-                prefs.edit().putInt("roadsLevel", (int) v).apply();
-                roadsOverlay.setLevel((int) v);
-                map.invalidate();
-            });
-            LinearLayout last = (LinearLayout) sheetContent.getChildAt(sheetContent.getChildCount() - 1);
-            String[] lbl = {"Слабо", "Средне", "Ярко"};
-            for (int i = 0; i < last.getChildCount(); i++) ((TextView) last.getChildAt(i)).setText(lbl[i]);
-        }
-
         hSection("ЛИНИЯ ФРОНТА" + (lbsDate.isEmpty() ? "" : " · " + lbsDate));
         layerGrid(
                 layerTile(R.drawable.ic_lbs, "ЛБС", "showLbs", true, this::forceReloadLbs),
                 layerTile(R.drawable.ic_refresh, "Изменения", "showDiff", true, this::forceReloadLbs),
                 layerTile(R.drawable.ic_area, "Серая зона", "showGray", true, this::forceReloadLbs));
+    }
+
+    /** Карточка «Дороги»: переключатель и, если включено, насыщенность линий — всё в одном месте. */
+    private void roadsCard() {
+        final boolean on = prefs.getBoolean(OV_KEYS[0], false);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(12));
+        g.setColor(on ? 0x26FF5A4E : 0xFF1E2228);
+        g.setStroke((int) dp(1), on ? getColor(R.color.hud_accent) : getColor(R.color.hud_line));
+        box.setBackground(g);
+
+        View head = layerTile(R.drawable.ic_road, "Дороги", OV_KEYS[0], () -> {
+            applyOverlays();
+            final ScrollView sc = findViewById(R.id.genScroll);
+            final int y = sc.getScrollY();
+            showLayers();
+            sc.post(() -> sc.scrollTo(0, y));
+        });
+        head.setBackground(null);
+        box.addView(head, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) dp(48)));
+        if (on) {
+            TextView cap = new TextView(this);
+            cap.setText("Насыщенность линий");
+            cap.setTextSize(12);
+            cap.setTextColor(getColor(R.color.hud_text2));
+            cap.setPadding((int) dp(14), 0, (int) dp(14), (int) dp(6));
+            box.addView(cap);
+            LinearLayout seg = new LinearLayout(this);
+            seg.setOrientation(LinearLayout.HORIZONTAL);
+            seg.setPadding((int) dp(4), (int) dp(4), (int) dp(4), (int) dp(4));
+            GradientDrawable sg = new GradientDrawable();
+            sg.setCornerRadius(dp(10));
+            sg.setColor(0xFF15181D);
+            seg.setBackground(sg);
+            final String[] lbl = {"Слабо", "Средне", "Ярко"};
+            final List<TextView> bs = new ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                final int lv = i;
+                TextView b = new TextView(this);
+                b.setText(lbl[i]);
+                b.setTextSize(13);
+                b.setGravity(android.view.Gravity.CENTER);
+                b.setPadding(0, (int) dp(7), 0, (int) dp(7));
+                b.setOnClickListener(v -> {
+                    prefs.edit().putInt("roadsLevel", lv).apply();
+                    roadsOverlay.setLevel(lv);
+                    map.invalidate();
+                    for (int k = 0; k < bs.size(); k++) styleSeg(bs.get(k), k == lv);
+                });
+                bs.add(b);
+                seg.addView(b, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+                styleSeg(b, i == prefs.getInt("roadsLevel", 1));
+            }
+            LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            sl.setMargins((int) dp(10), 0, (int) dp(10), (int) dp(10));
+            box.addView(seg, sl);
+        }
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        bl.bottomMargin = (int) dp(8);
+        sheetContent.addView(box, bl);
+    }
+
+    private void styleSeg(TextView b, boolean on) {
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(8));
+        g.setColor(on ? getColor(R.color.hud_accent) : Color.TRANSPARENT);
+        b.setBackground(g);
+        b.setTextColor(on ? Color.WHITE : getColor(R.color.hud_text2));
+        b.setTypeface(on ? android.graphics.Typeface.DEFAULT_BOLD : android.graphics.Typeface.DEFAULT);
     }
 
     private void styleLayerCard(View card, boolean on) {
@@ -1048,7 +1101,7 @@ public class MapActivity extends Activity {
         double r = Math.toRadians(c.getLatitude());
         int y = (int) Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n);
         OnlineTileSourceBase src = style == STYLE_SAT ? satSource() : style == STYLE_TOPO ? TOPO : style == STYLE_RELIEF ? RELIEF
-                : labelsOn() ? CARTO_NOLABELS : TileSourceFactory.MAPNIK;
+                : TileSourceFactory.MAPNIK;
         final String url = src.getTileURLString(MapTileIndex.getTileIndex(z, x, y));
         android.graphics.Bitmap have = thumbs.get(url);
         if (have != null) { setThumb(img, have); return; }
@@ -3549,7 +3602,7 @@ public class MapActivity extends Activity {
 
     private void styleHeightChip(TextView c, boolean on) {
         c.setBackgroundResource(on ? R.drawable.bg_chip_on : R.drawable.bg_chip);
-        c.setTextColor(on ? getColor(R.color.hud_accent) : getColor(R.color.hud_text));
+        c.setTextColor(on ? Color.WHITE : getColor(R.color.hud_text));
     }
 
     /** Прямая видимость точка 1 → точка 2 по профилю; рисует луч на графике, возвращает текст. */
