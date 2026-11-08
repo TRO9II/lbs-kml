@@ -32,9 +32,10 @@ final class UserPoints {
             0xFF78909C, 0xFF212121};
 
     /** Значки внутри булавки (символ, название). Пустой — белая точка. */
-    static final String[] ICONS = {"", "★", "⚑", "✚", "!", "✕", "▲", "■", "◆", "⌂", "≈", "?", "⊕", "▼", "●", "1", "2", "3"};
-    static final String[] ICON_NAMES = {"Точка", "Звезда", "Флаг", "Медицина", "Внимание", "Цель", "Высота",
-            "Квадрат", "Ромб", "Строение", "Вода", "Неизвестно", "Ориентир", "Спуск", "Круг", "1", "2", "3"};
+    static final String[] ICONS = {"", "★", "⚑", "✚", "!", "✕", "▲", "⌂", "≈", "tree", "tent", "car",
+            "bridge", "⊕", "?", "1", "2", "3"};
+    static final String[] ICON_NAMES = {"Точка", "Звезда", "Флаг", "Медпункт", "Внимание", "Опасно", "Высота",
+            "Строение", "Вода", "Лес", "Лагерь", "Транспорт", "Мост", "Ориентир", "Неизвестно", "1", "2", "3"};
 
     static final class Point {
         String id, name, note, icon = "";
@@ -144,18 +145,7 @@ final class UserPoints {
         stroke.setStrokeWidth(2f * density);
         stroke.setColor(Color.WHITE);
         c.drawPath(p, stroke);
-        Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
-        dot.setColor(Color.WHITE);
-        if (icon.isEmpty()) {
-            c.drawCircle(cx, cy, r * 0.36f, dot);
-        } else {
-            dot.setTextAlign(Paint.Align.CENTER);
-            dot.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-            dot.setTextSize(r * 1.15f);
-            android.graphics.Rect bounds = new android.graphics.Rect();
-            dot.getTextBounds(icon, 0, icon.length(), bounds);
-            c.drawText(icon, cx, cy - bounds.exactCenterY(), dot);
-        }
+        PinIcons.draw(c, icon, cx, cy, r * 0.56f, Color.WHITE, color);
         PIN_CACHE.put(key, b);
         return b;
     }

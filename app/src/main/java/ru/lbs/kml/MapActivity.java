@@ -690,8 +690,10 @@ public class MapActivity extends Activity {
         row.setPadding((int) dp(10), (int) dp(9), (int) dp(6), (int) dp(9));
         row.setBackgroundResource(R.drawable.bg_hud_btn);
         if (lead != null) {
+            android.view.ViewGroup.LayoutParams own = lead.getLayoutParams();
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                    own != null ? own.width : LinearLayout.LayoutParams.WRAP_CONTENT,
+                    own != null ? own.height : LinearLayout.LayoutParams.WRAP_CONTENT);
             lp.setMarginEnd((int) dp(12));
             row.addView(lead, lp);
         }
@@ -763,6 +765,8 @@ public class MapActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextSize(13.5f);
+        t.setSingleLine(true);
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
         t.setGravity(android.view.Gravity.CENTER);
         t.setTextColor(accent ? Color.WHITE : getColor(R.color.hud_text));
         t.setBackgroundResource(accent ? R.drawable.bg_accent_btn : R.drawable.bg_sheet_chip);
@@ -1624,8 +1628,8 @@ public class MapActivity extends Activity {
             colRow.addView(sw, lp);
         }
 
-        hSection("ЗНАЧОК");
-        final List<TextView> iconViews = new ArrayList<>();
+        final TextView iconLabel = hSection("ЗНАЧОК · " + iconName(icon[0]).toUpperCase(new Locale("ru")));
+        final List<ImageView> iconViews = new ArrayList<>();
         LinearLayout icRow = null;
         for (int i = 0; i < UserPoints.ICONS.length; i++) {
             if (i % 6 == 0) {
@@ -1638,18 +1642,19 @@ public class MapActivity extends Activity {
             }
             final String ic = UserPoints.ICONS[i];
             final String icName = UserPoints.ICON_NAMES[i];
-            TextView t = new TextView(this);
-            t.setText(ic.isEmpty() ? "•" : ic);
-            t.setTextSize(18);
-            t.setGravity(android.view.Gravity.CENTER);
+            ImageView t = new ImageView(this);
+            t.setImageDrawable(new PinIcons.IconDrawable(ic, getColor(R.color.hud_text), 0xFF22262C));
+            int ip = (int) dp(9);
+            t.setPadding(ip, ip, ip, ip);
+            t.setTag(ic);
             t.setContentDescription(icName);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(40), 1);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(44), 1);
             lp.setMarginEnd((int) dp(7));
             t.setOnClickListener(v -> {
                 icon[0] = ic;
-                for (TextView tv : iconViews) styleIconHud(tv, tv == v);
+                for (ImageView tv : iconViews) styleIconHud(tv, tv == v);
                 preview.setImageBitmap(UserPoints.pin(chosen[0], den * 1.3f, icon[0]));
-                Toast.makeText(this, icName, Toast.LENGTH_SHORT).show();
+                iconLabel.setText("ЗНАЧОК · " + icName.toUpperCase(new Locale("ru")));
             });
             iconViews.add(t);
             icRow.addView(t, lp);
@@ -1659,6 +1664,11 @@ public class MapActivity extends Activity {
         coordsCard(lat, lon);
 
         hChipRow(
+                hChip("Вести", R.drawable.ic_nav, true, v -> {
+                    String nm = name.getText().toString().trim();
+                    closeSheet();
+                    startNav(Collections.singletonList(new double[]{lat, lon}), 0, nm.isEmpty() ? "Точка" : nm);
+                }),
                 hChip("Навести", R.drawable.ic_flag, false, v -> {
                     String nm = name.getText().toString().trim();
                     closeSheet();
@@ -1668,16 +1678,11 @@ public class MapActivity extends Activity {
                     closeSheet();
                     startTool(TOOL_RULER, null);
                     toolAdd(lat, lon);
-                }),
+                }));
+        hChipRow(
                 hChip("Поделиться", R.drawable.ic_share, false, v -> {
                     String nm = name.getText().toString().trim();
                     sharePointText(nm.isEmpty() ? "Точка" : nm, lat, lon);
-                }));
-        hChipRow(
-                hChip("Вести", R.drawable.ic_nav, true, v -> {
-                    String nm = name.getText().toString().trim();
-                    closeSheet();
-                    startNav(Collections.singletonList(new double[]{lat, lon}), 0, nm.isEmpty() ? "Точка" : nm);
                 }),
                 hChip("QR-код", R.drawable.ic_qr, false, v -> {
                     UserPoints.Point q = new UserPoints.Point();
@@ -1723,13 +1728,20 @@ public class MapActivity extends Activity {
         });
     }
 
-    private void styleIconHud(TextView t, boolean on) {
+    private void styleIconHud(ImageView t, boolean on) {
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(12));
-        g.setColor(on ? getColor(R.color.hud_accent) : 0xFF22262C);
+        int bg = on ? getColor(R.color.hud_accent) : 0xFF22262C;
+        g.setColor(bg);
         g.setStroke((int) dp(1), on ? getColor(R.color.hud_accent) : getColor(R.color.hud_line));
         t.setBackground(g);
-        t.setTextColor(on ? Color.WHITE : getColor(R.color.hud_text));
+        if (t.getDrawable() instanceof PinIcons.IconDrawable)
+            ((PinIcons.IconDrawable) t.getDrawable()).setColors(on ? Color.WHITE : getColor(R.color.hud_text), bg);
+    }
+
+    private static String iconName(String ic) {
+        for (int i = 0; i < UserPoints.ICONS.length; i++) if (UserPoints.ICONS[i].equals(ic)) return UserPoints.ICON_NAMES[i];
+        return "Свой";
     }
 
     private GradientDrawable swatchHud(int color, boolean sel) {
