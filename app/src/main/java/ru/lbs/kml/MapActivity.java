@@ -1294,15 +1294,7 @@ public class MapActivity extends Activity {
         } catch (Exception ignored) {
         }
         sheet("О приложении");
-        hChipRow(hChip("Проверить обновления", R.drawable.ic_refresh, true, v -> {
-            prefs.edit().putLong("updCheckedAt", 0).apply();
-            checkUpdates();
-            Toast.makeText(this, "Проверяю…", Toast.LENGTH_SHORT).show();
-            map.postDelayed(() -> {
-                if (updateAvailable()) downloadUpdate();
-                else Toast.makeText(this, "У вас последняя версия", Toast.LENGTH_SHORT).show();
-            }, 2500);
-        }));
+        hChipRow(hChip("Проверить обновления", R.drawable.ic_refresh, true, v -> checkUpdatesNow()));
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -2976,6 +2968,7 @@ public class MapActivity extends Activity {
         findViewById(R.id.tileBackup).setOnClickListener(v -> { openMenu(false); makeBackup(); });
         findViewById(R.id.tileRestore).setOnClickListener(v -> { openMenu(false); pickFile(REQ_RESTORE); });
         findViewById(R.id.updateRow).setOnClickListener(v -> downloadUpdate());
+        findViewById(R.id.tileUpdate).setOnClickListener(v -> { openMenu(false); checkUpdatesNow(); });
         findViewById(R.id.pinRow).setOnClickListener(v -> { openMenu(false); showPinSettings(); });
         updatePinRow();
         Switch swOff = findViewById(R.id.swOffline), swNight = findViewById(R.id.swNight), swTrack = findViewById(R.id.swTrack);
@@ -4173,6 +4166,31 @@ public class MapActivity extends Activity {
     }
 
     private boolean updBusy;
+
+    /** Проверить сейчас: есть новая версия — сразу окно обновления. */
+    private void checkUpdatesNow() {
+        if (offline()) {
+            Toast.makeText(this, "Включён режим «Без сети»", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Toast.makeText(this, "Проверяю обновления…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                JSONObject o = new JSONObject(httpGet("https://api.github.com/repos/TRO9II/lbs-kml/releases/tags/latest"));
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("v(\\d+(?:\\.\\d+)+)")
+                        .matcher(o.optString("name", "") + " " + o.optString("body", ""));
+                String ver = m.find() ? m.group(1) : "";
+                prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).putString("updVer", ver).apply();
+                runOnUiThread(() -> {
+                    showUpdateRow();
+                    if (updateAvailable()) downloadUpdate();
+                    else Toast.makeText(this, "У вас последняя версия" + (ver.isEmpty() ? "" : " (v" + ver + ")"), Toast.LENGTH_LONG).show();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this, "Не удалось проверить: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
 
     /** Обновление прямо из приложения: скачать и поставить поверх. */
     private void downloadUpdate() {
@@ -6749,7 +6767,8 @@ public class MapActivity extends Activity {
         if (chat.isAdmin()) hRow(hIcon(R.drawable.ic_qr, tx, 22), "Пригласить", "QR со сроком действия", null, v -> showInvite());
         hRow(hIcon(R.drawable.ic_chat, tx, 22), "Позывной", chat.callsign(), null, v -> askCallsign(this::openChat));
         hSection("МОЁ МЕСТОПОЛОЖЕНИЕ");
-        hToggle("Показывать меня на карте группы", "Только пока приложение открыто. Координаты шифруются",
+        hToggle("Показывать меня на карте группы", prefs.getBoolean("groupBg", true)
+                        ? "И когда приложение свёрнуто. Координаты шифруются" : "Только пока приложение открыто. Координаты шифруются",
                 prefs.getBoolean("shareLoc", false), this::setSharing);
         final double[] ev = {prefs.getInt("shareEvery", 60)};
         heightChipsUnits("Как часто отправлять", new double[]{30, 60, 300, 900}, ev, "",
