@@ -202,7 +202,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
                     android:background="@android:color/transparent"
-                    android:hint="Город, село или координаты"
+                    android:hint="Село, координаты, лесополоса"
                     android:imeOptions="actionSearch"
                     android:inputType="textCapWords"
                     android:paddingStart="4dp"

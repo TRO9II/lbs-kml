@@ -38,6 +38,15 @@ public class LayerOverlay extends Overlay {
     private float[] xs = new float[256], ys = new float[256];
     private List<UserLayers.Layer> layers = new ArrayList<>();
     OnTap onTap;
+    private UserLayers.Feature hl;
+    private long hlUntil;
+    private final Paint hlPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    /** Подсветить найденную полосу на несколько секунд. */
+    void highlight(UserLayers.Feature f) {
+        hl = f;
+        hlUntil = System.currentTimeMillis() + 8000;
+    }
 
     public LayerOverlay(float density) {
         d = density;
@@ -79,6 +88,25 @@ public class LayerOverlay extends Overlay {
             int sc = fade ? c.saveLayerAlpha(null, Math.round(255 * Math.max(0.1f, one.opacity))) : -1;
             drawLayers(c, java.util.Collections.singletonList(one), n, s, e, w, z, pj, orient, labels, ts);
             if (fade) c.restoreToCount(sc);
+        }
+        if (hl != null && System.currentTimeMillis() < hlUntil) {
+            project(pj, hl);
+            int k = hl.lat.length;
+            path.reset();
+            path.moveTo(xs[0], ys[0]);
+            for (int i = 1; i < k; i++) path.lineTo(xs[i], ys[i]);
+            if (hl.type == UserLayers.POLY) path.close();
+            hlPaint.setStyle(Paint.Style.STROKE);
+            hlPaint.setStrokeCap(Paint.Cap.ROUND);
+            hlPaint.setStrokeJoin(Paint.Join.ROUND);
+            hlPaint.setStrokeWidth(9 * d);
+            hlPaint.setColor(0x99000000);
+            c.drawPath(path, hlPaint);
+            hlPaint.setStrokeWidth(5.5f * d);
+            hlPaint.setColor(0xFFFFD600);
+            c.drawPath(path, hlPaint);
+            if (k == 1 || hl.type == UserLayers.POINT) c.drawCircle(xs[0], ys[0], 12 * d, hlPaint);
+            mv.postInvalidateDelayed(500);
         }
     }
 

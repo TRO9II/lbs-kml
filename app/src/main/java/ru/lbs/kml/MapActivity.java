@@ -1912,6 +1912,7 @@ public class MapActivity extends Activity {
                             "СК-42: " + Sk42.format(clat, clon), clat, clon, 17.0));
         }
         addMyPointResults(q);
+        addLayerResults(q);
         if (places == null) {
             addResultRow("Загружаю список…", "", null);
             return;
@@ -1923,6 +1924,40 @@ public class MapActivity extends Activity {
         }
         final String query = q;
         addResultRow("Искать «" + q + "» в интернете", "OpenStreetMap Nominatim", v -> searchOnline(query));
+    }
+
+    /** Поиск по своим слоям: лесополосы и прочие объекты с названиями. «Труппа 7» — тоже найдёт «ТРУППА». */
+    private void addLayerResults(String q) {
+        String ql = q.toLowerCase(new Locale("ru")).replaceAll("[\\s\\-]*\\d+$", "").trim();
+        if (ql.length() < 2) return;
+        List<Object[]> starts = new ArrayList<>(), inside = new ArrayList<>();
+        for (UserLayers.Layer l : userLayers) {
+            if (l.features == null) continue;
+            for (UserLayers.Feature f : l.features) {
+                if (f.name.isEmpty() || f.name.length() <= 3 && f.type == UserLayers.POLY) continue;
+                String nm = f.name.toLowerCase(new Locale("ru"));
+                if (nm.startsWith(ql)) starts.add(new Object[]{l, f});
+                else if (nm.contains(ql) && inside.size() < 20) inside.add(new Object[]{l, f});
+                if (starts.size() >= 20) break;
+            }
+        }
+        starts.addAll(inside);
+        if (starts.isEmpty()) return;
+        addHeader("ЛЕСОПОЛОСЫ И СЛОИ");
+        int k = 0;
+        for (Object[] o : starts) {
+            if (k++ >= 20) break;
+            UserLayers.Layer l = (UserLayers.Layer) o[0];
+            UserLayers.Feature f = (UserLayers.Feature) o[1];
+            double[] c = featureCenter(f);
+            addResultRow("🌳  " + f.name, l.name + " · СК-42: " + Sk42.format(c[0], c[1]), v -> {
+                openSearch(false);
+                l.visible = true;
+                layerOverlay.highlight(f);
+                flyTo(c[0], c[1], Math.max(15, map.getZoomLevelDouble()));
+                layerFeatureInfo(l, f);
+            });
+        }
     }
 
     /** Поиск по вашим точкам и точкам группы (название и заметка). */
