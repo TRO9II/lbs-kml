@@ -28,7 +28,8 @@ public class GridOverlay extends Overlay {
     private static final class GLine {
         final double[] lat = new double[SAMPLES + 1], lon = new double[SAMPLES + 1];
         final boolean[] ok = new boolean[SAMPLES + 1];
-        boolean major;
+        boolean major, xLine; // xLine — линия постоянного X (идёт с запада на восток)
+        double value;
         String label;
         double minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
     }
@@ -48,6 +49,27 @@ public class GridOverlay extends Overlay {
     private List<GLine> cache;
     private double cN, cS, cE, cW, cStep;
     private double lastStep = 1000;
+    private float topInset, bottomInset;
+    private final Paint pill = new Paint(Paint.ANTI_ALIAS_FLAG), pillText = new Paint(Paint.ANTI_ALIAS_FLAG),
+            snail = new Paint(Paint.ANTI_ALIAS_FLAG), snailText = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final android.graphics.RectF rf = new android.graphics.RectF();
+
+    /** Свободная от панелей полоса экрана: подписи километров ставятся по её краям. */
+    public void setInsets(float top, float bottom) {
+        topInset = top;
+        bottomInset = bottom;
+    }
+
+    /** «кв. 15 19 · ул. 7» — километровый квадрат СК-42 и номер «улитки» (3×3) для точки. */
+    static String square(double lat, double lon) {
+        double[] xy = Sk42.fromWgs(lat, lon);
+        long kx = (long) Math.floor(xy[0] / 1000), ky = (long) Math.floor(xy[1] / 1000);
+        int r = (int) Math.floor((xy[0] - kx * 1000) / 1000.0 * 3), c = (int) Math.floor((xy[1] - ky * 1000) / 1000.0 * 3);
+        return String.format(java.util.Locale.US, "кв. %02d %02d · ул. %d", kx % 100, ky % 100, SNAIL[2 - r][c]);
+    }
+
+    /** Улитка: 1 2 3 / 8 9 4 / 7 6 5 (верхний ряд — север). */
+    private static final int[][] SNAIL = {{1, 2, 3}, {8, 9, 4}, {7, 6, 5}};
 
     public GridOverlay(float density) {
         this.density = density;
@@ -62,6 +84,18 @@ public class GridOverlay extends Overlay {
         zoneLine.setColor(Color.argb(200, 255, 64, 129));
         text.setColor(Color.argb(235, 15, 15, 15));
         text.setTextSize(7.5f * density);
+        pill.setColor(0xD9141820);
+        pillText.setColor(Color.WHITE);
+        pillText.setTextSize(11f * density);
+        pillText.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        pillText.setTextAlign(Paint.Align.CENTER);
+        snail.setStyle(Paint.Style.STROKE);
+        snail.setStrokeWidth(0.8f * density);
+        snail.setColor(Color.argb(150, 0, 0, 0));
+        snail.setPathEffect(new android.graphics.DashPathEffect(new float[]{5 * density, 4 * density}, 0));
+        snailText.setColor(Color.argb(230, 255, 255, 255));
+        snailText.setTextAlign(Paint.Align.CENTER);
+        snailText.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         text.setTextAlign(Paint.Align.CENTER);
         halo.set(text);
         halo.setStyle(Paint.Style.STROKE);
@@ -95,11 +129,14 @@ public class GridOverlay extends Overlay {
 
         Projection pj = mv.getProjection();
         float orient = mv.getMapOrientation();
+        edges = orient == 0f; // по краям экрана — только когда карта не повёрнута
         for (GLine l : cache) {
             // только линии, которые проходят через экран
             if (l.maxLat < s || l.minLat > n || l.maxLon < w || l.minLon > e) continue;
             drawLine(c, pj, orient, l);
         }
+        if (edges && step <= 2000) drawEdgeLabels(c, mv);
+        if (step == 1000 && z >= 14.3) drawSnail(c, mv, pj);
 
         // границы зон
         int zFrom = Sk42.zoneOf(w - 0.01), zTo = Sk42.zoneOf(e + 0.01);
@@ -144,12 +181,17 @@ public class GridOverlay extends Overlay {
             for (double x = Math.ceil(xMin / step) * step; x <= xMax; x += step) {
                 boolean isMajor = Math.abs(Math.IEEEremainder(x, majorStep)) < 1;
                 boolean lab = isMajor || !dense || Math.round(x / step) % 2 == 0;
-                out.add(make(x, yMin, x, yMax, zW, zE, isMajor, lab ? label(x, isMajor) : null));
+                GLine gl = make(x, yMin, x, yMax, zW, zE, isMajor, lab ? label(x, isMajor) : null);
+                gl.xLine = true;
+                gl.value = x;
+                out.add(gl);
             }
             for (double y = Math.ceil(yMin / step) * step; y <= yMax; y += step) {
                 boolean isMajor = Math.abs(Math.IEEEremainder(y, majorStep)) < 1;
                 boolean lab = isMajor || !dense || Math.round(y / step) % 2 == 0;
-                out.add(make(xMin, y, xMax, y, zW, zE, isMajor, lab ? label(y, isMajor) : null));
+                GLine gl = make(xMin, y, xMax, y, zW, zE, isMajor, lab ? label(y, isMajor) : null);
+                gl.value = y;
+                out.add(gl);
             }
         }
         cache = out;
@@ -178,6 +220,94 @@ public class GridOverlay extends Overlay {
         return isMajor ? Geo.group(Math.round(v)) : Geo.group(Math.round(v / 1000.0)) + "к";
     }
 
+    private boolean edges;
+
+    /** Подписи километров по краям экрана, как на бумажной карте: X — слева, Y — сверху. */
+    private void drawEdgeLabels(Canvas c, MapView mv) {
+        Projection pj = mv.getProjection();
+        float W = mv.getWidth(), top = topInset > 0 ? topInset : 0, left = 4 * density;
+        float ph = 17 * density;
+        for (GLine l : cache) {
+            float ex = Float.NaN, ey = Float.NaN;
+            float px = 0, py = 0;
+            boolean have = false;
+            for (int i = 0; i <= SAMPLES; i++) {
+                if (!l.ok[i]) { have = false; continue; }
+                gp.setCoords(l.lat[i], l.lon[i]);
+                pj.toPixels(gp, pt);
+                if (have) {
+                    if (l.xLine) {
+                        // пересечение с левой кромкой
+                        float edge = left + 16 * density;
+                        if ((px - edge) * (pt.x - edge) <= 0 && px != pt.x) {
+                            float t = (edge - px) / (pt.x - px);
+                            ey = py + (pt.y - py) * t;
+                            ex = edge;
+                        }
+                    } else {
+                        float edge = top + ph / 2 + 2 * density;
+                        if ((py - edge) * (pt.y - edge) <= 0 && py != pt.y) {
+                            float t = (edge - py) / (pt.y - py);
+                            ex = px + (pt.x - px) * t;
+                            ey = edge;
+                        }
+                    }
+                }
+                px = pt.x;
+                py = pt.y;
+                have = true;
+            }
+            if (Float.isNaN(ex)) continue;
+            if (l.xLine && (ey < top + ph * 1.5f || ey > (bottomInset > 0 ? bottomInset : mv.getHeight()) - ph)) continue;
+            if (!l.xLine && (ex < 20 * density || ex > W - 64 * density)) continue;
+            long km = Math.round(l.value / 1000.0);
+            String s = String.format(java.util.Locale.US, "%02d", Math.abs(km) % 100);
+            float tw = pillText.measureText(s) + 10 * density;
+            rf.set(ex - tw / 2, ey - ph / 2, ex + tw / 2, ey + ph / 2);
+            pill.setColor(l.major ? 0xE6B71C1C : 0xD9141820);
+            c.drawRoundRect(rf, ph / 2, ph / 2, pill);
+            c.drawText(s, ex, ey + 4 * density, pillText);
+        }
+    }
+
+    /** Улитка (3×3) в километровом квадрате под перекрестием. */
+    private void drawSnail(Canvas c, MapView mv, Projection pj) {
+        org.osmdroid.api.IGeoPoint ctr = mv.getMapCenter();
+        double[] xy = Sk42.fromWgs(ctr.getLatitude(), ctr.getLongitude());
+        double x0 = Math.floor(xy[0] / 1000) * 1000, y0 = Math.floor(xy[1] / 1000) * 1000;
+        float[][] px = new float[4][4], py = new float[4][4];
+        for (int i = 0; i <= 3; i++)
+            for (int j = 0; j <= 3; j++) {
+                double[] ll = Sk42.toWgs(x0 + 1000.0 * (3 - i) / 3, y0 + 1000.0 * j / 3);
+                gp.setCoords(ll[0], ll[1]);
+                pj.toPixels(gp, pt);
+                px[i][j] = pt.x;
+                py[i][j] = pt.y;
+            }
+        float cell = (float) Math.hypot(px[0][1] - px[0][0], py[0][1] - py[0][0]);
+        if (cell < 34 * density) return;
+        for (int k = 1; k <= 2; k++) {
+            c.drawLine(px[k][0], py[k][0], px[k][3], py[k][3], snail);
+            c.drawLine(px[0][k], py[0][k], px[3][k], py[3][k], snail);
+        }
+        float ts = Math.min(22 * density, cell * 0.32f);
+        snailText.setTextSize(ts);
+        halo.setTextSize(ts);
+        halo.setFakeBoldText(true);
+        for (int r = 0; r < 3; r++)
+            for (int col = 0; col < 3; col++) {
+                float cx = (px[r][col] + px[r + 1][col + 1]) / 2, cy = (py[r][col] + py[r + 1][col + 1]) / 2;
+                String s = Integer.toString(SNAIL[r][col]);
+                Paint h = new Paint(halo);
+                h.setColor(Color.argb(160, 0, 0, 0));
+                h.setStrokeWidth(3 * density);
+                h.setTextAlign(Paint.Align.CENTER);
+                c.drawText(s, cx, cy + ts * 0.35f, h);
+                c.drawText(s, cx, cy + ts * 0.35f, snailText);
+            }
+        halo.setTextSize(7.5f * density);
+    }
+
     private void drawLine(Canvas c, Projection pj, float orient, GLine l) {
         path.reset();
         boolean pen = false;
@@ -191,6 +321,7 @@ public class GridOverlay extends Overlay {
         }
         c.drawPath(path, l.major ? major : minor);
         if (l.label == null) return;
+        if (edges && lastStep <= 2000 && !l.major) return; // мелкие подписи — по краям экрана
 
         // подписи вдоль линии через каждые ~420 dp
         float gap = 420 * density, acc = 0, next = 210 * density;

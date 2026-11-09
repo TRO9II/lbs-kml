@@ -121,6 +121,8 @@ public class MapActivity extends Activity {
     private PointsOverlay pointsOverlay;
     private PathOverlay pathOverlay;
     private GeoOverlay geoOverlay;
+    private LayerOverlay layerOverlay;
+    private List<UserLayers.Layer> userLayers = new ArrayList<>();
     private SketchOverlay sketch;
     private Places places;
 
@@ -176,6 +178,10 @@ public class MapActivity extends Activity {
         map.getOverlays().add(cmpFolder);
         gridOverlay = new GridOverlay(d);
         map.getOverlays().add(gridOverlay);
+        View.OnLayoutChangeListener insetL = (v, l, t, r, b, ol, ot, or, ob) ->
+                gridOverlay.setInsets(findViewById(R.id.topBar).getBottom() + dp(4), findViewById(R.id.bottomBar).getTop());
+        findViewById(R.id.topBar).addOnLayoutChangeListener(insetL);
+        findViewById(R.id.bottomBar).addOnLayoutChangeListener(insetL);
         placesOverlay = new PlacesOverlay(d);
         placesOverlay.setObstacles((mv, out) -> {
             // кнопки и карточки поверх карты
@@ -194,6 +200,10 @@ public class MapActivity extends Activity {
             membersOverlay.boxes(mv, out);
         });
         map.getOverlays().add(placesOverlay);
+        layerOverlay = new LayerOverlay(d);
+        layerOverlay.onTap = this::layerFeatureInfo;
+        map.getOverlays().add(layerOverlay);
+        loadUserLayers();
         pathOverlay = new PathOverlay(d);
         map.getOverlays().add(pathOverlay);
         geoOverlay = new GeoOverlay(d);
@@ -1227,6 +1237,7 @@ public class MapActivity extends Activity {
 
         roadsCard();
         nightCard();
+        userLayersCard();
 
         LinearLayout more = layerBox();
         switchRow(more, R.drawable.ic_rail, tx, "Железные дороги", null, OV_KEYS[1], false, this::applyOverlays);
@@ -4392,7 +4403,7 @@ public class MapActivity extends Activity {
 
     // ================= Моё местоположение (GPS) и трек =================
 
-    private static final int REQ_LOC = 21, REQ_IMPORT = 31, REQ_RESTORE = 32;
+    private static final int REQ_LOC = 21, REQ_IMPORT = 31, REQ_RESTORE = 32, REQ_LAYER = 38;
     private MyLocationOverlay myLoc;
     private android.location.LocationManager locMgr;
     private boolean locOn, follow, pendingCenter;
@@ -5268,6 +5279,7 @@ public class MapActivity extends Activity {
         if (res != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         if (req == REQ_IMPORT) importFrom(uri);
+        if (req == REQ_LAYER) importLayer(uri);
         else if (req == REQ_RESTORE) restoreFrom(uri);
     }
 
@@ -9561,6 +9573,313 @@ public class MapActivity extends Activity {
         return out;
     }
 
+
+    // ================= Свои слои из файлов (KML / KMZ / GPX) =================
+
+    private void loadUserLayers() {
+        userLayers = UserLayers.list(this);
+        layerOverlay.setLayers(userLayers);
+        final List<UserLayers.Layer> ls = userLayers;
+        new Thread(() -> {
+            for (UserLayers.Layer l : ls) {
+                if (l.features != null) continue;
+                List<UserLayers.Feature> f = UserLayers.read(this, l.id);
+                runOnUiThread(() -> {
+                    l.features = f;
+                    map.invalidate();
+                });
+            }
+        }).start();
+    }
+
+    private String uriName(Uri uri) {
+        try (android.database.Cursor cur = getContentResolver().query(uri, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cur != null && cur.moveToFirst()) {
+                String n = cur.getString(0);
+                if (n != null) return n;
+            }
+        } catch (Exception ignored) {
+        }
+        String n = uri.getLastPathSegment();
+        return n == null ? "Слой" : n.substring(n.lastIndexOf('/') + 1);
+    }
+
+    private void importLayer(Uri uri) {
+        String file = uriName(uri);
+        String base = file.replaceAll("\\.(kml|kmz|gpx|xml)$", "").replaceAll("(?i)\\.(kml|kmz|gpx)$", "");
+        Toast.makeText(this, "Читаю «" + file + "»…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                List<UserLayers.Feature> fs = UserLayers.parse(readUri(uri));
+                runOnUiThread(() -> showLayerImport(base, fs));
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this, "Не удалось прочитать слой (нужен KML, KMZ или GPX): " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    private void showLayerImport(String base, List<UserLayers.Feature> fs) {
+        sheet("Новый слой");
+        int pts = 0, lines = 0, polys = 0, named = 0;
+        for (UserLayers.Feature f : fs) {
+            if (f.type == UserLayers.POINT) pts++; else if (f.type == UserLayers.LINE) lines++; else polys++;
+            if (!f.name.isEmpty()) named++;
+        }
+        if (fs.isEmpty()) {
+            emptyState(R.drawable.ic_layers, "В файле ничего нет", "Не найдено ни линий, ни участков, ни точек.");
+            return;
+        }
+        final EditText name = hInput("Название слоя", base);
+        name.setSingleLine(true);
+        sheetContent.addView(name);
+        LinearLayout card = hCard();
+        addKV(card, "Линий (лесополос)", Integer.toString(lines));
+        addKV(card, "Участков, квадратов", Integer.toString(polys));
+        addKV(card, "Точек", Integer.toString(pts));
+        addKV(card, "С названиями", Integer.toString(named));
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(-1, -2);
+        cl.topMargin = (int) dp(10);
+        sheetContent.addView(card, cl);
+        TextView t = new TextView(this);
+        t.setText("Слой ляжет поверх любой подложки отдельно от ваших точек и маршрутов. Включать, выключать и удалять — в «Слои» → «Мои слои». "
+                + "Подписи видны с масштаба ~13 и крупнее.");
+        t.setTextSize(12.5f);
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        sheetContent.addView(t);
+        footer("Отмена", "Добавить слой", v -> {
+            UserLayers.Layer l = new UserLayers.Layer();
+            l.id = Long.toString(System.currentTimeMillis(), 36);
+            String nm = name.getText().toString().trim();
+            l.name = nm.isEmpty() ? "Слой" : nm;
+            l.features = fs;
+            l.count = fs.size();
+            for (UserLayers.Feature f : fs) {
+                l.n = Math.max(l.n, f.n); l.s = Math.min(l.s, f.s); l.e = Math.max(l.e, f.e); l.w = Math.min(l.w, f.w);
+            }
+            v.setEnabled(false);
+            new Thread(() -> {
+                try {
+                    UserLayers.write(this, l);
+                    runOnUiThread(() -> {
+                        userLayers.add(l);
+                        UserLayers.saveList(this, userLayers);
+                        layerOverlay.setLayers(userLayers);
+                        closeSheet();
+                        zoomToLayer(l);
+                        Toast.makeText(this, "Слой «" + l.name + "» добавлен", Toast.LENGTH_SHORT).show();
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> {
+                        v.setEnabled(true);
+                        Toast.makeText(this, "Не удалось сохранить слой: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                    });
+                }
+            }).start();
+        });
+    }
+
+    private void zoomToLayer(UserLayers.Layer l) {
+        if (l.n < l.s) return;
+        double pad = Math.max(0.002, (l.n - l.s) * 0.05);
+        try {
+            map.zoomToBoundingBox(new org.osmdroid.util.BoundingBox(l.n + pad, l.e + pad, l.s - pad, l.w - pad), true, (int) dp(30));
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Блок «Мои слои» во вкладке «Слои». */
+    private void userLayersCard() {
+        LinearLayout box = layerBox();
+        for (UserLayers.Layer l : userLayers) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding((int) dp(14), (int) dp(9), (int) dp(8), (int) dp(9));
+            ImageView iv = hIcon(R.drawable.ic_layers, getColor(R.color.hud_accent), 20);
+            row.addView(iv, new LinearLayout.LayoutParams((int) dp(22), (int) dp(22)));
+            LinearLayout tx = new LinearLayout(this);
+            tx.setOrientation(LinearLayout.VERTICAL);
+            tx.setPadding((int) dp(14), 0, (int) dp(8), 0);
+            TextView t = new TextView(this);
+            t.setText(l.name);
+            t.setTextSize(14.5f);
+            t.setTextColor(getColor(R.color.hud_text));
+            t.setSingleLine(true);
+            t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            tx.addView(t);
+            TextView st = new TextView(this);
+            st.setText(l.count + " объектов · нажмите — действия");
+            st.setTextSize(11.5f);
+            st.setTextColor(getColor(R.color.hud_text2));
+            tx.addView(st);
+            row.addView(tx, new LinearLayout.LayoutParams(0, -2, 1));
+            Switch sw = new Switch(this);
+            sw.setChecked(l.visible);
+            sw.setThumbTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{Color.WHITE, 0xFFB0B6BE}));
+            sw.setTrackTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{getColor(R.color.hud_accent), 0xFF3A404A}));
+            sw.setOnCheckedChangeListener((b, on) -> {
+                l.visible = on;
+                iv.setAlpha(on ? 1f : 0.5f);
+                UserLayers.saveList(this, userLayers);
+                map.invalidate();
+            });
+            iv.setAlpha(l.visible ? 1f : 0.5f);
+            row.addView(sw);
+            row.setOnClickListener(v -> layerActions(l));
+            box.addView(row);
+            layerDivider(box);
+        }
+        TextView add = new TextView(this);
+        add.setText("＋  Загрузить слой — KML, KMZ, GPX");
+        add.setTextSize(14);
+        add.setTextColor(getColor(R.color.hud_accent));
+        add.setPadding((int) dp(14), (int) dp(12), (int) dp(14), (int) dp(12));
+        add.setOnClickListener(v -> pickFile(REQ_LAYER));
+        box.addView(add);
+        if (userLayers.isEmpty()) {
+            TextView h = new TextView(this);
+            h.setText("Например, кодированные лесополосы и квадраты из AlpineQuest: там «Экспорт» → KML/KMZ.");
+            h.setTextSize(11.5f);
+            h.setTextColor(getColor(R.color.hud_text2));
+            h.setPadding((int) dp(14), 0, (int) dp(14), (int) dp(12));
+            box.addView(h);
+        }
+        setBlock("МОИ СЛОИ", box);
+    }
+
+    private void layerActions(UserLayers.Layer l) {
+        sheet(l.name);
+        LinearLayout card = hCard();
+        addKV(card, "Объектов", Integer.toString(l.count));
+        if (l.n >= l.s) addKV(card, "Район", Geo.dist(Geo.inverse(l.n, l.w, l.s, l.e)[0]) + " по диагонали");
+        sheetContent.addView(card);
+        actionRow(
+                vAction(R.drawable.ic_place, "Показать", true, v -> { closeSheet(); l.visible = true; UserLayers.saveList(this, userLayers); zoomToLayer(l); map.invalidate(); }),
+                vAction(R.drawable.ic_sketch, "Название", false, v -> {
+                    final EditText in = hInput("Название слоя", l.name);
+                    in.setSingleLine(true);
+                    android.widget.FrameLayout fr = new android.widget.FrameLayout(this);
+                    fr.setPadding((int) dp(20), (int) dp(8), (int) dp(20), 0);
+                    fr.addView(in);
+                    new AlertDialog.Builder(this).setTitle("Название слоя").setView(fr)
+                            .setPositiveButton("Сохранить", (dd, w) -> {
+                                String nm = in.getText().toString().trim();
+                                if (!nm.isEmpty()) l.name = nm;
+                                UserLayers.saveList(this, userLayers);
+                                layerActions(l);
+                            })
+                            .setNegativeButton("Отмена", null).show();
+                }),
+                vAction(R.drawable.ic_search, "Найти", false, v -> layerSearch(l)),
+                vAction(R.drawable.ic_delete, "Удалить", false, v -> new AlertDialog.Builder(this)
+                        .setTitle("Удалить слой «" + l.name + "»?")
+                        .setMessage("Файл слоя удалится из приложения. Ваши точки и маршруты не затронуты.")
+                        .setPositiveButton("Удалить", (dd, w) -> {
+                            UserLayers.delete(this, l);
+                            userLayers.remove(l);
+                            UserLayers.saveList(this, userLayers);
+                            layerOverlay.setLayers(userLayers);
+                            map.invalidate();
+                            closeSheet();
+                        })
+                        .setNegativeButton("Отмена", null).show()));
+    }
+
+    /** Поиск лесополосы / квадрата по названию внутри слоя. */
+    private void layerSearch(UserLayers.Layer l) {
+        sheet("Найти в слое");
+        final EditText q = hInput("Название, например «Лотос»", "");
+        q.setSingleLine(true);
+        sheetContent.addView(q);
+        final LinearLayout res = new LinearLayout(this);
+        res.setOrientation(LinearLayout.VERTICAL);
+        sheetContent.addView(res);
+        q.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence c, int a, int b, int d2) {}
+            @Override public void onTextChanged(CharSequence c, int a, int b, int d2) {}
+            @Override public void afterTextChanged(android.text.Editable e) {
+                res.removeAllViews();
+                String s = e.toString().trim().toLowerCase(new Locale("ru"));
+                if (s.isEmpty() || l.features == null) return;
+                int k = 0;
+                for (UserLayers.Feature f : l.features) {
+                    if (!f.name.toLowerCase(new Locale("ru")).contains(s)) continue;
+                    if (k++ >= 30) break;
+                    TextView t = new TextView(MapActivity.this);
+                    double[] c = featureCenter(f);
+                    t.setText(f.name + "   ·   " + (f.type == UserLayers.LINE ? "линия" : f.type == UserLayers.POLY ? "участок" : "точка")
+                            + " · " + Sk42.format(c[0], c[1]));
+                    t.setTextSize(14);
+                    t.setTextColor(getColor(R.color.hud_text));
+                    t.setPadding((int) dp(6), (int) dp(11), (int) dp(6), (int) dp(11));
+                    t.setOnClickListener(v -> {
+                        closeSheet();
+                        l.visible = true;
+                        map.getController().animateTo(new GeoPoint(c[0], c[1]), Math.max(15.0, map.getZoomLevelDouble()), 600L);
+                    });
+                    res.addView(t);
+                }
+                if (k == 0) {
+                    TextView t = new TextView(MapActivity.this);
+                    t.setText("Не найдено");
+                    t.setTextColor(getColor(R.color.hud_text2));
+                    t.setPadding((int) dp(6), (int) dp(11), 0, 0);
+                    res.addView(t);
+                }
+            }
+        });
+        q.requestFocus();
+    }
+
+    /** Середина объекта: для линии — точка посередине её длины. */
+    private static double[] featureCenter(UserLayers.Feature f) {
+        int k = f.lat.length;
+        if (f.type == UserLayers.LINE && k > 1) {
+            double total = 0;
+            for (int i = 1; i < k; i++) total += Math.hypot(f.lat[i] - f.lat[i - 1], f.lon[i] - f.lon[i - 1]);
+            double acc = 0;
+            for (int i = 1; i < k; i++) {
+                double seg = Math.hypot(f.lat[i] - f.lat[i - 1], f.lon[i] - f.lon[i - 1]);
+                if (acc + seg >= total / 2 && seg > 0) {
+                    double t = (total / 2 - acc) / seg;
+                    return new double[]{f.lat[i - 1] + (f.lat[i] - f.lat[i - 1]) * t, f.lon[i - 1] + (f.lon[i] - f.lon[i - 1]) * t};
+                }
+                acc += seg;
+            }
+        }
+        if (f.type == UserLayers.POLY) return new double[]{(f.n + f.s) / 2, (f.e + f.w) / 2};
+        return new double[]{f.lat[0], f.lon[0]};
+    }
+
+    /** Нажали на лесополосу, квадрат или точку слоя. */
+    private void layerFeatureInfo(UserLayers.Layer l, UserLayers.Feature f) {
+        double[] c = featureCenter(f);
+        String nm = f.name.isEmpty() ? (f.type == UserLayers.LINE ? "Линия" : f.type == UserLayers.POLY ? "Участок" : "Точка") : f.name;
+        sheet(nm);
+        LinearLayout card = hCard();
+        addKV(card, "Слой", l.name);
+        if (f.type == UserLayers.LINE) {
+            double len = 0;
+            for (int i = 1; i < f.lat.length; i++) len += Geo.inverse(f.lat[i - 1], f.lon[i - 1], f.lat[i], f.lon[i])[0];
+            addKV(card, "Длина", Geo.dist(len));
+        }
+        addKV(card, f.type == UserLayers.POINT ? "СК-42" : "Середина, СК-42", Sk42.format(c[0], c[1]));
+        addKV(card, "Квадрат", GridOverlay.square(c[0], c[1]));
+        addKV(card, "WGS-84", String.format(Locale.US, "%.5f, %.5f", c[0], c[1]));
+        android.location.Location me = myLoc == null ? null : myLoc.getLocation();
+        if (me != null) {
+            double[] inv = Geo.inverse(me.getLatitude(), me.getLongitude(), c[0], c[1]);
+            addKV(card, "От меня", Geo.dist(inv[0]) + " · " + Math.round(inv[1]) + "°");
+        }
+        if (!f.note.isEmpty()) addKV(card, "Описание", f.note.length() > 200 ? f.note.substring(0, 200) + "…" : f.note);
+        sheetContent.addView(card);
+        actionRow(
+                vAction(R.drawable.ic_flag, "Навести", true, v -> { closeSheet(); setTarget(c[0], c[1], nm); }),
+                vAction(R.drawable.ic_add, "В точки", false, v -> editPoint(null, c[0], c[1], nm)),
+                vAction(R.drawable.ic_share, "Текстом", false, v -> sharePointText(nm, c[0], c[1])),
+                chat != null && chat.active() ? vAction(R.drawable.ic_chat, "В чат", false, v -> { sendPoint(nm, c[0], c[1]); openChat(); }) : null);
+    }
+
     private ChatClient.GObj objFromRoute(Routes.Route r) {
         ChatClient.GObj g = new ChatClient.GObj();
         g.type = r.area ? "area" : "route";
@@ -10927,6 +11246,12 @@ public class MapActivity extends Activity {
                     "Знаки лежат вместе с маршрутами. «Маршруты» → знак → «На карту группы» — увидят свои.",
                     "«Кроки» — рисуйте пальцем прямо по карте: цвет, толщина, подписи, отмена. «Двигать» — сдвинуть карту, рисунок едет вместе с ней.",
                     "«Готово» → в чат группы, отправить в мессенджер или сохранить картинкой в «Загрузки». Рисунок остаётся на карте, пока его не сотрёте."}},
+            {R.drawable.ic_layers, "Свои слои и сетка", new String[]{
+                    "«Слои» → «Мои слои» → «Загрузить слой». Подходят KML, KMZ и GPX — например, кодированные лесополосы и квадраты из AlpineQuest («Экспорт» → KML/KMZ).",
+                    "Слой лежит отдельно от ваших точек: включайте, выключайте, переименовывайте, удаляйте. Названия — как в файле.",
+                    "Нажмите на лесополосу или квадрат — название, длина, СК-42, квадрат и улитка; можно навести, сохранить в точки или отправить в чат.",
+                    "«Найти» в слое — поиск лесополосы по названию.",
+                    "Сетка СК-42: при крупном масштабе номера километров видны по краям экрана (X — слева, Y — сверху), под перекрестием — улитка 1–9."}},
             {R.drawable.ic_lbs, "ЛБС: сравнить даты", new String[]{
                     "Инструменты → «ЛБС: сравнить даты». Нужен интернет.",
                     "«Было»: неделя, месяц, полгода, год назад или любая дата с 2022 г. «Стало»: последний снимок или своя дата.",
