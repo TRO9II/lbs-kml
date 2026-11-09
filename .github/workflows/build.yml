@@ -43,11 +43,40 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          PREV=$(gh release view latest --json name -q .name 2>/dev/null || true)
           gh release delete latest --yes --cleanup-tag || true
           VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          if [ "$PREV" != "Рубеж v$VERSION" ]; then echo "NEW_VERSION=1" >> "$GITHUB_ENV"; fi
           # список изменений этой версии — из app/src/main/assets/changes.txt
           awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' app/src/main/assets/changes.txt | sed '/^$/d' > notes.txt
           [ -s notes.txt ] || echo "- Исправления и улучшения" > notes.txt
           echo "" >> notes.txt
           echo "v$VERSION · сборка ${GITHUB_SHA::7}" >> notes.txt
           gh release create latest LbsKml.apk --title "Рубеж v$VERSION" --notes-file notes.txt
+
+      - name: Post update to Telegram channel
+        if: env.NEW_VERSION == '1'
+        env:
+          TG_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then echo "Telegram не настроен — пропускаю"; exit 0; fi
+          awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' app/src/main/assets/changes.txt | sed '/^$/d' | sed 's/^- /• /' > tg.txt
+          [ -s tg.txt ] || echo "• Исправления и улучшения" > tg.txt
+          python3 - <<'PY'
+          import json, os, urllib.request, html
+          notes = html.escape(open("tg.txt", encoding="utf-8").read().strip())
+          text = (f"🆕 <b>Рубеж v{os.environ['VERSION']}</b>\n\n{notes}\n\n"
+                  "Приложение предложит обновиться само при запуске. "
+                  "Или скачайте: <a href=\"https://github.com/TRO9II/lbs-kml/releases/download/latest/LbsKml.apk\">LbsKml.apk</a>")
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['TG_TOKEN']}/sendMessage",
+              data=json.dumps({"chat_id": os.environ["TG_CHAT"], "text": text, "parse_mode": "HTML",
+                               "disable_web_page_preview": True}).encode(),
+              headers={"Content-Type": "application/json"})
+          try:
+              print(urllib.request.urlopen(req, timeout=20).read()[:200])
+          except Exception as e:
+              print("::warning::Telegram:", e)
+          PY
