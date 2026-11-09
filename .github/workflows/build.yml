@@ -3,6 +3,11 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+    inputs:
+      post_tg:
+        description: "Опубликовать версию в Telegram-канале"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -56,7 +61,7 @@ jobs:
           gh release create latest LbsKml.apk --title "Рубеж v$VERSION" --notes-file notes.txt
 
       - name: Post update to Telegram channel
-        if: env.NEW_VERSION == '1'
+        if: env.NEW_VERSION == '1' || inputs.post_tg
         env:
           TG_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TG_CHAT_ID }}
@@ -65,18 +70,20 @@ jobs:
           awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' app/src/main/assets/changes.txt | sed '/^$/d' | sed 's/^- /• /' > tg.txt
           [ -s tg.txt ] || echo "• Исправления и улучшения" > tg.txt
           python3 - <<'PY'
-          import json, os, urllib.request, html
+          import json, os, urllib.request, urllib.error, html
           notes = html.escape(open("tg.txt", encoding="utf-8").read().strip())
           text = (f"🆕 <b>Рубеж v{os.environ['VERSION']}</b>\n\n{notes}\n\n"
                   "Приложение предложит обновиться само при запуске. "
                   "Или скачайте: <a href=\"https://github.com/TRO9II/lbs-kml/releases/download/latest/LbsKml.apk\">LbsKml.apk</a>")
           req = urllib.request.Request(
-              f"https://api.telegram.org/bot{os.environ['TG_TOKEN']}/sendMessage",
-              data=json.dumps({"chat_id": os.environ["TG_CHAT"], "text": text, "parse_mode": "HTML",
+              f"https://api.telegram.org/bot{os.environ['TG_TOKEN'].strip()}/sendMessage",
+              data=json.dumps({"chat_id": os.environ["TG_CHAT"].strip(), "text": text, "parse_mode": "HTML",
                                "disable_web_page_preview": True}).encode(),
               headers={"Content-Type": "application/json"})
           try:
-              print(urllib.request.urlopen(req, timeout=20).read()[:200])
+              print(urllib.request.urlopen(req, timeout=20).read()[:120])
+          except urllib.error.HTTPError as e:
+              print("::warning::Telegram:", e.code, e.read()[:300])
           except Exception as e:
               print("::warning::Telegram:", e)
           PY
