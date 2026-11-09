@@ -385,20 +385,56 @@ public class MapActivity extends Activity {
         boolean gray = LbsCore.optGray(this), diff = LbsCore.optDiff(this);
         if (gray && prefs.getBoolean("showGray", true)) {
             for (double[][] g : data.gray) {
+                // серая зона: тёмная вуаль со штриховкой и пунктирной кромкой
                 Polygon pg = new Polygon();
                 pg.setPoints(pts(g));
-                pg.getFillPaint().setColor(Color.argb(140, 70, 70, 70));
-                pg.getOutlinePaint().setColor(Color.argb(230, 50, 50, 50));
+                pg.getFillPaint().setColor(Color.WHITE);
+                pg.getFillPaint().setShader(grayHatch());
+                pg.getOutlinePaint().setColor(Color.argb(220, 200, 200, 200));
                 pg.getOutlinePaint().setStrokeWidth(dp(1.2f));
+                pg.getOutlinePaint().setPathEffect(new android.graphics.DashPathEffect(new float[]{dp(6), dp(4)}, 0));
                 lbsFolder.add(pg);
             }
         }
         boolean showDiff = diff && prefs.getBoolean("showDiff", true);
-        if (showDiff) for (double[][] l : data.removed) lbsFolder.add(line(l, Color.rgb(140, 140, 140), 3));
-        if (prefs.getBoolean("showLbs", true))
-            for (double[][] l : data.lines) lbsFolder.add(line(l, Color.rgb(230, 20, 20), 3.5f));
-        if (showDiff) for (double[][] l : data.added) lbsFolder.add(line(l, Color.rgb(255, 210, 0), 5));
+        // прежнее положение — серый пунктир
+        if (showDiff) for (double[][] l : data.removed) {
+            Polyline pl = line(l, Color.argb(230, 190, 190, 190), 2);
+            pl.getOutlinePaint().setPathEffect(new android.graphics.DashPathEffect(new float[]{dp(7), dp(5)}, 0));
+            lbsFolder.add(pl);
+        }
+        // ЛБС: мягкое свечение, тёмная обводка и яркая красная линия
+        if (prefs.getBoolean("showLbs", true)) {
+            for (double[][] l : data.lines) lbsFolder.add(line(l, Color.argb(60, 255, 40, 40), 11));
+            for (double[][] l : data.lines) lbsFolder.add(line(l, Color.argb(200, 25, 0, 0), 5.6f));
+            for (double[][] l : data.lines) lbsFolder.add(line(l, Color.rgb(255, 45, 45), 3f));
+        }
+        // изменения — янтарная линия с обводкой
+        if (showDiff) {
+            for (double[][] l : data.added) lbsFolder.add(line(l, Color.argb(200, 40, 25, 0), 6.5f));
+            for (double[][] l : data.added) lbsFolder.add(line(l, Color.rgb(255, 196, 0), 4f));
+        }
         map.invalidate();
+    }
+
+    private android.graphics.Shader hatch;
+
+    /** Диагональная штриховка серой зоны (полупрозрачная, видна и на спутнике, и на схеме). */
+    private android.graphics.Shader grayHatch() {
+        if (hatch != null) return hatch;
+        int sz = (int) dp(10);
+        android.graphics.Bitmap b = android.graphics.Bitmap.createBitmap(sz, sz, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas c = new android.graphics.Canvas(b);
+        c.drawColor(Color.argb(95, 40, 40, 44));
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setColor(Color.argb(150, 210, 210, 215));
+        p.setStrokeWidth(dp(1.3f));
+        c.drawLine(-sz, sz * 2, sz * 2, -sz, p);
+        c.drawLine(0, sz, sz, 0, p);
+        c.drawLine(-sz / 2f, sz / 2f, sz / 2f, -sz / 2f, p);
+        c.drawLine(sz / 2f, sz * 1.5f, sz * 1.5f, sz / 2f, p);
+        hatch = new android.graphics.BitmapShader(b, android.graphics.Shader.TileMode.REPEAT, android.graphics.Shader.TileMode.REPEAT);
+        return hatch;
     }
 
     private void forceReloadLbs() {
@@ -563,9 +599,41 @@ public class MapActivity extends Activity {
 
     // ================= Подложка =================
 
-    private static final int STYLE_SCHEME = 0, STYLE_SAT = 1, STYLE_TOPO = 2, STYLE_RELIEF = 3;
-    private static final String[] STYLE_NAMES = {"Схема", "Спутник (Esri)", "Топокарта (Esri)", "Рельеф (OpenTopoMap)"};
-    private static final String[] STYLE_SHORT = {"Схема", "Esri Спутник", "Esri Топо", "Рельеф"};
+    private static final int STYLE_SCHEME = 0, STYLE_SAT = 1, STYLE_TOPO = 2, STYLE_RELIEF = 3, STYLE_GOOGLE = 4, STYLE_FRESH = 5;
+    private static final String[] STYLE_NAMES = {"Схема", "Спутник (Esri)", "Топокарта (Esri)", "Рельеф (OpenTopoMap)",
+            "Спутник (Google)", "Свежий снимок (Sentinel-2)"};
+    private static final String[] STYLE_SHORT = {"Схема", "Esri Спутник", "Esri Топо", "Рельеф", "Google", "Sentinel-2"};
+
+    /** Google Спутник: самые подробные и часто обновляемые снимки. */
+    private static final OnlineTileSourceBase GOOGLE = new OnlineTileSourceBase("GoogleSat", 0, 20, 256, ".jpg",
+            new String[]{"https://mt0.google.com/", "https://mt1.google.com/", "https://mt2.google.com/", "https://mt3.google.com/"}) {
+        @Override
+        public String getTileURLString(long idx) {
+            return getBaseUrl() + "vt/lyrs=s&x=" + MapTileIndex.getX(idx) + "&y=" + MapTileIndex.getY(idx) + "&z=" + MapTileIndex.getZoom(idx);
+        }
+    };
+
+    /** Sentinel-2 (NASA GIBS, HLS S30): снимок конкретного дня, 30 м, задержка ~5 дней. */
+    private static final class FreshSource extends OnlineTileSourceBase {
+        private final String day;
+
+        FreshSource(String day) {
+            super("S2-" + day, 0, 12, 256, ".png", new String[]{"https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"});
+            this.day = day;
+        }
+
+        @Override
+        public String getTileURLString(long idx) {
+            return getBaseUrl() + "HLS_S30_Nadir_BRDF_Adjusted_Reflectance/default/" + day + "/GoogleMapsCompatible_Level12/"
+                    + MapTileIndex.getZoom(idx) + "/" + MapTileIndex.getY(idx) + "/" + MapTileIndex.getX(idx) + ".png";
+        }
+    }
+
+    private OnlineTileSourceBase freshSource() {
+        String d = prefs.getString("s2Day", "");
+        if (d.isEmpty()) d = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date(System.currentTimeMillis() - 6 * 86400_000L));
+        return new FreshSource(d);
+    }
     private static final String ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
 
     /** Тайлы Esri: порядок в адресе z/y/x. */
@@ -707,7 +775,7 @@ public class MapActivity extends Activity {
     }
 
     private void applyStyle(int style) {
-        if (style < 0 || style > 3) style = STYLE_SAT;
+        if (style < 0 || style > 5) style = STYLE_SAT;
         if (style != STYLE_SAT && compareOn()) stopCompare();
         currentStyle = style;
         prefs.edit().putInt("mapStyle", style).apply();
@@ -718,7 +786,9 @@ public class MapActivity extends Activity {
             esriLabels = null;
         }
         boolean ru = labelsOn();
-        map.setTilesScaledToDpi(style != STYLE_SAT);
+        boolean satLike = style == STYLE_SAT || style == STYLE_GOOGLE || style == STYLE_FRESH;
+        map.setTilesScaledToDpi(!satLike);
+        map.setMaxZoomLevel(style == STYLE_FRESH ? 14.0 : style == STYLE_GOOGLE ? 20.5 : 19.5);
         if (style == STYLE_SCHEME) {
             map.setTileSource(TileSourceFactory.MAPNIK); // CARTO теперь требует ключ
             attr.setText("© OpenStreetMap");
@@ -728,6 +798,20 @@ public class MapActivity extends Activity {
         } else if (style == STYLE_RELIEF) {
             map.setTileSource(RELIEF);
             attr.setText("© OpenTopoMap (CC-BY-SA), © OpenStreetMap, SRTM");
+        } else if (style == STYLE_GOOGLE || style == STYLE_FRESH) {
+            map.setTileSource(style == STYLE_GOOGLE ? GOOGLE : freshSource());
+            if (!ru) {
+                MapTileProviderBasic prov = new MapTileProviderBasic(getApplicationContext(), LABELS);
+                esriLabels = new TilesOverlay(prov, getApplicationContext());
+                esriLabels.setLoadingBackgroundColor(Color.TRANSPARENT);
+                esriLabels.setLoadingLineColor(Color.TRANSPARENT);
+                map.getOverlays().add(2, esriLabels);
+            }
+            if (style == STYLE_GOOGLE) attr.setText("Снимки © Google");
+            else {
+                attr.setText("Sentinel-2 / Landsat (NASA HLS) · снимок " + fmtDay(prefs.getString("s2Day", "")) + " · 30 м");
+                if (prefs.getString("s2Day", "").isEmpty() || System.currentTimeMillis() - prefs.getLong("s2At", 0) > 6 * 3600_000L) findFreshDays(null);
+            }
         } else {
             map.setTileSource(satSource());
             if (!ru) {
@@ -747,6 +831,102 @@ public class MapActivity extends Activity {
         placesOverlay.setEnabled(ru && style != STYLE_SCHEME); // на схеме свои подписи уже есть
         updateCoords();
         map.invalidate();
+    }
+
+    private static String fmtDay(String iso) {
+        if (iso == null || iso.length() < 10) return "ищу последний";
+        return iso.substring(8, 10) + "." + iso.substring(5, 7) + "." + iso.substring(0, 4);
+    }
+
+    /** Дни с ясным снимком над центром карты (за последние 40 дней). done получает список ISO-дат. */
+    private void findFreshDays(java.util.function.Consumer<List<String>> done) {
+        if (offline()) return;
+        GeoPoint c = (GeoPoint) map.getMapCenter();
+        final double la = c.getLatitude(), lo = c.getLongitude();
+        new Thread(() -> {
+            List<String> ok = new ArrayList<>();
+            int z = 11, n = 1 << z;
+            int x = (int) Math.floor((lo + 180) / 360 * n);
+            double r = Math.toRadians(la);
+            int y = (int) Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n);
+            SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+            for (int d = 2; d <= 40 && ok.size() < 10; d++) {
+                String day = f.format(new Date(System.currentTimeMillis() - d * 86400_000L));
+                try {
+                    HttpURLConnection con = (HttpURLConnection) new URL(new FreshSource(day).getTileURLString(MapTileIndex.getTileIndex(z, x, y))).openConnection();
+                    con.setConnectTimeout(6000);
+                    con.setReadTimeout(8000);
+                    if (con.getResponseCode() != 200) continue;
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    try (InputStream in = con.getInputStream()) {
+                        byte[] buf = new byte[8192];
+                        int k;
+                        while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+                    }
+                    if (bo.size() < 20000) continue; // пустой или почти пустой квадрат — пролёта не было
+                    android.graphics.Bitmap b = android.graphics.BitmapFactory.decodeByteArray(bo.toByteArray(), 0, bo.size());
+                    if (b == null) continue;
+                    // облака: доля очень светлых и прозрачных точек
+                    int bad = 0, tot = 0;
+                    for (int yy = 8; yy < b.getHeight(); yy += 16)
+                        for (int xx = 8; xx < b.getWidth(); xx += 16) {
+                            int px = b.getPixel(xx, yy);
+                            tot++;
+                            if (Color.alpha(px) < 128 || (Color.red(px) + Color.green(px) + Color.blue(px)) / 3 > 200) bad++;
+                        }
+                    if (bad * 100 / Math.max(1, tot) <= 35) ok.add(day);
+                } catch (Exception ignored) {
+                }
+            }
+            runOnUiThread(() -> {
+                if (!ok.isEmpty() && (prefs.getString("s2Day", "").isEmpty() || done == null)) {
+                    String best = ok.get(0);
+                    if (!best.equals(prefs.getString("s2Day", ""))) {
+                        prefs.edit().putString("s2Day", best).putLong("s2At", System.currentTimeMillis()).apply();
+                        if (currentStyle == STYLE_FRESH) applyStyle(STYLE_FRESH);
+                    } else prefs.edit().putLong("s2At", System.currentTimeMillis()).apply();
+                }
+                if (done != null) done.accept(ok);
+            });
+        }).start();
+    }
+
+    private void showFreshDays() {
+        sheet("День снимка");
+        TextView t = new TextView(this);
+        t.setText("Ищу ясные дни над центром карты…");
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setTextSize(13);
+        t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(8));
+        sheetContent.addView(t);
+        final LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        sheetContent.addView(list);
+        findFreshDays(days -> {
+            if (!sheetOpen()) return;
+            t.setText(days.isEmpty() ? "За 40 дней ясных снимков над этим местом не нашлось." : "Ясные снимки над этим местом, свежие сверху:");
+            LinearLayout keep = sheetContent;
+            sheetContent = list;
+            String cur = prefs.getString("s2Day", "");
+            for (String d : days) {
+                long ago = (System.currentTimeMillis() - parseDay(d)) / 86400_000L;
+                hRow(hIcon(d.equals(cur) ? R.drawable.ic_check : R.drawable.ic_refresh, d.equals(cur) ? getColor(R.color.hud_accent) : getColor(R.color.hud_text), 22),
+                        fmtDay(d), ago + " дн. назад", null, v -> {
+                            prefs.edit().putString("s2Day", d).putLong("s2At", System.currentTimeMillis()).apply();
+                            applyStyle(STYLE_FRESH);
+                            closeSheet();
+                        });
+            }
+            sheetContent = keep;
+        });
+    }
+
+    private static long parseDay(String iso) {
+        try {
+            return new SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(iso).getTime();
+        } catch (Exception e) {
+            return System.currentTimeMillis();
+        }
     }
 
     // ================= Панели в своём стиле (вместо стандартных окон) =================
@@ -1031,11 +1211,17 @@ public class MapActivity extends Activity {
         hSection("ПОДЛОЖКА");
         LinearLayout seg = new LinearLayout(this);
         seg.setOrientation(LinearLayout.HORIZONTAL);
-        final String[] names = {"Спутник", "Рельеф", "Топо", "Схема"};
-        final int[] idx = {STYLE_SAT, STYLE_RELIEF, STYLE_TOPO, STYLE_SCHEME};
-        final int[] icons = {R.drawable.ic_layers, R.drawable.ic_mountain, R.drawable.ic_lbs, R.drawable.ic_grid};
+        final String[] names = {"Esri", "Google", "Свежий S2", "Рельеф", "Топо", "Схема"};
+        final int[] idx = {STYLE_SAT, STYLE_GOOGLE, STYLE_FRESH, STYLE_RELIEF, STYLE_TOPO, STYLE_SCHEME};
+        final int[] icons = {R.drawable.ic_layers, R.drawable.ic_layers, R.drawable.ic_refresh, R.drawable.ic_mountain, R.drawable.ic_lbs, R.drawable.ic_grid};
         final List<View> cards = new ArrayList<>();
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < names.length; i++) {
+            if (i == 3) {
+                sheetContent.addView(seg);
+                seg = new LinearLayout(this);
+                seg.setOrientation(LinearLayout.HORIZONTAL);
+                seg.setPadding(0, (int) dp(8), 0, 0);
+            }
             final int st = idx[i];
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
@@ -1062,7 +1248,7 @@ public class MapActivity extends Activity {
             card.addView(t, tl);
             card.setTag(st);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-            if (i < 3) lp.setMarginEnd((int) dp(8));
+            if (i % 3 < 2) lp.setMarginEnd((int) dp(8));
             card.setOnClickListener(v -> {
                 applyStyle(st);
                 for (View c : cards) styleLayerCard(c, (int) c.getTag() == currentStyle);
@@ -1075,6 +1261,20 @@ public class MapActivity extends Activity {
         }
         sheetContent.addView(seg);
 
+        if (currentStyle == STYLE_FRESH) {
+            LinearLayout box = layerBox();
+            layerLink(box, R.drawable.ic_refresh, "День снимка", fmtDay(prefs.getString("s2Day", "")), v -> showFreshDays());
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            bl.topMargin = (int) dp(10);
+            sheetContent.addView(box, bl);
+            TextView n2 = new TextView(this);
+            n2.setText("Снимки Sentinel-2 и Landsat с задержкой около 5 дней. Видны поля, посадки, гари, свежие изменения; "
+                    + "дома и техника не видны (30 м на точку). Облачные дни пропускаю.");
+            n2.setTextColor(getColor(R.color.hud_text2));
+            n2.setTextSize(12);
+            n2.setPadding((int) dp(4), (int) dp(8), (int) dp(4), 0);
+            sheetContent.addView(n2);
+        }
         if (currentStyle == STYLE_SAT) {
             LinearLayout box = layerBox();
             layerLink(box, R.drawable.ic_refresh, "Дата снимка",
@@ -1195,12 +1395,12 @@ public class MapActivity extends Activity {
     /** Миниатюра подложки: квадрат z13 вокруг центра карты. */
     private void loadThumb(int style, ImageView img) {
         GeoPoint c = (GeoPoint) map.getMapCenter();
-        int z = style == STYLE_RELIEF ? 13 : 14, n = 1 << z;
+        int z = style == STYLE_RELIEF ? 13 : style == STYLE_FRESH ? 11 : 14, n = 1 << z;
         int x = (int) Math.floor((c.getLongitude() + 180) / 360 * n);
         double r = Math.toRadians(c.getLatitude());
         int y = (int) Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n);
         OnlineTileSourceBase src = style == STYLE_SAT ? satSource() : style == STYLE_TOPO ? TOPO : style == STYLE_RELIEF ? RELIEF
-                : TileSourceFactory.MAPNIK;
+                : style == STYLE_GOOGLE ? GOOGLE : style == STYLE_FRESH ? freshSource() : TileSourceFactory.MAPNIK;
         final String url = src.getTileURLString(MapTileIndex.getTileIndex(z, x, y));
         android.graphics.Bitmap have = thumbs.get(url);
         if (have != null) { setThumb(img, have); return; }
@@ -1430,10 +1630,10 @@ public class MapActivity extends Activity {
         if (currentStyle == STYLE_SAT) queryImageryDate(t -> sat.setText(t.replace("Спутник (центр карты): ", "").replace("Спутник: ", "")));
 
         hSection("ЛЕГЕНДА");
-        legendRow(0xFFE61414, false, "ЛБС", "линия боевого соприкосновения");
-        legendRow(0xFFFFD200, false, "Изменения", "новое положение линии");
-        legendRow(0xFF8C8C8C, false, "Прежнее положение", "до последнего снимка");
-        legendRow(0x8C464646, true, "Серая зона", "статус неизвестен");
+        legendRow(0xFFFF2D2D, false, "ЛБС", "линия боевого соприкосновения");
+        legendRow(0xFFFFC400, false, "Изменения", "новое положение линии");
+        legendRow(0xFFBEBEBE, false, "Прежнее положение", "пунктир — до последнего снимка");
+        legendRow(0x8C464646, true, "Серая зона", "штриховка — статус неизвестен");
         legendRow(0xFF00E5FF, false, "Маршруты", "свои, цвет задаётся");
 
         hSection("ПОДСКАЗКИ");
@@ -3756,7 +3956,7 @@ public class MapActivity extends Activity {
     }
 
     private int tileBytes() {
-        return currentStyle == STYLE_SAT ? 20000 : currentStyle == STYLE_TOPO ? 16000 : 9000;
+        return currentStyle == STYLE_SAT || currentStyle == STYLE_GOOGLE ? 20000 : currentStyle == STYLE_FRESH ? 60000 : currentStyle == STYLE_TOPO ? 16000 : 9000;
     }
 
     private void chooseDownload() {
