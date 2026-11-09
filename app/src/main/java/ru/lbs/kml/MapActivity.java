@@ -1311,7 +1311,8 @@ public class MapActivity extends Activity {
         sheet("О приложении");
         hChipRow(hChip("Проверить обновления", R.drawable.ic_refresh, true, v -> checkUpdatesNow()),
                 hChip("Инструкция", R.drawable.ic_info, false, v -> showGuide(-1)));
-        hChipRow(hChip("История версий", R.drawable.ic_table, false, v -> showVersions()));
+        hChipRow(hChip("История версий", R.drawable.ic_table, false, v -> showVersions()),
+                hChip("Канал в Telegram", R.drawable.ic_send, false, v -> openTgChannel()));
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -8500,10 +8501,22 @@ public class MapActivity extends Activity {
                     "Чат шифруется на телефоне. Сервер видит только зашифрованные данные."}},
     };
 
+    static final String TG_CHANNEL = "https://t.me/+m4r3-5RMTBA0ZmE6";
+
+    /** Канал Рубежа в Telegram: новости, обновления, вопросы в комментариях. */
+    private void openTgChannel() {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(TG_CHANNEL)));
+        } catch (Exception e) {
+            copy(TG_CHANNEL, "Ссылка на канал скопирована");
+        }
+    }
+
     /** Инструкция: короткие разделы, открываются по нажатию. open — какой раздел раскрыть (-1 — ни одного). */
     private void showGuide(int open) {
         sheet("Инструкция");
-        if (open < 0) hChipRow(hChip("О карте и легенда", R.drawable.ic_info, false, v -> showInfo()));
+        if (open < 0) hChipRow(hChip("О карте и легенда", R.drawable.ic_info, false, v -> showInfo()),
+                hChip("Вопросы — в Telegram", R.drawable.ic_send, false, v -> openTgChannel()));
         final List<View> bodies = new ArrayList<>();
         for (int i = 0; i < GUIDE.length; i++) {
             Object[] g = GUIDE[i];

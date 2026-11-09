@@ -30,6 +30,7 @@ ol{color:var(--tx2);font-size:14px;padding-left:20px}li{margin:4px 0}.m{color:va
 <li>Дождитесь, пока администратор группы примет заявку.</li>
 </ol>
 <p class="m">Переписка в группе шифруется на телефонах участников.</p>
+<a class="b" href="https://t.me/+m4r3-5RMTBA0ZmE6">Канал Рубежа в Telegram</a>
 </div><script>
 var h=location.hash.replace(/^#/,''),q='s='+encodeURIComponent(location.origin)+(h?'&'+h:''),inv='rubezh2://join?'+q;
 var n=(h.match(/(?:^|&)n=([^&]*)/)||[])[1];try{n=decodeURIComponent(n||'')}catch(e){}
