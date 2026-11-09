@@ -1448,15 +1448,53 @@ final class ChatClient {
         });
     }
 
+    /** Найти приглашение в тексте: rubezh2://join?… или ссылка http://сервер/join#… (в т.ч. внутри сообщения). */
+    static String normalizeInvite(String s) {
+        if (s == null) return null;
+        int i = s.indexOf("rubezh2://join?");
+        if (i >= 0) return s.substring(i).split("\\s")[0];
+        if (s.trim().startsWith("rubezh://join?")) return s.trim();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(https?://[^\\s/#]+)/join#(\\S+)").matcher(s);
+        if (m.find()) {
+            try {
+                return "rubezh2://join?s=" + URLEncoder.encode(m.group(1), "UTF-8") + "&" + m.group(2);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
     static boolean isInvite(String s) {
-        return s != null && (s.trim().startsWith("rubezh2://join?") || s.trim().startsWith("rubezh://join?"));
+        return normalizeInvite(s) != null;
+    }
+
+    /** Ссылка для мессенджеров: http://сервер/join#r=…&c=…&n=… (страница сама откроет приложение). */
+    static String inviteLink(String inv) {
+        String n = normalizeInvite(inv);
+        if (n == null || !n.startsWith("rubezh2://join?")) return null;
+        String srv = null;
+        StringBuilder rest = new StringBuilder();
+        for (String part : n.substring("rubezh2://join?".length()).split("&")) {
+            if (part.startsWith("s=")) {
+                try {
+                    srv = URLDecoder.decode(part.substring(2), "UTF-8");
+                } catch (Exception ignored) {
+                }
+            } else rest.append(rest.length() > 0 ? "&" : "").append(part);
+        }
+        if (srv == null) return null;
+        if (srv.startsWith("https://")) srv = "http://" + srv.substring(8); // браузер не знает наш сертификат
+        while (srv.endsWith("/")) srv = srv.substring(0, srv.length() - 1);
+        return srv + "/join#" + rest;
     }
 
     /** Вступить по приглашению: заявка уходит администратору. */
     void join(String inv, Runnable done, Consumer<String> fail) {
         bg(() -> {
             try {
-                String t = inv.trim();
+                String t = normalizeInvite(inv);
+                if (t == null) throw new Exception("не похоже на приглашение");
                 if (t.startsWith("rubezh://")) throw new Exception("это приглашение в старую группу — попросите новое");
                 String q = t.substring("rubezh2://join?".length());
                 String s = null, r = null, c = null, n = "Группа", fp = "";

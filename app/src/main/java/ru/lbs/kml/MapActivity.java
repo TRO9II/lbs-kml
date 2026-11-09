@@ -230,8 +230,8 @@ public class MapActivity extends Activity {
         refreshGroupMap();
         groupPtsOverlay.setListener((hits, e, mv) -> tapPoints(new ArrayList<>(), hits));
         if (prefs.getBoolean("locOn", false) && hasLocPerm()) startLocation(false);
-        checkUpdates();
         maybeShowWhatsNew();
+        map.postDelayed(() -> checkUpdatesOnStart(), 2500);
         if (savedInstanceState == null) handleViewIntent(getIntent());
         if (savedInstanceState == null) map.post(() -> handleGroupIntent(getIntent()));
 
@@ -731,7 +731,10 @@ public class MapActivity extends Activity {
 
     private View chatHeader;
 
+    private boolean sheetReplaced;
+
     private void sheet(String title) {
+        sheetReplaced = true;
         setSheetFull(false);
         if (chatHeader != null) {
             ((ViewGroup) chatHeader.getParent()).removeView(chatHeader);
@@ -1308,6 +1311,7 @@ public class MapActivity extends Activity {
         sheet("О приложении");
         hChipRow(hChip("Проверить обновления", R.drawable.ic_refresh, true, v -> checkUpdatesNow()),
                 hChip("Инструкция", R.drawable.ic_info, false, v -> showGuide(-1)));
+        hChipRow(hChip("История версий", R.drawable.ic_table, false, v -> showVersions()));
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -1528,7 +1532,7 @@ public class MapActivity extends Activity {
                 String q = searchBox.getText().toString().trim();
                 CoordParse.Result cr = q.isEmpty() ? null : CoordParse.parse(q);
                 List<Integer> hit = places != null ? places.search(q, 1) : new ArrayList<>();
-                if (cr != null) goTo(cr.lat, cr.lon, "Координаты", String.format(Locale.US, "%.6f, %.6f", cr.lat, cr.lon), 17.0);
+                if (cr != null) searchGo("Координаты", String.format(Locale.US, "%.6f, %.6f", cr.lat, cr.lon), cr.lat, cr.lon, 17.0);
                 else if (!hit.isEmpty()) showPlace(hit.get(0));
                 else if (!q.isEmpty()) searchOnline(q);
                 return true;
@@ -1570,6 +1574,7 @@ public class MapActivity extends Activity {
         showResults(true);
         if (q.isEmpty()) {
             // пустой запрос — быстрый переход по направлениям
+            addRecentSearches();
             addHeader("НАПРАВЛЕНИЯ");
             for (int i = 0; i < NAMES.length; i++) {
                 final int idx = i;
@@ -1585,8 +1590,8 @@ public class MapActivity extends Activity {
             addHeader("КООРДИНАТЫ · " + cr.kind.toUpperCase(Locale.ROOT));
             final double clat = cr.lat, clon = cr.lon;
             addResultRow(String.format(Locale.US, "Перейти: %.6f, %.6f", clat, clon),
-                    "СК-42: " + Sk42.format(clat, clon), v -> goTo(clat, clon, "Координаты",
-                            String.format(Locale.US, "%.6f, %.6f", clat, clon), 17.0));
+                    "СК-42: " + Sk42.format(clat, clon), v -> searchGo("Координаты",
+                            String.format(Locale.US, "%.6f, %.6f", clat, clon), clat, clon, 17.0));
         }
         if (places == null) {
             addResultRow("Загружаю список…", "", null);
@@ -1638,7 +1643,45 @@ public class MapActivity extends Activity {
     }
 
     private void showPlace(int i) {
-        goTo(places.lat[i], places.lon[i], places.name[i], places.subtitle(i), places.rank[i] <= 1 ? 14.0 : 16.0);
+        searchGo(places.name[i], places.subtitle(i), places.lat[i], places.lon[i], places.rank[i] <= 1 ? 14.0 : 16.0);
+    }
+
+    /** Переход из поиска: запомнить в «Недавних». */
+    private void searchGo(String name, String sub, double lat, double lon, double zoom) {
+        try {
+            JSONArray old = new JSONArray(prefs.getString("recentSearch", "[]")), out = new JSONArray();
+            out.put(new JSONObject().put("n", name).put("s", sub == null ? "" : sub).put("la", lat).put("lo", lon).put("z", zoom));
+            for (int k = 0; k < old.length() && out.length() < 8; k++) {
+                JSONObject o = old.getJSONObject(k);
+                if (o.optString("n").equals(name) && Math.abs(o.optDouble("la") - lat) < 1e-5) continue;
+                out.put(o);
+            }
+            prefs.edit().putString("recentSearch", out.toString()).apply();
+        } catch (Exception ignored) {
+        }
+        goTo(lat, lon, name, sub, zoom);
+    }
+
+    private void addRecentSearches() {
+        JSONArray a;
+        try {
+            a = new JSONArray(prefs.getString("recentSearch", "[]"));
+        } catch (Exception e) {
+            return;
+        }
+        if (a.length() == 0) return;
+        addHeader("НЕДАВНИЕ");
+        for (int k = 0; k < a.length(); k++) {
+            JSONObject o = a.optJSONObject(k);
+            if (o == null) continue;
+            final String n = o.optString("n"), sub = o.optString("s");
+            final double la = o.optDouble("la"), lo = o.optDouble("lo"), z = o.optDouble("z", 16);
+            addResultRow("🕓  " + n, sub, v -> searchGo(n, sub, la, lo, z));
+        }
+        addResultRow("Очистить историю поиска", "", v -> {
+            prefs.edit().remove("recentSearch").apply();
+            runLocalSearch();
+        });
     }
 
     private void goTo(double lat, double lon, String title, String sub, double zoom) {
@@ -1691,7 +1734,7 @@ public class MapActivity extends Activity {
                 for (String[] r : out) {
                     addResultRow(r[0], r[1], v -> {
                         try {
-                            goTo(Double.parseDouble(r[2]), Double.parseDouble(r[3]), r[0], r[1], 16.0);
+                            searchGo(r[0], r[1], Double.parseDouble(r[2]), Double.parseDouble(r[3]), 16.0);
                         } catch (NumberFormatException ignored) {
                         }
                     });
@@ -3072,7 +3115,7 @@ public class MapActivity extends Activity {
         findViewById(R.id.tileBackup).setOnClickListener(v -> { openMenu(false); makeBackup(); });
         findViewById(R.id.tileRestore).setOnClickListener(v -> { openMenu(false); pickFile(REQ_RESTORE); });
         findViewById(R.id.updateRow).setOnClickListener(v -> downloadUpdate());
-        findViewById(R.id.tileUpdate).setOnClickListener(v -> { openMenu(false); checkUpdatesNow(); });
+        findViewById(R.id.tileUpdate).setOnClickListener(v -> { openMenu(false); showVersions(); });
         findViewById(R.id.pinRow).setOnClickListener(v -> { openMenu(false); showPinSettings(); });
         updatePinRow();
         Switch swOff = findViewById(R.id.swOffline), swNight = findViewById(R.id.swNight), swTrack = findViewById(R.id.swTrack);
@@ -4239,6 +4282,30 @@ public class MapActivity extends Activity {
         }).start();
     }
 
+    /** При каждом запуске: через пару секунд проверить и, если есть новая версия, показать окно. */
+    private void checkUpdatesOnStart() {
+        if (offline()) return;
+        new Thread(() -> {
+            try {
+                JSONObject o = new JSONObject(httpGet("https://api.github.com/repos/TRO9II/lbs-kml/releases/tags/latest"));
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("v(\\d+(?:\\.\\d+)+)")
+                        .matcher(o.optString("name", "") + " " + o.optString("body", ""));
+                String ver = m.find() ? m.group(1) : "";
+                prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).putString("updVer", ver)
+                        .putString("updNotes", notesOf(o.optString("body", ""))).apply();
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    showUpdateRow();
+                    if (!updateAvailable()) return;
+                    boolean busy = sheetOpen() || menuOpen() || findViewById(R.id.lockView).getVisibility() == View.VISIBLE;
+                    if (!busy) downloadUpdate();
+                    else Toast.makeText(this, "Вышла новая версия v" + ver + " — меню → «Обновления»", Toast.LENGTH_LONG).show();
+                });
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
     private static int cmpVer(String a, String b) {
         String[] x = a.split("\\."), y = b.split("\\.");
         for (int i = 0; i < Math.max(x.length, y.length); i++) {
@@ -4443,7 +4510,13 @@ public class MapActivity extends Activity {
     }
 
     private void handleViewIntent(Intent i) {
-        if (i != null && Intent.ACTION_VIEW.equals(i.getAction()) && i.getData() != null) importFrom(i.getData());
+        if (i == null || !Intent.ACTION_VIEW.equals(i.getAction()) || i.getData() == null) return;
+        if ("rubezh2".equals(i.getData().getScheme())) {
+            final String inv = i.getData().toString();
+            map.postDelayed(() -> joinInvite(inv), 400); // ссылка-приглашение из мессенджера
+            return;
+        }
+        importFrom(i.getData());
     }
 
     @Override
@@ -5049,8 +5122,9 @@ public class MapActivity extends Activity {
         lp.topMargin = (int) dp(6);
         t.addView(tv, lp);
         t.setOnClickListener(v -> {
-            closeSheet();
+            sheetReplaced = false;
             action.run();
+            if (!sheetReplaced) closeSheet(); // инструмент на карте — убрать окно; новое окно — оставить
         });
         return t;
     }
@@ -6993,9 +7067,26 @@ public class MapActivity extends Activity {
             n.setTextSize(12.5f);
             n.setPadding((int) dp(4), (int) dp(6), (int) dp(4), 0);
             sheetContent.addView(n);
-            hChipRow(hChip("Скопировать текстом", R.drawable.ic_share, false, x -> copy(inv, "Приглашение скопировано")),
-                    hChip("Участники", R.drawable.ic_my_location, true, x -> showPeople()));
+            final String link = ChatClient.inviteLink(inv);
+            if (link != null) hChipRow(hChip("Отправить ссылку", R.drawable.ic_share, true, x -> shareInvite(link, (int) hours[0])));
+            hChipRow(hChip("Скопировать текстом", R.drawable.ic_save, false, x -> copy(inv, "Приглашение скопировано")),
+                    hChip("Участники", R.drawable.ic_my_location, false, x -> showPeople()));
         }, err -> Toast.makeText(this, "Не удалось: " + err, Toast.LENGTH_LONG).show()));
+    }
+
+    /** Ссылка-приглашение в мессенджер: откроет Рубеж, а если его нет — предложит скачать. */
+    private void shareInvite(String link, int hours) {
+        String text = "Приглашение в группу «" + chat.groupName() + "» в приложении Рубеж:\n" + link
+                + "\n\nНет приложения — на странице по ссылке есть кнопка «Скачать». Ссылка действует "
+                + (hours >= 168 ? "7 дней" : hours >= 24 ? "сутки" : "час") + ".";
+        Intent i = new Intent(Intent.ACTION_SEND);
+        i.setType("text/plain");
+        i.putExtra(Intent.EXTRA_TEXT, text);
+        try {
+            startActivity(Intent.createChooser(i, "Отправить приглашение"));
+        } catch (Exception e) {
+            copy(text, "Ссылка скопирована");
+        }
     }
 
     private void loadInvites(LinearLayout list, String revoke) {
@@ -9134,6 +9225,48 @@ public class MapActivity extends Activity {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /** Все версии и что в них сделано (из встроенного списка изменений). */
+    private void showVersions() {
+        String mine = "";
+        try {
+            mine = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+        }
+        sheet("Обновления");
+        LinearLayout card = hCard();
+        addKV(card, "Установлена", "v" + mine);
+        String av = prefs.getString("updVer", "");
+        addKV(card, "Последняя", av.isEmpty() ? "не проверялась" : "v" + av + (updateAvailable() ? " — можно обновить" : " — у вас она"));
+        sheetContent.addView(card);
+        hChipRow(updateAvailable() ? hChip("Обновить до v" + av, R.drawable.ic_download, true, v -> downloadUpdate())
+                : hChip("Проверить обновления", R.drawable.ic_refresh, true, v -> checkUpdatesNow()));
+        String all;
+        try (InputStream in = getAssets().open("changes.txt")) {
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int k;
+            while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+            all = new String(bo.toByteArray(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            all = "";
+        }
+        String ver = null;
+        StringBuilder sb = new StringBuilder();
+        List<String[]> secs = new ArrayList<>();
+        for (String l : (all + "\n## end").split("\n")) {
+            if (l.startsWith("## ")) {
+                if (ver != null && sb.length() > 0) secs.add(new String[]{ver, sb.toString().trim()});
+                ver = l.substring(3).trim();
+                sb.setLength(0);
+            } else if (l.trim().startsWith("- ")) sb.append(l.trim().substring(2)).append('\n');
+        }
+        for (String[] sec : secs) {
+            hSection("ВЕРСИЯ " + sec[0] + (sec[0].equals(mine) ? " · УСТАНОВЛЕНА" : ""));
+            changeList(sec[1]);
+        }
+        if (secs.isEmpty()) emptyState(R.drawable.ic_table, "Список изменений пуст", "Он появится в следующей версии.");
     }
 
     private void changeList(String notes) {
