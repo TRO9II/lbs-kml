@@ -10047,6 +10047,40 @@ public class MapActivity extends Activity {
                 vAction(R.drawable.ic_add, "В точки", false, v -> editPoint(null, c[0], c[1], nm)),
                 vAction(R.drawable.ic_share, "Текстом", false, v -> sharePointText(nm, c[0], c[1])),
                 chat != null && chat.active() ? vAction(R.drawable.ic_chat, "В чат", false, v -> { sendPoint(nm, c[0], c[1]); openChat(); }) : null);
+        hChipRow(hChip("Исправить название", R.drawable.ic_sketch, false, v -> {
+                    final EditText in = hInput("Название", f.name);
+                    in.setSingleLine(true);
+                    android.widget.FrameLayout fr = new android.widget.FrameLayout(this);
+                    fr.setPadding((int) dp(20), (int) dp(8), (int) dp(20), 0);
+                    fr.addView(in);
+                    new AlertDialog.Builder(this).setTitle("Название").setView(fr)
+                            .setPositiveButton("Сохранить", (dd, w) -> {
+                                f.name = in.getText().toString().trim();
+                                f.note = "";
+                                saveLayerAsync(l);
+                                map.invalidate();
+                                layerFeatureInfo(l, f);
+                            })
+                            .setNegativeButton("Отмена", null).show();
+                }),
+                hChip("Убрать из слоя", R.drawable.ic_delete, false, v -> {
+                    if (l.features != null) l.features.remove(f);
+                    l.count = l.features == null ? 0 : l.features.size();
+                    saveLayerAsync(l);
+                    UserLayers.saveList(this, userLayers);
+                    map.invalidate();
+                    closeSheet();
+                }));
+    }
+
+    private void saveLayerAsync(UserLayers.Layer l) {
+        if (l.features == null) return;
+        new Thread(() -> {
+            try {
+                UserLayers.write(this, l);
+            } catch (Exception ignored) {
+            }
+        }).start();
     }
 
     private ChatClient.GObj objFromRoute(Routes.Route r) {
