@@ -1223,6 +1223,17 @@ final class ChatClient {
     }
 
     /** Доверяем только сертификату с отпечатком fp; если fp == null — запоминаем увиденный в seen[0]. */
+    private static String cachedFp;
+    private static javax.net.ssl.SSLSocketFactory cachedFactory;
+
+    private static synchronized javax.net.ssl.SSLSocketFactory pinnedCached(String fp) throws Exception {
+        if (cachedFactory == null || !fp.equals(cachedFp)) {
+            cachedFactory = pinned(fp, null);
+            cachedFp = fp;
+        }
+        return cachedFactory;
+    }
+
     private static javax.net.ssl.SSLSocketFactory pinned(String fp, String[] seen) throws Exception {
         javax.net.ssl.X509TrustManager tm = new javax.net.ssl.X509TrustManager() {
             @Override
@@ -1255,7 +1266,7 @@ final class ChatClient {
         if (fp != null && !fp.isEmpty()) {
             String u = (srv.startsWith("http://") ? "https://" + srv.substring(7) : srv) + pathAndQuery;
             javax.net.ssl.HttpsURLConnection c = (javax.net.ssl.HttpsURLConnection) new URL(u).openConnection();
-            c.setSSLSocketFactory(pinned(fp, null));
+            c.setSSLSocketFactory(pinnedCached(fp)); // один и тот же — соединения переиспользуются
             c.setHostnameVerifier((h, sess) -> true); // проверяем отпечаток, а не имя: у сервера нет домена
             return c;
         }
@@ -1440,6 +1451,7 @@ final class ChatClient {
                 for (Group g : groups()) if (g.room.equals(r)) throw new Exception("вы уже в этой группе");
                 stop();
                 prevJoin = room;
+                joinParked = true;
                 park();
                 load();
                 String id = rnd(8), tok = rnd(16);
@@ -1452,19 +1464,22 @@ final class ChatClient {
                 prefs.edit().putString("c2Role", role).apply();
                 if (fp.isEmpty()) tryTls();
                 prevJoin = "";
+                joinParked = false;
                 ok(done);
             } catch (Exception e) {
-                if (!prevJoin.isEmpty()) {
+                if (joinParked) {
                     wipeLocal();
-                    if (unpark(prevJoin)) { load(); start(); }
-                    prevJoin = "";
+                    if (!prevJoin.isEmpty() && unpark(prevJoin)) { load(); start(); }
                 }
+                prevJoin = "";
+                joinParked = false;
                 err(fail, e);
             }
         });
     }
 
     private volatile String prevJoin = "";
+    private volatile boolean joinParked;
 
     /** Экстренно: выйти из всех групп на телефоне. */
     void leaveAll() {

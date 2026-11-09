@@ -7946,7 +7946,20 @@ public class MapActivity extends Activity {
 
         @Override
         public boolean onTouchEvent(android.view.MotionEvent e) {
-            if (!drag) return e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN && onSwipe != null;
+            if (onSwipe == null) return false;
+            if (!drag) {
+                if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
+                    x0 = e.getRawX();
+                    y0 = e.getRawY();
+                    return true;
+                }
+                if (e.getActionMasked() != android.view.MotionEvent.ACTION_MOVE) return false;
+                float dx = e.getRawX() - x0, dy = e.getRawY() - y0;
+                if (dx < -slop * 1.5f && Math.abs(dx) > Math.abs(dy) * 1.6f) {
+                    drag = true;
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                } else return true;
+            }
             float dx = Math.min(0, e.getRawX() - x0);
             switch (e.getActionMasked()) {
                 case android.view.MotionEvent.ACTION_MOVE:
