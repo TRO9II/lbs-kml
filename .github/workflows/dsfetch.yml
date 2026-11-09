@@ -8,11 +8,20 @@ jobs:
       - run: |
           mkdir out
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-          curl -sS -A "$UA" -o out/new.json -w "%{http_code} %{size_download}\n" https://deepstatemap.live/api/history/1794169351/geojson || true
-          curl -sS -A "$UA" -o out/old.json -w "%{http_code} %{size_download}\n" https://deepstatemap.live/api/history/1792097295/geojson || true
-          curl -sS -A "$UA" -o out/last.json -w "%{http_code} %{size_download}\n" https://deepstatemap.live/api/history/last || true
           curl -sS -A "$UA" -o out/list.json -w "%{http_code} %{size_download}\n" https://deepstatemap.live/api/history/public || true
-          ls -la out; head -c 300 out/new.json
+          python3 - <<'PY'
+          import json,time,calendar,subprocess
+          L=json.load(open('out/list.json'))
+          def ts(x): return calendar.timegm(time.strptime(x['createdAt'][:19],'%Y-%m-%dT%H:%M:%S'))
+          L.sort(key=ts)
+          new=L[-1]; t=ts(new)-30*86400
+          old=[x for x in L if ts(x)<=t][-1]
+          print(new['id'],new['createdAt'],old['id'],old['createdAt'])
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+          for n,x in (('new',new),('old',old)):
+              subprocess.run(['curl','-sS','-A',UA,'-o','out/%s.json'%n,'https://deepstatemap.live/api/history/%d/geojson'%x['id']])
+          PY
+          ls -la out
       - uses: actions/upload-artifact@v4
         with:
           name: ds
