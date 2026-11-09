@@ -32,6 +32,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -3783,40 +3784,167 @@ public class MapActivity extends Activity {
             sheetContent.addView(t);
             return;
         }
-        final BoundingBox bb = map.getBoundingBox();
-        final int zMin = 8;
-        int maxZ = (int) map.getTileProvider().getTileSource().getMaximumZoomLevel();
-        final int[] zMaxes = {15, 16, 17, 18};
-        final String[] detail = {"обзор, дороги", "сёла, посадки", "улицы, дворы", "максимум, дома"};
-        hSection("СКАЧАТЬ ВИДИМУЮ ОБЛАСТЬ");
-        for (int i = 0; i < zMaxes.length; i++) {
-            final int z = Math.min(zMaxes[i], maxZ);
-            if (i > 0 && z == Math.min(zMaxes[i - 1], maxZ)) continue;
-            final int cnt = cm.possibleTilesInArea(bb, zMin, z);
-            boolean tooBig = cnt > MAX_TILES;
-            TextView size = new TextView(this);
-            size.setText(tooBig ? "много" : mb((double) cnt * tileBytes()));
-            size.setTextColor(tooBig ? 0xFFFF8A80 : getColor(R.color.hud_text));
-            size.setTextSize(13.5f);
-            size.setPadding((int) dp(8), 0, (int) dp(8), 0);
-            hRow(hIcon(R.drawable.ic_download, tooBig ? getColor(R.color.hud_text2) : getColor(R.color.hud_accent), 22),
-                    "До уровня " + z, detail[i] + (tooBig ? " · приблизьте карту" : ""), size, v -> {
-                        if (tooBig) {
-                            Toast.makeText(this, "Слишком большая область — приблизьте карту или выберите уровень ниже",
-                                    Toast.LENGTH_LONG).show();
-                            return;
-                        }
-                        closeSheet();
-                        startDownload(cm, bb, zMin, z, cnt);
-                    });
-        }
+        actionRow(vAction(R.drawable.ic_download, "Выбрать участок рамкой", true, v -> { closeSheet(); startAreaPick(cm); }));
         TextView note = new TextView(this);
-        note.setText("Скачанное открывается мгновенно и работает без интернета. Большие районы лучше качать частями.");
+        note.setText("Поставьте рамку на нужный участок: двигайте и приближайте карту под рамкой, тяните углы. "
+                + "Выберите подробность — размер посчитается сразу. Скачанное открывается мгновенно и работает без интернета.");
         note.setTextColor(getColor(R.color.hud_text2));
-        note.setTextSize(12);
+        note.setTextSize(12.5f);
         note.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
         sheetContent.addView(note);
         hChipRow(hChip("Очистить сохранённые карты", R.drawable.ic_delete, false, v -> { closeSheet(); confirmClear(); }));
+    }
+
+    // ---------- выбор участка рамкой ----------
+
+    private AreaFrameView areaFrame;
+    private View areaPanel;
+    private Runnable areaTick;
+
+    private BoundingBox frameBox() {
+        Projection pj = map.getProjection();
+        android.graphics.RectF f = areaFrame.frame;
+        double n = -90, s2 = 90, e = -180, w = 180;
+        float[][] k = {{f.left, f.top}, {f.right, f.top}, {f.right, f.bottom}, {f.left, f.bottom}};
+        for (float[] c : k) {
+            org.osmdroid.api.IGeoPoint g = pj.fromPixels((int) c[0], (int) c[1]);
+            n = Math.max(n, g.getLatitude()); s2 = Math.min(s2, g.getLatitude());
+            e = Math.max(e, g.getLongitude()); w = Math.min(w, g.getLongitude());
+        }
+        return new BoundingBox(n, e, s2, w);
+    }
+
+    private void startAreaPick(CacheManager cm) {
+        FrameLayout root = findViewById(R.id.mapRoot);
+        findViewById(R.id.dock).setVisibility(View.GONE);
+        findViewById(R.id.rightCol).setVisibility(View.GONE);
+        findViewById(R.id.centerMark).setVisibility(View.GONE);
+        areaFrame = new AreaFrameView(this);
+        root.addView(areaFrame, 1, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        LinearLayout p = new LinearLayout(this);
+        p.setOrientation(LinearLayout.VERTICAL);
+        p.setBackgroundResource(R.drawable.bg_sheet);
+        p.setElevation(dp(12));
+        p.setClickable(true);
+        p.setPadding((int) dp(18), (int) dp(16), (int) dp(18), (int) dp(18) + navBarInset());
+        TextView title = new TextView(this);
+        title.setText("Участок для офлайна");
+        title.setTextSize(18);
+        title.setTextColor(getColor(R.color.hud_text));
+        title.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+        p.addView(title);
+        final TextView info = new TextView(this);
+        info.setTextSize(13.5f);
+        info.setTextColor(getColor(R.color.hud_text2));
+        info.setPadding(0, (int) dp(4), 0, (int) dp(10));
+        p.addView(info);
+        final int maxZ = (int) map.getTileProvider().getTileSource().getMaximumZoomLevel();
+        final int[] zs = {14, 15, 16, 17, 18};
+        final String[] zn = {"обзор", "сёла", "посадки", "улицы", "дома"};
+        final int[] zSel = {Math.min(prefs.getInt("dlZ", 16), maxZ)};
+        LinearLayout chips = new LinearLayout(this);
+        final List<TextView> cl = new ArrayList<>();
+        final Runnable[] update = new Runnable[1];
+        for (int i = 0; i < zs.length; i++) {
+            final int z = Math.min(zs[i], maxZ);
+            if (i > 0 && z == Math.min(zs[i - 1], maxZ)) continue;
+            TextView c = hChip(zn[i], 0, z == zSel[0], null);
+            c.setTag(z);
+            c.setOnClickListener(v -> {
+                zSel[0] = z;
+                prefs.edit().putInt("dlZ", z).apply();
+                for (TextView t : cl) {
+                    boolean on = (int) t.getTag() == z;
+                    t.setBackgroundResource(on ? R.drawable.bg_accent_btn : R.drawable.bg_sheet_chip);
+                    t.setTextColor(on ? Color.WHITE : getColor(R.color.hud_text));
+                }
+                update[0].run();
+            });
+            cl.add(c);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(38), 1);
+            lp.setMarginEnd((int) dp(6));
+            chips.addView(c, lp);
+        }
+        p.addView(chips);
+        LinearLayout btns = new LinearLayout(this);
+        btns.setPadding(0, (int) dp(12), 0, 0);
+        TextView cancel = hChip("Отмена", 0, false, v -> stopAreaPick());
+        final TextView go = hChip("Скачать", R.drawable.ic_download, true, null);
+        LinearLayout.LayoutParams lc = new LinearLayout.LayoutParams(0, (int) dp(48), 1);
+        lc.setMarginEnd((int) dp(10));
+        btns.addView(cancel, lc);
+        btns.addView(go, new LinearLayout.LayoutParams(0, (int) dp(48), 1.4f));
+        p.addView(btns);
+        FrameLayout.LayoutParams pl = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.BOTTOM);
+        root.addView(p, pl);
+        areaPanel = p;
+
+        final int[] cnt = {0};
+        final String[] lastKey = {""};
+        update[0] = () -> {
+            if (areaFrame == null) return;
+            BoundingBox bb = frameBox();
+            String key = bb.toString() + zSel[0];
+            if (key.equals(lastKey[0])) return;
+            lastKey[0] = key;
+            int n = cm.possibleTilesInArea(bb, 8, zSel[0]);
+            cnt[0] = n;
+            double w = Geo.inverse(bb.getCenterLatitude(), bb.getLonWest(), bb.getCenterLatitude(), bb.getLonEast())[0];
+            double h = Geo.inverse(bb.getLatSouth(), bb.getCenterLongitude(), bb.getLatNorth(), bb.getCenterLongitude())[0];
+            boolean big = n > MAX_TILES;
+            info.setText(String.format(Locale.US, "%s × %s · %s · ", Geo.dist(w), Geo.dist(h), STYLE_NAMES[currentStyle])
+                    + (big ? "слишком много — уменьшите рамку или подробность" : "≈ " + mb((double) n * tileBytes())));
+            info.setTextColor(big ? 0xFFFF8A80 : getColor(R.color.hud_text2));
+            go.setAlpha(big ? 0.45f : 1f);
+        };
+        go.setOnClickListener(v -> {
+            if (cnt[0] > MAX_TILES) {
+                Toast.makeText(this, "Слишком большой участок — уменьшите рамку или выберите подробность ниже", Toast.LENGTH_LONG).show();
+                return;
+            }
+            BoundingBox bb = frameBox();
+            int z = zSel[0];
+            stopAreaPick();
+            startDownload(cm, bb, 8, z, cnt[0]);
+        });
+        areaFrame.onChange = () -> update[0].run();
+        p.post(() -> {
+            int[] at = new int[2];
+            findViewById(R.id.topBar).getLocationInWindow(at);
+            int[] me = new int[2];
+            areaFrame.getLocationInWindow(me);
+            areaFrame.setLimits(at[1] - me[1] + findViewById(R.id.topBar).getHeight(), p.getTop());
+            areaFrame.requestLayout();
+            areaFrame.invalidate();
+            update[0].run();
+        });
+        areaTick = new Runnable() {
+            @Override
+            public void run() {
+                if (areaFrame == null) return;
+                update[0].run();
+                map.postDelayed(this, 400);
+            }
+        };
+        map.postDelayed(areaTick, 400);
+    }
+
+    private int navBarInset() {
+        android.view.WindowInsets wi = getWindow().getDecorView().getRootWindowInsets();
+        return wi == null ? 0 : wi.getSystemWindowInsetBottom();
+    }
+
+    private void stopAreaPick() {
+        FrameLayout root = findViewById(R.id.mapRoot);
+        if (areaFrame != null) root.removeView(areaFrame);
+        if (areaPanel != null) root.removeView(areaPanel);
+        areaFrame = null;
+        areaPanel = null;
+        if (areaTick != null) map.removeCallbacks(areaTick);
+        findViewById(R.id.dock).setVisibility(View.VISIBLE);
+        findViewById(R.id.rightCol).setVisibility(View.VISIBLE);
+        findViewById(R.id.centerMark).setVisibility(View.VISIBLE);
     }
 
     private void startDownload(CacheManager cm, BoundingBox bb, int zMin, int zMax, int total) {
