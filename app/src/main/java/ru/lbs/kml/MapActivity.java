@@ -114,12 +114,14 @@ public class MapActivity extends Activity {
     private long lbsLoadedAt = -1;
 
     private final FolderOverlay lbsFolder = new FolderOverlay();
+    private final FolderOverlay cmpFolder = new FolderOverlay();
     private GridOverlay gridOverlay;
     private ReticleOverlay reticleOverlay;
     private PlacesOverlay placesOverlay;
     private PointsOverlay pointsOverlay;
     private PathOverlay pathOverlay;
     private GeoOverlay geoOverlay;
+    private SketchOverlay sketch;
     private Places places;
 
     @Override
@@ -171,6 +173,7 @@ public class MapActivity extends Activity {
         });
         map.getOverlays().add(roadsOverlay);
         map.getOverlays().add(lbsFolder);
+        map.getOverlays().add(cmpFolder);
         gridOverlay = new GridOverlay(d);
         map.getOverlays().add(gridOverlay);
         placesOverlay = new PlacesOverlay(d);
@@ -178,7 +181,7 @@ public class MapActivity extends Activity {
             // кнопки и карточки поверх карты
             int[] mapAt = new int[2], at = new int[2];
             mv.getLocationInWindow(mapAt);
-            for (int id : new int[]{R.id.rightCol, R.id.coordCard, R.id.btnSearch, R.id.searchPill, R.id.dock, R.id.targetCard, R.id.navPanel, R.id.offlineChip, R.id.vsChip}) {
+            for (int id : new int[]{R.id.rightCol, R.id.coordCard, R.id.btnSearch, R.id.searchPill, R.id.dock, R.id.targetCard, R.id.navPanel, R.id.offlineChip, R.id.vsChip, R.id.cmpChip}) {
                 View v = findViewById(id);
                 if (v == null || !v.isShown() || v.getWidth() == 0) continue;
                 v.getLocationInWindow(at);
@@ -207,6 +210,9 @@ public class MapActivity extends Activity {
         map.getOverlays().add(myLoc);
         reticleOverlay = new ReticleOverlay(d);
         map.getOverlays().add(reticleOverlay);
+        sketch = new SketchOverlay(d);
+        sketch.load(this);
+        map.getOverlays().add(sketch);
         map.getOverlays().add(new CompassSync());
 
         userPoints = UserPoints.load(this);
@@ -3137,9 +3143,12 @@ public class MapActivity extends Activity {
     private Routes.Route editingRoute;
     private List<Routes.Route> routes = new ArrayList<>();
 
+    private String pendingSign = "";
+
     private void startTool(int which, Routes.Route route) {
         tool = which;
         editingRoute = route;
+        pendingSign = route != null && route.sign != null ? route.sign : "";
         toolPts.clear();
         if (route != null) {
             toolPts.addAll(route.pts);
@@ -3147,6 +3156,7 @@ public class MapActivity extends Activity {
         }
         pathOverlay.setActive(toolPts, which == TOOL_RULER ? getColor(R.color.hud_amber)
                 : route != null ? route.color : which == TOOL_AREA ? Routes.COLORS[3] : Routes.COLORS[0], which == TOOL_AREA);
+        pathOverlay.setActiveSign(pendingSign);
         findViewById(R.id.dock).setVisibility(View.GONE);
         findViewById(R.id.toolPanel).setVisibility(View.VISIBLE);
         findViewById(R.id.toolCross).setVisibility(View.VISIBLE);
@@ -3185,6 +3195,7 @@ public class MapActivity extends Activity {
         roadMode = "";
         toolSteps.clear();
         editingRoute = null;
+        pendingSign = "";
         toolPts.clear();
         pathOverlay.setActive(null, 0);
         findViewById(R.id.dock).setVisibility(View.VISIBLE);
@@ -3373,7 +3384,8 @@ public class MapActivity extends Activity {
     }
 
     private void updateToolTitle() {
-        String base = tool == TOOL_RULER ? "ЛИНЕЙКА" : tool == TOOL_AREA ? "ЗОНА" : "МАРШРУТ";
+        String base = !pendingSign.isEmpty() ? "ЗНАК · " + signName(pendingSign).toUpperCase(new Locale("ru"))
+                : tool == TOOL_RULER ? "ЛИНЕЙКА" : tool == TOOL_AREA ? "ЗОНА" : "МАРШРУТ";
         if (editingRoute != null && tool != TOOL_RULER) base += " · " + editingRoute.name;
         if (!roadMode.isEmpty() && tool != TOOL_AREA) base += roadMode.equals("car") ? " · ПО ДОРОГАМ (АВТО)" : " · ПО ДОРОГАМ (ПЕШКОМ)";
         ((TextView) findViewById(R.id.toolTitle)).setText(base);
@@ -3458,10 +3470,14 @@ public class MapActivity extends Activity {
         }
         int zones = 0;
         for (Routes.Route x : routes) if (x.area) zones++;
-        sheet(isArea ? (editingRoute != null ? "Изменить зону" : "Сохранить зону")
+        final String sign = pendingSign;
+        boolean isSign = !sign.isEmpty();
+        sheet(isSign ? (editingRoute != null ? "Изменить знак" : "Сохранить знак")
+                : isArea ? (editingRoute != null ? "Изменить зону" : "Сохранить зону")
                 : editingRoute != null ? "Изменить маршрут" : "Сохранить маршрут");
-        final EditText name = hInput(isArea ? "Название зоны" : "Название маршрута",
-                editingRoute != null ? editingRoute.name : isArea ? "Зона " + (zones + 1) : "Маршрут " + (routes.size() - zones + 1));
+        final EditText name = hInput(isSign ? "Подпись знака" : isArea ? "Название зоны" : "Название маршрута",
+                editingRoute != null ? editingRoute.name : isSign ? signName(sign)
+                        : isArea ? "Зона " + (zones + 1) : "Маршрут " + (routes.size() - zones + 1));
         name.setSingleLine(true);
         name.setSelectAllOnFocus(true);
         sheetContent.addView(name);
@@ -3480,7 +3496,8 @@ public class MapActivity extends Activity {
         sheetContent.addView(info, il);
 
         hSection("ЦВЕТ ЛИНИИ");
-        final int[] chosen = {editingRoute != null ? editingRoute.color : isArea ? Routes.COLORS[3] : Routes.COLORS[0]};
+        final int[] chosen = {editingRoute != null ? editingRoute.color : isSign ? prefs.getInt("signColor", SIGN_OWN)
+                : isArea ? Routes.COLORS[3] : Routes.COLORS[0]};
         routeColorGrid(chosen, null);
 
         footer("Отмена", "Сохранить", v -> {
@@ -3492,14 +3509,16 @@ public class MapActivity extends Activity {
                 routes.add(r);
             }
             String nm = name.getText().toString().trim();
-            r.name = nm.isEmpty() ? (isArea ? "Зона" : "Маршрут") : nm;
+            r.name = nm.isEmpty() ? (isSign ? signName(sign) : isArea ? "Зона" : "Маршрут") : nm;
             r.color = chosen[0];
             r.area = isArea;
+            r.sign = sign;
             r.pts.clear();
             r.pts.addAll(toolPts);
             r.visible = true;
             saveRoutes();
-            Toast.makeText(this, (isArea ? "Зона «" + r.name + "» сохранена" : "Маршрут «" + r.name + "» сохранён"), Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, isSign ? "Знак «" + r.name + "» сохранён · в группу: «Маршруты» → знак → «На карту группы»"
+                    : (isArea ? "Зона «" + r.name + "» сохранена" : "Маршрут «" + r.name + "» сохранён"), Toast.LENGTH_SHORT).show();
             editingRoute = r;
             closeSheet();
             finishTool();
@@ -3873,12 +3892,17 @@ public class MapActivity extends Activity {
             @Override
             public void onPageFinished(android.webkit.WebView view, String url) {
                 if (lbsRunning) lbsHandler.postDelayed(MapActivity.this::lbsExtract, 1500);
+                else if (cmpStage == 1) lbsHandler.postDelayed(MapActivity.this::cmpListStep, 1500);
             }
         });
     }
 
     private void startLbsUpdate() {
         if (lbsRunning || lbsScript == null) return;
+        if (cmpStage != 0) {
+            Toast.makeText(this, "Идёт сравнение дат ЛБС — подождите", Toast.LENGTH_LONG).show();
+            return;
+        }
         if (offline()) {
             Toast.makeText(this, "Включён режим «Без сети» — выключите его в меню", Toast.LENGTH_LONG).show();
             return;
@@ -4261,6 +4285,10 @@ public class MapActivity extends Activity {
         }
         if (sheetOpen()) {
             closeSheet();
+            return;
+        }
+        if (sketchPanel != null) {
+            stopSketch();
             return;
         }
         if (compareOn()) {
@@ -5857,6 +5885,11 @@ public class MapActivity extends Activity {
                     GeoPoint c = (GeoPoint) map.getMapCenter();
                     editGeo(quickPoint(c.getLatitude(), c.getLongitude(), "НП", "eye"), 0);
                 }));
+        hSection("ОБСТАНОВКА");
+        toolTiles(
+                toolTile(R.drawable.ic_sign_attack, "Тактические знаки", tx, this::showSigns),
+                toolTile(R.drawable.ic_sketch, "Кроки", tx, this::startSketch),
+                toolTile(R.drawable.ic_lbs, "ЛБС: сравнить даты", tx, this::showLbsCompare));
         toolTiles(
                 toolTile(R.drawable.ic_flag, "Цель и поправки", tx, this::showFire),
                 toolTile(R.drawable.ic_compass, "Где я (засечка)", tx, this::showResection),
@@ -8237,6 +8270,10 @@ public class MapActivity extends Activity {
                     r.name = g.name;
                     r.color = g.color == 0 ? 0xFF42A5F5 : g.color;
                     r.area = g.type.equals("area");
+                    if (!g.extra.isEmpty()) try {
+                        r.sign = new JSONObject(g.extra).optString("sign", "");
+                    } catch (Exception ignored) {
+                    }
                     r.pts.addAll(g.pts);
                     groupRoutes.add(r);
                 }
@@ -8869,11 +8906,662 @@ public class MapActivity extends Activity {
         hChipRow(hChip("Назад", R.drawable.ic_back, false, v -> showFire()));
     }
 
+
+    // ================= Тактические знаки =================
+
+    static final int SIGN_OWN = 0xFF2979FF, SIGN_ENEMY = 0xFFFF3D3D;
+    private static final String[] SIGNS = {"attack", "retreat", "front", "obstacle", "region"};
+    private static final String[] SIGN_NAMES = {"Направление удара", "Отход / манёвр", "Рубеж, позиция", "Заграждение", "Район"};
+    private static final int[] SIGN_ICONS = {R.drawable.ic_sign_attack, R.drawable.ic_sign_retreat, R.drawable.ic_sign_front,
+            R.drawable.ic_sign_obstacle, R.drawable.ic_area};
+
+    static String signName(String s) {
+        for (int i = 0; i < SIGNS.length; i++) if (SIGNS[i].equals(s)) return SIGN_NAMES[i];
+        return "Знак";
+    }
+
+    private void showSigns() {
+        sheet("Тактические знаки");
+        final int col = prefs.getInt("signColor", SIGN_OWN);
+        LinearLayout seg = new LinearLayout(this);
+        final List<TextView> bs = new ArrayList<>();
+        final int[] cols = {SIGN_OWN, SIGN_ENEMY};
+        final String[] labels = {"Свои (синий)", "Противник (красный)"};
+        for (int i = 0; i < 2; i++) {
+            final int cc = cols[i];
+            TextView b = new TextView(this);
+            b.setText(labels[i]);
+            b.setTextSize(13.5f);
+            b.setGravity(android.view.Gravity.CENTER);
+            b.setPadding(0, (int) dp(9), 0, (int) dp(9));
+            b.setOnClickListener(v -> {
+                prefs.edit().putInt("signColor", cc).apply();
+                showSigns();
+            });
+            bs.add(b);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            if (i == 0) lp.setMarginEnd((int) dp(6));
+            seg.addView(b, lp);
+            styleSegHud(b, cc == col);
+        }
+        sheetContent.addView(seg);
+        hSection("ЗНАК");
+        View[] row = new View[3];
+        int k = 0;
+        for (int i = 0; i < SIGNS.length; i++) {
+            final String sg = SIGNS[i];
+            row[k++] = toolTile(SIGN_ICONS[i], SIGN_NAMES[i], col, () -> {
+                closeSheet();
+                startTool(sg.equals("region") ? TOOL_AREA : TOOL_ROUTE, null);
+                pendingSign = sg;
+                pathOverlay.setActive(toolPts, col, sg.equals("region"));
+                pathOverlay.setActiveSign(sg);
+                updateToolTitle();
+                map.invalidate();
+                Toast.makeText(this, sg.equals("attack") || sg.equals("retreat")
+                        ? "Ставьте точки от начала к острию стрелки, затем «Сохранить»"
+                        : sg.equals("front") ? "Ставьте точки линии; зубцы — слева по ходу (в сторону противника)"
+                        : "Ставьте точки, затем «Сохранить»", Toast.LENGTH_LONG).show();
+            });
+            if (k == 3 || i == SIGNS.length - 1) {
+                View[] out = new View[k];
+                System.arraycopy(row, 0, out, 0, k);
+                toolTiles(out);
+                k = 0;
+            }
+        }
+        TextView hint = new TextView(this);
+        hint.setText("Знаки сохраняются вместе с маршрутами. Чтобы их увидела группа: «Маршруты» → знак → «На карту группы».");
+        hint.setTextSize(12);
+        hint.setTextColor(getColor(R.color.hud_text2));
+        hint.setPadding((int) dp(4), (int) dp(4), (int) dp(4), 0);
+        sheetContent.addView(hint);
+        boolean any = false;
+        for (Routes.Route r : routes) {
+            if (r.sign == null || r.sign.isEmpty()) continue;
+            if (!any) hSection("МОИ ЗНАКИ");
+            any = true;
+            ImageView ic = hIcon(signIcon(r.sign), r.color, 22);
+            hRow(ic, r.name, signName(r.sign) + " · " + r.pts.size() + " т.", null, v -> routeActions(r));
+        }
+    }
+
+    private static int signIcon(String s) {
+        for (int i = 0; i < SIGNS.length; i++) if (SIGNS[i].equals(s)) return SIGN_ICONS[i];
+        return R.drawable.ic_route;
+    }
+
+
+    // ================= Кроки =================
+
+    private LinearLayout sketchPanel;
+    private static final int[] SKETCH_COLORS = {0xFFFF3D3D, 0xFF2979FF, 0xFF111111, 0xFFFFFFFF, 0xFFFFEA00, 0xFF00C853};
+
+    private void startSketch() {
+        closeSheet();
+        if (tool != TOOL_NONE) stopTool();
+        sketch.drawing = true;
+        sketch.textMode = false;
+        sketch.color = prefs.getInt("sketchColor", SKETCH_COLORS[0]);
+        sketch.width = prefs.getFloat("sketchW", 3.5f);
+        sketch.onText = (la, lo) -> {
+            final EditText in = hInput("Подпись", "");
+            in.setSingleLine(true);
+            android.widget.FrameLayout fr = new android.widget.FrameLayout(this);
+            fr.setPadding((int) dp(20), (int) dp(8), (int) dp(20), 0);
+            fr.addView(in);
+            new AlertDialog.Builder(this)
+                    .setTitle("Подпись на кроки")
+                    .setView(fr)
+                    .setPositiveButton("Поставить", (dd, w) -> {
+                        String t = in.getText().toString().trim();
+                        if (t.isEmpty()) return;
+                        SketchOverlay.Stroke st = new SketchOverlay.Stroke();
+                        st.color = sketch.color;
+                        st.width = sketch.width;
+                        st.text = t;
+                        st.pts.add(new double[]{la, lo});
+                        sketch.strokes.add(st);
+                        sketch.save(this);
+                        map.invalidate();
+                    })
+                    .setNegativeButton("Отмена", null)
+                    .show();
+        };
+        findViewById(R.id.dock).setVisibility(View.GONE);
+        findViewById(R.id.centerMark).setVisibility(View.GONE);
+        buildSketchPanel();
+        Toast.makeText(this, "Рисуйте пальцем. «Двигать» — сдвинуть или приблизить карту", Toast.LENGTH_LONG).show();
+    }
+
+    private void buildSketchPanel() {
+        ViewGroup root = findViewById(android.R.id.content);
+        if (sketchPanel != null) root.removeView(sketchPanel);
+        sketchPanel = new LinearLayout(this);
+        sketchPanel.setOrientation(LinearLayout.VERTICAL);
+        sketchPanel.setPadding((int) dp(10), (int) dp(10), (int) dp(10), (int) dp(10));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(18));
+        bg.setColor(0xF01A1D22);
+        bg.setStroke((int) dp(1), getColor(R.color.hud_line));
+        sketchPanel.setBackground(bg);
+        sketchPanel.setElevation(dp(24));
+        sketchPanel.setClickable(true);
+        // цвета и толщина
+        LinearLayout r1 = new LinearLayout(this);
+        r1.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        for (int col : SKETCH_COLORS) {
+            View sw = new View(this);
+            GradientDrawable g = new GradientDrawable();
+            g.setShape(GradientDrawable.OVAL);
+            g.setColor(col);
+            boolean on = col == sketch.color;
+            g.setStroke((int) dp(on ? 3 : 1), on ? getColor(R.color.hud_accent) : 0xFF555B64);
+            sw.setBackground(g);
+            sw.setOnClickListener(v -> {
+                sketch.color = col;
+                prefs.edit().putInt("sketchColor", col).apply();
+                buildSketchPanel();
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams((int) dp(30), (int) dp(30));
+            lp.setMarginEnd((int) dp(8));
+            r1.addView(sw, lp);
+        }
+        View sp = new View(this);
+        r1.addView(sp, new LinearLayout.LayoutParams(0, 1, 1));
+        float[] ws = {2f, 3.5f, 6f};
+        String[] wl = {"Тонко", "Средне", "Толсто"};
+        int wi = sketch.width <= 2.5f ? 0 : sketch.width <= 4.5f ? 1 : 2;
+        TextView wb = hChip(wl[wi], 0, false, v -> {
+            sketch.width = ws[(wi + 1) % 3];
+            prefs.edit().putFloat("sketchW", sketch.width).apply();
+            buildSketchPanel();
+        });
+        r1.addView(wb, new LinearLayout.LayoutParams((int) dp(84), (int) dp(36)));
+        sketchPanel.addView(r1);
+        // действия
+        LinearLayout r2 = new LinearLayout(this);
+        r2.setPadding(0, (int) dp(8), 0, 0);
+        boolean draw = sketch.drawing && !sketch.textMode;
+        View[] bs = {
+                hChip(draw ? "Рисую" : "Рисовать", R.drawable.ic_sketch, draw, v -> { sketch.drawing = true; sketch.textMode = false; buildSketchPanel(); }),
+                hChip("Двигать", 0, !sketch.drawing, v -> { sketch.drawing = false; sketch.textMode = false; buildSketchPanel(); }),
+                hChip("Текст", 0, sketch.drawing && sketch.textMode, v -> {
+                    sketch.drawing = true;
+                    sketch.textMode = true;
+                    buildSketchPanel();
+                    Toast.makeText(this, "Нажмите на карту — там будет подпись", Toast.LENGTH_SHORT).show();
+                }),
+                hChip("↶", 0, false, v -> {
+                    if (!sketch.strokes.isEmpty()) sketch.strokes.remove(sketch.strokes.size() - 1);
+                    sketch.save(this);
+                    map.invalidate();
+                })};
+        for (int i = 0; i < bs.length; i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(40), i == 3 ? 0.6f : 1);
+            lp.setMarginEnd((int) dp(6));
+            r2.addView(bs[i], lp);
+        }
+        sketchPanel.addView(r2);
+        LinearLayout r3 = new LinearLayout(this);
+        r3.setPadding(0, (int) dp(8), 0, 0);
+        TextView clr = hChip("Стереть всё", R.drawable.ic_delete, false, v -> new AlertDialog.Builder(this)
+                .setTitle("Стереть рисунок?")
+                .setPositiveButton("Стереть", (dd, w) -> { sketch.strokes.clear(); sketch.save(this); map.invalidate(); })
+                .setNegativeButton("Отмена", null)
+                .show());
+        TextView done = hChip("Готово", R.drawable.ic_check, true, v -> finishSketch());
+        LinearLayout.LayoutParams l1 = new LinearLayout.LayoutParams(0, (int) dp(42), 1);
+        l1.setMarginEnd((int) dp(8));
+        r3.addView(clr, l1);
+        r3.addView(done, new LinearLayout.LayoutParams(0, (int) dp(42), 1.3f));
+        sketchPanel.addView(r3);
+        android.widget.FrameLayout.LayoutParams fl = new android.widget.FrameLayout.LayoutParams(-1, -2, android.view.Gravity.BOTTOM);
+        fl.setMargins((int) dp(10), 0, (int) dp(10), (int) dp(14) + navInset());
+        root.addView(sketchPanel, fl);
+    }
+
+    private int navInset() {
+        try {
+            android.view.WindowInsets wi = getWindow().getDecorView().getRootWindowInsets();
+            return wi == null ? 0 : wi.getSystemWindowInsetBottom();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private void stopSketch() {
+        sketch.drawing = false;
+        sketch.textMode = false;
+        sketch.save(this);
+        if (sketchPanel != null) {
+            ((ViewGroup) findViewById(android.R.id.content)).removeView(sketchPanel);
+            sketchPanel = null;
+        }
+        findViewById(R.id.dock).setVisibility(View.VISIBLE);
+        findViewById(R.id.centerMark).setVisibility(View.VISIBLE);
+        map.invalidate();
+    }
+
+    private void finishSketch() {
+        sketch.save(this);
+        if (sketch.strokes.isEmpty()) {
+            stopSketch();
+            return;
+        }
+        stopSketch();
+        sheet("Кроки");
+        TextView t = new TextView(this);
+        t.setText("Картинка — то, что сейчас на экране: карта и ваш рисунок. Рисунок остаётся на карте, пока вы его не сотрёте.");
+        t.setTextSize(12.5f);
+        t.setTextColor(getColor(R.color.hud_text2));
+        sheetContent.addView(t);
+        boolean grp = chat != null && chat.active();
+        actionRow(
+                grp ? vAction(R.drawable.ic_chat, "В чат", true, v -> { closeSheet(); sketchImage(0); }) : null,
+                vAction(R.drawable.ic_share, "Отправить", !grp, v -> { closeSheet(); sketchImage(1); }),
+                vAction(R.drawable.ic_download, "В Загрузки", false, v -> { closeSheet(); sketchImage(2); }));
+        hChipRow(hChip("Дорисовать", R.drawable.ic_sketch, false, v -> startSketch()),
+                hChip("Убрать с карты", R.drawable.ic_delete, false, v -> {
+                    sketch.strokes.clear();
+                    sketch.save(this);
+                    map.invalidate();
+                    closeSheet();
+                }));
+    }
+
+    /** 0 — в чат группы, 1 — отправить через другие приложения, 2 — сохранить в «Загрузки». */
+    private void sketchImage(int where) {
+        map.post(() -> {
+            int w = map.getWidth(), h = map.getHeight();
+            if (w == 0 || h == 0) return;
+            float sc = Math.min(1f, 1600f / Math.max(w, h));
+            android.graphics.Bitmap shot = android.graphics.Bitmap.createBitmap(Math.round(w * sc), Math.round(h * sc), android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas c = new android.graphics.Canvas(shot);
+            c.scale(sc, sc);
+            c.drawColor(0xFFE8E4DC);
+            map.draw(c);
+            // подпись внизу: дата и координаты центра
+            GeoPoint ctr = (GeoPoint) map.getMapCenter();
+            String cap = "Кроки · " + new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.US).format(new Date())
+                    + " · центр " + Sk42.format(ctr.getLatitude(), ctr.getLongitude());
+            Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
+            tp.setTextSize(dp(12));
+            tp.setColor(Color.WHITE);
+            Paint bp = new Paint();
+            bp.setColor(0xC0000000);
+            c.drawRect(0, h - dp(24), w, h, bp);
+            c.drawText(cap, dp(8), h - dp(8), tp);
+            new Thread(() -> {
+                try {
+                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                    int q = 85;
+                    do {
+                        bo.reset();
+                        shot.compress(android.graphics.Bitmap.CompressFormat.JPEG, q, bo);
+                        q -= 10;
+                    } while (where == 0 && bo.size() > 700_000 && q > 35);
+                    byte[] jpg = bo.toByteArray();
+                    if (where == 0) {
+                        ChatClient.Msg m = new ChatClient.Msg();
+                        m.kind = "photo";
+                        m.text = "Кроки";
+                        m.data = android.util.Base64.encodeToString(jpg,
+                                android.util.Base64.URL_SAFE | android.util.Base64.NO_WRAP | android.util.Base64.NO_PADDING);
+                        m.hasLoc = true;
+                        m.lat = ctr.getLatitude();
+                        m.lon = ctr.getLongitude();
+                        m.ptName = "Кроки";
+                        runOnUiThread(() -> { sendChat(m); openChat(); });
+                        return;
+                    }
+                    String name = "Кроки_" + new SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US).format(new Date()) + ".jpg";
+                    Uri uri = LbsCore.saveToDownloads(getApplicationContext(), name, jpg, "image/jpeg");
+                    runOnUiThread(() -> {
+                        if (where == 2) {
+                            Toast.makeText(this, "Сохранено в «Загрузки»: " + name, Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        Intent i = new Intent(Intent.ACTION_SEND);
+                        i.setType("image/jpeg");
+                        i.putExtra(Intent.EXTRA_STREAM, uri);
+                        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        try {
+                            startActivity(Intent.createChooser(i, "Отправить кроки"));
+                        } catch (Exception e) {
+                            Toast.makeText(this, "Нет приложения для отправки", Toast.LENGTH_LONG).show();
+                        }
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> Toast.makeText(this, "Не получилось: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                }
+            }).start();
+        });
+    }
+
+
+    // ================= ЛБС: сравнение двух дат =================
+
+    private int cmpStage;          // 0 — ничего, 1 — грузим список снимков, 2 — считаем
+    private int cmpTries;
+    private long[] cmpIds, cmpTimes; // снимки DeepStateMap по возрастанию времени
+    private long cmpOld, cmpNew;     // выбранные моменты времени (мс); cmpNew = 0 — последний снимок
+    private TextView cmpStatus;
+    private String cmpLabel = "";
+    private List<double[][]> cmpParts = new ArrayList<>();
+    private double[] cmpShift = new double[0];
+
+    private void showLbsCompare() {
+        if (offline()) {
+            Toast.makeText(this, "Нужен интернет — выключите «Без сети»", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (lbsRunning) {
+            Toast.makeText(this, "Сейчас обновляется ЛБС — подождите минуту", Toast.LENGTH_LONG).show();
+            return;
+        }
+        sheet("ЛБС: сравнить даты");
+        if (cmpIds == null) {
+            cmpStatus = new TextView(this);
+            cmpStatus.setText("Загружаю список снимков DeepStateMap…");
+            cmpStatus.setTextColor(getColor(R.color.hud_text));
+            sheetContent.addView(cmpStatus);
+            if (cmpStage != 1) {
+                if (lbsWeb == null) setupLbsWeb();
+                cmpStage = 1;
+                cmpTries = 0;
+                lbsWeb.loadUrl("https://deepstatemap.live/api/history/public");
+                lbsHandler.postDelayed(() -> {
+                    if (cmpStage == 1) cmpFail("сайт не ответил");
+                }, 60_000);
+            }
+            return;
+        }
+        if (cmpOld == 0) cmpOld = System.currentTimeMillis() - 30L * 86_400_000L;
+        hSection("БЫЛО");
+        final TextView oldT = new TextView(this);
+        oldT.setTextSize(15);
+        oldT.setTextColor(getColor(R.color.hud_text));
+        oldT.setText("снимок " + snapLabel(cmpSnap(cmpOld)));
+        sheetContent.addView(oldT);
+        LinearLayout q1 = new LinearLayout(this), q2 = new LinearLayout(this);
+        String[] ql = {"Неделя", "2 недели", "Месяц", "3 мес.", "Полгода", "Год"};
+        int[] qd = {7, 14, 30, 91, 182, 365};
+        for (int i = 0; i < ql.length; i++) {
+            final int days = qd[i];
+            TextView c = hChip(ql[i], 0, false, v -> {
+                cmpOld = System.currentTimeMillis() - days * 86_400_000L;
+                showLbsCompare();
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(36), 1);
+            lp.setMarginEnd((int) dp(5));
+            (i < 3 ? q1 : q2).addView(c, lp);
+        }
+        LinearLayout.LayoutParams ql1 = new LinearLayout.LayoutParams(-1, -2);
+        ql1.topMargin = (int) dp(6);
+        sheetContent.addView(q1, ql1);
+        LinearLayout.LayoutParams ql2 = new LinearLayout.LayoutParams(-1, -2);
+        ql2.topMargin = (int) dp(5);
+        sheetContent.addView(q2, ql2);
+        hChipRow(hChip("Выбрать дату…", R.drawable.ic_refresh, false, v -> pickCmpDate(true)));
+        hSection("СТАЛО");
+        TextView newT = new TextView(this);
+        newT.setTextSize(15);
+        newT.setTextColor(getColor(R.color.hud_text));
+        newT.setText(cmpNew == 0 ? "последний снимок · " + snapLabel(cmpIds.length - 1) : "снимок " + snapLabel(cmpSnap(cmpNew)));
+        sheetContent.addView(newT);
+        hChipRow(hChip("Последний", 0, cmpNew == 0, v -> { cmpNew = 0; showLbsCompare(); }),
+                hChip("Выбрать дату…", R.drawable.ic_refresh, false, v -> pickCmpDate(false)));
+        cmpStatus = new TextView(this);
+        cmpStatus.setTextSize(13);
+        cmpStatus.setTextColor(getColor(R.color.hud_text2));
+        cmpStatus.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        cmpStatus.setText("Старая линия — голубой пунктир, новая — красная, где сдвинулась — янтарным. "
+                + "Список участков с расстоянием сдвига — на плашке сверху.");
+        sheetContent.addView(cmpStatus);
+        if (cmpFolder.getItems().size() > 0)
+            hChipRow(hChip("Закончить сравнение", R.drawable.ic_close, false, v -> { clearCompare(); closeSheet(); }));
+        footer("Закрыть", "Сравнить", v -> runCompare());
+    }
+
+    /** Индекс последнего снимка не позже момента t. */
+    private int cmpSnap(long t) {
+        int best = 0;
+        for (int i = 0; i < cmpTimes.length; i++) if (cmpTimes[i] <= t + 86_399_000L) best = i;
+        return best;
+    }
+
+    private String snapLabel(int i) {
+        return new SimpleDateFormat("d MMMM yyyy, HH:mm", new Locale("ru")).format(new Date(cmpTimes[i]));
+    }
+
+    private void pickCmpDate(boolean old) {
+        java.util.Calendar cal = java.util.Calendar.getInstance();
+        long cur = old ? cmpOld : cmpNew == 0 ? System.currentTimeMillis() : cmpNew;
+        cal.setTimeInMillis(cur);
+        android.app.DatePickerDialog dp = new android.app.DatePickerDialog(this, (view, y, m, dd) -> {
+            java.util.Calendar c = java.util.Calendar.getInstance();
+            c.set(y, m, dd, 0, 0, 0);
+            if (old) cmpOld = c.getTimeInMillis(); else cmpNew = c.getTimeInMillis();
+            showLbsCompare();
+        }, cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH), cal.get(java.util.Calendar.DAY_OF_MONTH));
+        dp.getDatePicker().setMinDate(cmpTimes[0]);
+        dp.getDatePicker().setMaxDate(System.currentTimeMillis());
+        dp.show();
+    }
+
+    private void cmpListStep() {
+        if (cmpStage != 1) return;
+        lbsWeb.evaluateJavascript("(function(){var d;try{d=JSON.parse(document.body.innerText)}catch(e){return 'WAIT'}"
+                + "if(!Array.isArray(d))return 'ERR формат';return d.filter(function(x){return x.status!==false})"
+                + ".map(function(x){return x.id+','+Date.parse(x.createdAt)}).join(';')})()", raw -> {
+            if (cmpStage != 1) return;
+            String res = LbsCore.decode(raw);
+            if (res == null || res.startsWith("WAIT")) {
+                if (++cmpTries < 20) lbsHandler.postDelayed(this::cmpListStep, 2000);
+                else cmpFail("сайт не отдал список");
+                return;
+            }
+            if (res.startsWith("ERR")) {
+                cmpFail(res.substring(3).trim());
+                return;
+            }
+            List<long[]> l = new ArrayList<>();
+            for (String it : res.split(";")) {
+                String[] a = it.split(",");
+                try {
+                    l.add(new long[]{Long.parseLong(a[0]), Long.parseLong(a[1])});
+                } catch (Exception ignored) {
+                }
+            }
+            if (l.isEmpty()) {
+                cmpFail("список снимков пуст");
+                return;
+            }
+            Collections.sort(l, (x, y) -> Long.compare(x[1], y[1]));
+            cmpIds = new long[l.size()];
+            cmpTimes = new long[l.size()];
+            for (int i = 0; i < l.size(); i++) {
+                cmpIds[i] = l.get(i)[0];
+                cmpTimes[i] = l.get(i)[1];
+            }
+            cmpStage = 0;
+            lbsHandler.removeCallbacksAndMessages(null);
+            if (sheetOpen()) showLbsCompare();
+        });
+    }
+
+    private void cmpFail(String why) {
+        cmpStage = 0;
+        lbsHandler.removeCallbacksAndMessages(null);
+        if (cmpStatus != null) cmpStatus.setText("Не получилось: " + why + ". Попробуйте ещё раз.");
+        Toast.makeText(this, "Сравнение ЛБС: " + why, Toast.LENGTH_LONG).show();
+    }
+
+    private void runCompare() {
+        if (cmpStage != 0) return;
+        final int a = cmpSnap(cmpOld), b = cmpNew == 0 ? cmpIds.length - 1 : cmpSnap(cmpNew);
+        if (a == b) {
+            Toast.makeText(this, "Это один и тот же снимок — выберите другую дату", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final int o = Math.min(a, b), n = Math.max(a, b);
+        String lib;
+        try {
+            lib = LbsCore.readAsset(this, "lbs_lines.js");
+        } catch (Exception e) {
+            return;
+        }
+        cmpStage = 2;
+        cmpTries = 0;
+        cmpLabel = new SimpleDateFormat("dd.MM.yy", Locale.US).format(new Date(cmpTimes[o])) + " → "
+                + new SimpleDateFormat("dd.MM.yy", Locale.US).format(new Date(cmpTimes[n]));
+        if (cmpStatus != null) cmpStatus.setText("Загружаю два снимка… (около полуминуты)");
+        String start = lib + ";(function(){window.__cmp=null;var f=function(id){return fetch('/api/history/'+id+'/geojson')"
+                + ".then(function(r){if(!r.ok)throw 'HTTP '+r.status;return r.json()}).then(function(d){return window.__lbsLines(d.features||[])})};"
+                + "Promise.all([f(" + cmpIds[o] + "),f(" + cmpIds[n] + ")]).then(function(x){window.__cmp=x[0]+'\\n#####\\n'+x[1]})"
+                + ".catch(function(e){window.__cmp='ERR '+e});return 'OK'})()";
+        lbsWeb.evaluateJavascript(start, r -> lbsHandler.postDelayed(this::cmpPoll, 1500));
+        lbsHandler.postDelayed(() -> {
+            if (cmpStage == 2) cmpFail("слишком долго");
+        }, 120_000);
+    }
+
+    private void cmpPoll() {
+        if (cmpStage != 2) return;
+        lbsWeb.evaluateJavascript("(function(){return window.__cmp})()", raw -> {
+            if (cmpStage != 2) return;
+            String res = LbsCore.decode(raw);
+            if (res == null) {
+                if (cmpStatus != null) cmpStatus.setText("Загружаю два снимка… " + (++cmpTries * 3 / 2) + " с");
+                lbsHandler.postDelayed(this::cmpPoll, 1500);
+                return;
+            }
+            if (res.startsWith("ERR")) {
+                cmpFail(res.substring(3).trim());
+                return;
+            }
+            if (cmpStatus != null) cmpStatus.setText("Сравниваю…");
+            int sep = res.indexOf("\n#####\n");
+            final String oldS = sep < 0 ? "" : res.substring(0, sep), newS = sep < 0 ? "" : res.substring(sep + 7);
+            new Thread(() -> {
+                KmlBuilder.Parsed po = KmlBuilder.parse(oldS), pn = KmlBuilder.parse(newS);
+                List<double[][]> moved = KmlBuilder.diff(pn.lines, po.lines, KmlBuilder.DIFF_KM);
+                double[] shift = KmlBuilder.maxShiftKm(moved, po.lines);
+                runOnUiThread(() -> {
+                    cmpStage = 0;
+                    lbsHandler.removeCallbacksAndMessages(null);
+                    if (po.lines.isEmpty() || pn.lines.isEmpty()) {
+                        cmpFail("в одном из снимков не нашлась линия");
+                        return;
+                    }
+                    showCompare(po.lines, pn.lines, moved, shift);
+                });
+            }).start();
+        });
+    }
+
+    private void showCompare(List<double[][]> oldL, List<double[][]> newL, List<double[][]> moved, double[] shift) {
+        cmpFolder.getItems().clear();
+        for (double[][] l : oldL) {
+            Polyline pl = line(l, Color.argb(235, 120, 200, 255), 2.4f);
+            pl.getOutlinePaint().setPathEffect(new android.graphics.DashPathEffect(new float[]{dp(7), dp(5)}, 0));
+            cmpFolder.add(pl);
+        }
+        for (double[][] l : newL) cmpFolder.add(line(l, Color.argb(200, 25, 0, 0), 5f));
+        for (double[][] l : newL) cmpFolder.add(line(l, Color.rgb(255, 45, 45), 2.8f));
+        for (double[][] l : moved) cmpFolder.add(line(l, Color.argb(200, 40, 25, 0), 7f));
+        for (double[][] l : moved) cmpFolder.add(line(l, Color.rgb(255, 196, 0), 4.5f));
+        lbsFolder.setEnabled(false);
+        cmpParts = moved;
+        cmpShift = shift;
+        TextView c = findViewById(R.id.cmpChip);
+        double mx = 0;
+        int big = 0;
+        for (double v : shift) {
+            mx = Math.max(mx, v);
+            if (v >= 0.5) big++;
+        }
+        c.setText("ЛБС " + cmpLabel + " · " + (big == 0 ? "без заметных сдвигов" : big + " уч. · до " + km(mx)) + "   ✕");
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(14));
+        g.setColor(0xE61F232A);
+        g.setStroke((int) dp(1), 0xFFFFC400);
+        c.setBackground(g);
+        c.setVisibility(View.VISIBLE);
+        c.setOnClickListener(v -> showCompareList());
+        closeSheet();
+        map.invalidate();
+        Toast.makeText(this, "Готово: голубой пунктир — было, красная — стало, янтарь — сдвиг", Toast.LENGTH_LONG).show();
+    }
+
+    private static String km(double v) {
+        return v < 1 ? Math.round(v * 1000 / 10) * 10 + " м" : String.format(Locale.US, "%.1f км", v).replace('.', ',');
+    }
+
+    private void showCompareList() {
+        sheet("Сдвиги ЛБС · " + cmpLabel);
+        Integer[] idx = new Integer[cmpParts.size()];
+        for (int i = 0; i < idx.length; i++) idx[i] = i;
+        java.util.Arrays.sort(idx, (x, y) -> Double.compare(cmpShift[y], cmpShift[x]));
+        int shown = 0;
+        for (int i : idx) {
+            if (cmpShift[i] < 0.5 || shown >= 40) continue;
+            shown++;
+            double[][] part = cmpParts.get(i);
+            double[] mid = part[part.length / 2];
+            String where = nearestPlace(mid[1], mid[0]);
+            double len = 0;
+            for (int j = 1; j < part.length; j++) len += Geo.inverse(part[j - 1][1], part[j - 1][0], part[j][1], part[j][0])[0];
+            ImageView ic = hIcon(R.drawable.ic_lbs, 0xFFFFC400, 22);
+            hRow(ic, (where.isEmpty() ? "Участок" : "У " + where) + " — до " + km(cmpShift[i]),
+                    "сдвиг по фронту на " + Geo.dist(len), null, v -> {
+                        closeSheet();
+                        double n = -90, s = 90, e = -180, w = 180;
+                        for (double[] p : part) {
+                            n = Math.max(n, p[1]); s = Math.min(s, p[1]); e = Math.max(e, p[0]); w = Math.min(w, p[0]);
+                        }
+                        double pad = 0.02;
+                        map.zoomToBoundingBox(new org.osmdroid.util.BoundingBox(n + pad, e + pad, s - pad, w - pad), true, (int) dp(50));
+                    });
+        }
+        if (shown == 0) emptyState(R.drawable.ic_lbs, "Заметных сдвигов нет", "Линия сдвинулась меньше чем на 500 м по всему фронту.");
+        hChipRow(hChip("Другие даты", R.drawable.ic_refresh, false, v -> showLbsCompare()),
+                hChip("Закончить", R.drawable.ic_close, false, v -> { clearCompare(); closeSheet(); }));
+    }
+
+    private void clearCompare() {
+        cmpFolder.getItems().clear();
+        lbsFolder.setEnabled(true);
+        findViewById(R.id.cmpChip).setVisibility(View.GONE);
+        cmpParts = new ArrayList<>();
+        map.invalidate();
+    }
+
+    /** Ближайший город/село к точке (до 15 км), пусто — если рядом ничего. */
+    private String nearestPlace(double lat, double lon) {
+        if (places == null) return "";
+        double best = 15000;
+        String out = "";
+        double kx = Math.cos(Math.toRadians(lat)) * 111320;
+        for (int i = 0; i < places.n; i++) {
+            if (places.rank[i] > 2) continue;
+            double dx = (places.lon[i] - lon) * kx, dy = (places.lat[i] - lat) * 110540;
+            double d = Math.hypot(dx, dy) * (places.rank[i] <= 1 ? 0.6 : 1); // города — приоритетнее
+            if (d < best) {
+                best = d;
+                out = places.name[i];
+            }
+        }
+        return out;
+    }
+
     private ChatClient.GObj objFromRoute(Routes.Route r) {
         ChatClient.GObj g = new ChatClient.GObj();
         g.type = r.area ? "area" : "route";
         g.name = r.name;
         g.color = r.color;
+        if (r.sign != null && !r.sign.isEmpty()) g.extra = "{\"sign\":\"" + r.sign + "\"}";
         g.pts.addAll(r.pts);
         return g;
     }
@@ -10228,6 +10916,17 @@ public class MapActivity extends Activity {
                     "Отправьте точку «На общую карту группы» — свои увидят и сектор, и круги.",
                     "«Зона видимости» — откуда смотрим и на какой высоте (глаза, мачта, ретранслятор, дрон). Зелёным — куда видно по рельефу, тёмным — нет. Лес и дома не учтены.",
                     "Плашка «👁 Видно …%» сверху — нажмите, чтобы убрать зону с карты."}},
+            {R.drawable.ic_sign_attack, "Тактические знаки и кроки", new String[]{
+                    "Инструменты → «Тактические знаки». Выберите «Свои» (синий) или «Противник» (красный) и знак: направление удара, отход, рубеж, заграждение, район.",
+                    "Ставьте точки прицелом, как у маршрута, и нажмите «Сохранить». У стрелки ставьте от начала к острию; у рубежа зубцы — слева по ходу.",
+                    "Знаки лежат вместе с маршрутами. «Маршруты» → знак → «На карту группы» — увидят свои.",
+                    "«Кроки» — рисуйте пальцем прямо по карте: цвет, толщина, подписи, отмена. «Двигать» — сдвинуть карту, рисунок едет вместе с ней.",
+                    "«Готово» → в чат группы, отправить в мессенджер или сохранить картинкой в «Загрузки». Рисунок остаётся на карте, пока его не сотрёте."}},
+            {R.drawable.ic_lbs, "ЛБС: сравнить даты", new String[]{
+                    "Инструменты → «ЛБС: сравнить даты». Нужен интернет.",
+                    "«Было»: неделя, месяц, полгода, год назад или любая дата с 2022 г. «Стало»: последний снимок или своя дата.",
+                    "На карте: голубой пунктир — было, красная — стало, янтарным — где линия сдвинулась больше чем на 300 м.",
+                    "Плашка сверху — список участков по величине сдвига с ближайшим населённым пунктом; нажмите — карта покажет участок. ✕ — закончить."}},
             {R.drawable.ic_flag, "Цель и поправки", new String[]{
                     "Инструменты → «Цель и поправки». Задайте ОП (откуда), цель и, если нужно, НП (откуда наблюдают): «Где я», прицел карты, наведённая цель, координаты или точка.",
                     "Сразу видно: дальность, дирекционный угол в делениях, высоты, превышение и угол места цели.",

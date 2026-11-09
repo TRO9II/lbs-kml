@@ -245,6 +245,22 @@
             android:visibility="gone" />
 
         <TextView
+            android:id="@+id/cmpChip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="6dp"
+            android:elevation="5dp"
+            android:fontFamily="sans-serif-medium"
+            android:paddingStart="12dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="6dp"
+            android:textColor="@android:color/white"
+            android:textSize="12.5sp"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/vsChip"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

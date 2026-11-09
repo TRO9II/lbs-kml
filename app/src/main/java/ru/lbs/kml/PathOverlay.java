@@ -37,6 +37,7 @@ public class PathOverlay extends Overlay {
     private List<double[]> active;
     private int activeColor = 0xFFFFB300;
     private boolean activeArea;
+    private String activeSign = "";
     private final Paint areaFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rubber = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rubberHalo = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -91,6 +92,11 @@ public class PathOverlay extends Overlay {
         active = pts;
         activeColor = color;
         activeArea = area;
+        activeSign = "";
+    }
+
+    void setActiveSign(String sign) {
+        activeSign = sign == null ? "" : sign;
     }
 
     @Override
@@ -98,9 +104,9 @@ public class PathOverlay extends Overlay {
         if (shadow) return;
         Projection pj = mv.getProjection();
         float orient = mv.getMapOrientation();
-        for (Routes.Route r : saved) if (r.visible && r.pts.size() > 1) drawPath(c, pj, orient, r.pts, r.color, false, r.area);
+        for (Routes.Route r : saved) if (r.visible && r.pts.size() > 1) drawPath(c, pj, orient, r.pts, r.color, false, r.area, r.sign);
         if (active != null && !active.isEmpty()) {
-            drawPath(c, pj, orient, active, activeColor, true, activeArea);
+            drawPath(c, pj, orient, active, activeColor, true, activeArea, activeSign);
             drawRubber(c, mv, pj, orient);
         }
     }
@@ -138,7 +144,7 @@ public class PathOverlay extends Overlay {
         c.restore();
     }
 
-    private void drawPath(Canvas c, Projection pj, float orient, List<double[]> pts, int color, boolean editing, boolean area) {
+    private void drawPath(Canvas c, Projection pj, float orient, List<double[]> pts, int color, boolean editing, boolean area, String sign) {
         int n = pts.size();
         float[] xs = new float[n], ys = new float[n];
         path.reset();
@@ -148,6 +154,18 @@ public class PathOverlay extends Overlay {
             xs[i] = pt.x;
             ys[i] = pt.y;
             if (i == 0) path.moveTo(pt.x, pt.y); else path.lineTo(pt.x, pt.y);
+        }
+        if (sign != null && !sign.isEmpty()) {
+            if (n > 1) drawSign(c, xs, ys, color, sign);
+            if (editing) {
+                float r = 5.5f * density;
+                vFill.setColor(color);
+                for (int i = 0; i < n; i++) {
+                    c.drawCircle(xs[i], ys[i], r, vFill);
+                    c.drawCircle(xs[i], ys[i], r, vStroke);
+                }
+            }
+            return;
         }
         // линия: тонкая тёмная обводка + цвет; у сохранённых — стрелки направления
         float w = (editing ? 3.2f : 2.8f) * density;
@@ -213,6 +231,96 @@ public class PathOverlay extends Overlay {
             c.drawCircle(xs[n - 1], ys[n - 1], 4.4f * density, vFill);
             vFill.setColor(color);
             c.drawCircle(xs[n - 1], ys[n - 1], 2.4f * density, vFill);
+        }
+    }
+
+    private final Paint signP = new Paint(Paint.ANTI_ALIAS_FLAG), signHalo = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path signPath = new Path();
+
+    /** Тактические знаки: стрелка удара, отход, рубеж (зубцы), заграждение (крестики), район. */
+    private void drawSign(Canvas c, float[] xs, float[] ys, int color, String sign) {
+        int n = xs.length;
+        boolean arrow = sign.equals("attack") || sign.equals("retreat");
+        float w = (sign.equals("attack") ? 5f : sign.equals("retreat") ? 3.6f : 3f) * density;
+        boolean light = Color.red(color) * 0.3 + Color.green(color) * 0.59 + Color.blue(color) * 0.11 > 150;
+        int haloCol = light ? Color.argb(170, 0, 0, 0) : Color.argb(210, 255, 255, 255);
+        signP.setStyle(Paint.Style.STROKE);
+        signP.setStrokeCap(Paint.Cap.ROUND);
+        signP.setStrokeJoin(Paint.Join.ROUND);
+        signP.setColor(color);
+        signP.setStrokeWidth(w);
+        signHalo.set(signP);
+        signHalo.setColor(haloCol);
+        signHalo.setStrokeWidth(w + 2.4f * density);
+        signP.setPathEffect(sign.equals("retreat") || sign.equals("region")
+                ? new android.graphics.DashPathEffect(new float[]{11 * density, 7 * density}, 0) : null);
+        // у стрелки линию чуть укорачиваем, чтобы она не торчала из наконечника
+        float head = (sign.equals("attack") ? 20 : 15) * density;
+        float ex = xs[n - 1], ey = ys[n - 1], ux = 0, uy = 0;
+        if (arrow) {
+            for (int i = n - 1; i > 0; i--) {
+                float dx = xs[i] - xs[i - 1], dy = ys[i] - ys[i - 1];
+                float len = (float) Math.hypot(dx, dy);
+                if (len > 1) { ux = dx / len; uy = dy / len; break; }
+            }
+        }
+        signPath.reset();
+        signPath.moveTo(xs[0], ys[0]);
+        for (int i = 1; i < n; i++) {
+            if (arrow && i == n - 1 && (ux != 0 || uy != 0)) signPath.lineTo(ex - ux * head * 0.6f, ey - uy * head * 0.6f);
+            else signPath.lineTo(xs[i], ys[i]);
+        }
+        if (sign.equals("region") && n > 2) {
+            signPath.close();
+            areaFill.setColor((color & 0x00FFFFFF) | 0x26000000);
+            c.drawPath(signPath, areaFill);
+        }
+        c.drawPath(signPath, signHalo);
+        c.drawPath(signPath, signP);
+        signP.setPathEffect(null);
+        if (arrow && (ux != 0 || uy != 0)) {
+            float hw = head * 0.55f;
+            signPath.reset();
+            signPath.moveTo(ex, ey);
+            signPath.lineTo(ex - ux * head - uy * hw, ey - uy * head + ux * hw);
+            signPath.lineTo(ex - ux * head * 0.7f, ey - uy * head * 0.7f);
+            signPath.lineTo(ex - ux * head + uy * hw, ey - uy * head - ux * hw);
+            signPath.close();
+            signHalo.setStyle(Paint.Style.STROKE);
+            signHalo.setStrokeWidth(2.4f * density);
+            c.drawPath(signPath, signHalo);
+            signP.setStyle(Paint.Style.FILL);
+            c.drawPath(signPath, signP);
+            signP.setStyle(Paint.Style.STROKE);
+        }
+        if (sign.equals("front") || sign.equals("obstacle")) {
+            // зубцы слева по ходу линии / крестики вдоль линии
+            boolean front = sign.equals("front");
+            float step = (front ? 13 : 22) * density, a = (front ? 7 : 4.2f) * density, carry = step / 2;
+            signP.setStrokeWidth(front ? 2.4f * density : 2.2f * density);
+            signHalo.setStrokeWidth(signP.getStrokeWidth() + 2.2f * density);
+            for (int i = 1; i < n; i++) {
+                float dx = xs[i] - xs[i - 1], dy = ys[i] - ys[i - 1];
+                float len = (float) Math.hypot(dx, dy);
+                if (len < 1) continue;
+                float vx = dx / len, vy = dy / len;
+                float d = carry;
+                while (d < len) {
+                    float x = xs[i - 1] + vx * d, y = ys[i - 1] + vy * d;
+                    if (front) {
+                        c.drawLine(x, y, x + vy * a, y - vx * a, signHalo);
+                        c.drawLine(x, y, x + vy * a, y - vx * a, signP);
+                    } else {
+                        float p1 = (vx + vy) * a, p2 = (vy - vx) * a;
+                        c.drawLine(x - p1, y - p2, x + p1, y + p2, signHalo);
+                        c.drawLine(x - p2, y + p1, x + p2, y - p1, signHalo);
+                        c.drawLine(x - p1, y - p2, x + p1, y + p2, signP);
+                        c.drawLine(x - p2, y + p1, x + p2, y - p1, signP);
+                    }
+                    d += step;
+                }
+                carry = d - len;
+            }
         }
     }
 

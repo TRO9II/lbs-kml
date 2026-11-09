@@ -137,6 +137,52 @@ final class KmlBuilder {
         return out;
     }
 
+    private static Map<Long, List<double[]>> grid(List<double[][]> base) {
+        Map<Long, List<double[]>> grid = new HashMap<>();
+        for (double[][] l : base) {
+            for (int j = 0; j < l.length - 1; j++) {
+                double x1 = l[j][0] * KX, y1 = l[j][1] * KY, x2 = l[j + 1][0] * KX, y2 = l[j + 1][1] * KY;
+                double[] seg = {x1, y1, x2, y2};
+                int ax = (int) Math.floor(Math.min(x1, x2) / CELL), bx = (int) Math.floor(Math.max(x1, x2) / CELL);
+                int ay = (int) Math.floor(Math.min(y1, y2) / CELL), by = (int) Math.floor(Math.max(y1, y2) / CELL);
+                for (int ix = ax; ix <= bx; ix++)
+                    for (int iy = ay; iy <= by; iy++)
+                        grid.computeIfAbsent(key(ix, iy), k -> new ArrayList<>()).add(seg);
+            }
+        }
+        return grid;
+    }
+
+    /** Насколько далеко (км) каждый участок {@code parts} отходит от линий {@code base}: максимум по его точкам. */
+    static double[] maxShiftKm(List<double[][]> parts, List<double[][]> base) {
+        Map<Long, List<double[]>> g = grid(base);
+        double[] out = new double[parts.size()];
+        for (int i = 0; i < parts.size(); i++) {
+            double mx = 0;
+            for (double[] p : parts.get(i)) mx = Math.max(mx, minDist(g, p[0] * KX, p[1] * KY, 40));
+            out[i] = mx;
+        }
+        return out;
+    }
+
+    /** Расстояние до ближайшего отрезка, км (не дальше cap): обходим клетки сетки кольцами. */
+    private static double minDist(Map<Long, List<double[]>> grid, double px, double py, double cap) {
+        int cx = (int) Math.floor(px / CELL), cy = (int) Math.floor(py / CELL);
+        double best = cap;
+        int maxR = (int) Math.ceil(cap / CELL);
+        for (int r = 0; r <= maxR; r++) {
+            if (best <= (r - 1) * CELL) break;
+            for (int a = -r; a <= r; a++)
+                for (int b = -r; b <= r; b++) {
+                    if (Math.max(Math.abs(a), Math.abs(b)) != r) continue;
+                    List<double[]> segs = grid.get(key(cx + a, cy + b));
+                    if (segs == null) continue;
+                    for (double[] sg : segs) best = Math.min(best, distToSeg(px, py, sg));
+                }
+        }
+        return best;
+    }
+
     private static boolean near(Map<Long, List<double[]>> grid, double px, double py, double thr) {
         int cx = (int) Math.floor(px / CELL), cy = (int) Math.floor(py / CELL);
         for (int a = -1; a <= 1; a++)

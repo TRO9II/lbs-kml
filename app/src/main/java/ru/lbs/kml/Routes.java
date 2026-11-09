@@ -26,6 +26,7 @@ final class Routes {
         int color = COLORS[0];
         boolean visible = true;
         boolean area; // зона (замкнутый многоугольник)
+        String sign = ""; // тактический знак: attack, retreat, front, obstacle, region; пусто — обычный маршрут
         long created;
         final List<double[]> pts = new ArrayList<>(); // {lat, lon}
     }
@@ -129,6 +130,7 @@ final class Routes {
                 r.color = o.optInt("color", COLORS[0]);
                 r.visible = o.optBoolean("visible", true);
                 r.area = o.optBoolean("area", false);
+                r.sign = o.optString("sign", "");
                 r.created = o.optLong("created");
                 JSONArray p = o.getJSONArray("pts");
                 for (int j = 0; j < p.length(); j++) {
@@ -151,6 +153,7 @@ final class Routes {
             o.put("color", r.color);
             o.put("visible", r.visible);
             if (r.area) o.put("area", true);
+            if (r.sign != null && !r.sign.isEmpty()) o.put("sign", r.sign);
             o.put("created", r.created);
             JSONArray p = new JSONArray();
             for (double[] q : r.pts) {
