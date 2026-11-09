@@ -9900,6 +9900,23 @@ public class MapActivity extends Activity {
         addKV(card, l.kind.equals("pgd") ? "Тайлов" : "Объектов", Integer.toString(l.count));
         if (l.n >= l.s) addKV(card, "Район", Geo.dist(Geo.inverse(l.n, l.w, l.s, l.e)[0]) + " по диагонали");
         sheetContent.addView(card);
+        if (!l.kind.equals("pgd")) {
+            LinearLayout box = layerBox();
+            setSwitch(box, "Подписи на карте", l.labels, on -> {
+                l.labels = on;
+                UserLayers.saveList(this, userLayers);
+                map.invalidate();
+            });
+            TextView hint = new TextView(this);
+            hint.setText("Выключите, если под этим слоем лежит исходная карта с подписями: поиск и нажатие на полосу продолжат работать.");
+            hint.setTextSize(11.5f);
+            hint.setTextColor(getColor(R.color.hud_text2));
+            hint.setPadding((int) dp(14), 0, (int) dp(14), (int) dp(10));
+            box.addView(hint);
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-1, -2);
+            bl.topMargin = (int) dp(10);
+            sheetContent.addView(box, bl);
+        }
         hSection("ВИДИМОСТЬ СЛОЯ");
         LinearLayout op = new LinearLayout(this);
         op.setGravity(android.view.Gravity.CENTER_VERTICAL);

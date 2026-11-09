@@ -119,9 +119,9 @@ public class LayerOverlay extends Overlay {
                 c.drawCircle(pt.x, pt.y, 5 * d, dot);
                 dot.setColor(f.color != 0 ? f.color | 0xFF000000 : Color.WHITE);
                 c.drawCircle(pt.x, pt.y, 3.6f * d, dot);
-                if (labels && !f.name.isEmpty()) labelAt(c, f.name, pt.x, pt.y + ts * 1.15f, 0, orient, false);
+                if (labels && l.labels && !f.name.isEmpty()) labelAt(c, f.name, pt.x, pt.y + ts * 1.15f, 0, orient, false);
             }
-            if (!labels) continue;
+            if (!labels || !l.labels) continue;
             for (UserLayers.Feature f : l.features) {
                 if (f.type == UserLayers.POINT || f.name.isEmpty() || f.n < s || f.s > n || f.e < w || f.w > e) continue;
                 project(pj, f);

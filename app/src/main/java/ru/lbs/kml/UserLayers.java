@@ -56,6 +56,7 @@ final class UserLayers {
         String id, name;
         String kind = "vec"; // vec — линии и точки, pgd — растровая карта AlpineQuest
         float opacity = 1f;
+        boolean labels = true; // подписи на карте (выкл — только поиск и нажатие)
         boolean visible = true;
         int count;
         List<Feature> features; // null — ещё не загружен с диска
@@ -79,6 +80,7 @@ final class UserLayers {
                 l.count = o.optInt("count");
                 l.kind = o.optString("kind", "vec");
                 l.opacity = (float) o.optDouble("op", 1);
+                l.labels = o.optBoolean("lbl", true);
                 l.n = o.optDouble("n", -90); l.s = o.optDouble("s", 90);
                 l.e = o.optDouble("e", -180); l.w = o.optDouble("w", 180);
                 if ((l.kind.equals("pgd") ? pgdFile(c, l.id) : file(c, l.id)).exists()) out.add(l);
@@ -93,7 +95,7 @@ final class UserLayers {
         try {
             for (Layer l : layers)
                 a.put(new JSONObject().put("id", l.id).put("name", l.name).put("on", l.visible).put("count", l.count)
-                        .put("kind", l.kind).put("op", l.opacity)
+                        .put("kind", l.kind).put("op", l.opacity).put("lbl", l.labels)
                         .put("n", l.n).put("s", l.s).put("e", l.e).put("w", l.w));
         } catch (Exception ignored) {
         }
