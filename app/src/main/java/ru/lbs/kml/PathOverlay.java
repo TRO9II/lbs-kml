@@ -149,44 +149,106 @@ public class PathOverlay extends Overlay {
             ys[i] = pt.y;
             if (i == 0) path.moveTo(pt.x, pt.y); else path.lineTo(pt.x, pt.y);
         }
-        float w = (editing ? 2.6f : 2.4f) * density;
-        lineHalo.setStrokeWidth(w + 2.6f * density);
+        // линия: тонкая тёмная обводка + цвет; у сохранённых — стрелки направления
+        float w = (editing ? 3.2f : 2.8f) * density;
+        lineHalo.setStrokeWidth(w + 2.2f * density);
         line.setStrokeWidth(w);
         line.setColor(color);
+        boolean light = Color.red(color) * 0.3 + Color.green(color) * 0.59 + Color.blue(color) * 0.11 > 150;
+        lineHalo.setColor(light ? Color.argb(170, 0, 0, 0) : Color.argb(200, 255, 255, 255));
         if (area && n > 2) {
             path.close();
-            areaFill.setColor((color & 0x00FFFFFF) | 0x38000000);
+            areaFill.setColor((color & 0x00FFFFFF) | 0x2E000000);
             c.drawPath(path, areaFill);
         }
         if (n > 1) {
             c.drawPath(path, lineHalo);
             c.drawPath(path, line);
+            if (!area) arrows(c, xs, ys, light ? Color.argb(230, 20, 20, 20) : Color.WHITE);
         }
 
-        // длины участков посередине (только у редактируемой линии и коротких маршрутов)
+        // длины участков посередине (у редактируемой линии и коротких маршрутов, если участок длинный на экране)
         if ((editing || n <= 30) && !(area && !editing)) {
             for (int i = 1; i < n; i++) {
                 float mx = (xs[i] + xs[i - 1]) / 2, my = (ys[i] + ys[i - 1]) / 2;
-                if (Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]) < 70 * density) continue;
+                if (Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]) < (editing ? 70 : 110) * density) continue;
                 double[] a = pts.get(i - 1), b = pts.get(i);
                 String t = Geo.dist(Geo.inverse(a[0], a[1], b[0], b[1])[0]);
                 pill(c, orient, t, mx, my);
             }
         }
 
-        // вершины
-        float r = (editing ? 5.5f : 4.5f) * density;
-        vFill.setColor(color);
-        for (int i = 0; i < n; i++) {
-            c.drawCircle(xs[i], ys[i], r, vFill);
-            c.drawCircle(xs[i], ys[i], r, vStroke);
-            if (editing || i == 0 || i == n - 1) {
+        if (editing) {
+            // правка: номера на вершинах
+            float r = 6.5f * density;
+            vFill.setColor(color);
+            num.setColor(light ? Color.BLACK : Color.WHITE);
+            num.setTextSize(8f * density);
+            for (int i = 0; i < n; i++) {
+                c.drawCircle(xs[i], ys[i], r, vFill);
+                c.drawCircle(xs[i], ys[i], r, vStroke);
                 c.save();
                 if (orient != 0f) c.rotate(-orient, xs[i], ys[i]);
-                num.setTextSize((editing ? 7.5f : 6.5f) * density);
                 c.drawText(Integer.toString(i + 1), xs[i], ys[i] + num.getTextSize() * 0.36f, num);
                 c.restore();
             }
+            return;
+        }
+        // готовый маршрут: маленькие узлы, заметные только начало и конец
+        float node = 2.3f * density;
+        for (int i = 1; i < n - 1; i++) {
+            c.drawCircle(xs[i], ys[i], node + 1.2f * density, dark());
+            vFill.setColor(Color.WHITE);
+            c.drawCircle(xs[i], ys[i], node, vFill);
+        }
+        if (!area) {
+            // старт — кружок цвета линии в белом кольце, финиш — белый кружок с цветной серединой
+            vFill.setColor(Color.WHITE);
+            c.drawCircle(xs[0], ys[0], 5.2f * density, vFill);
+            vFill.setColor(color);
+            c.drawCircle(xs[0], ys[0], 3.6f * density, vFill);
+            vFill.setColor(Color.argb(220, 20, 20, 20));
+            c.drawCircle(xs[n - 1], ys[n - 1], 5.6f * density, vFill);
+            vFill.setColor(Color.WHITE);
+            c.drawCircle(xs[n - 1], ys[n - 1], 4.4f * density, vFill);
+            vFill.setColor(color);
+            c.drawCircle(xs[n - 1], ys[n - 1], 2.4f * density, vFill);
+        }
+    }
+
+    private final Paint darkP = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    private Paint dark() {
+        darkP.setColor(Color.argb(200, 20, 20, 20));
+        return darkP;
+    }
+
+    private final Paint arrowP = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    /** Шевроны «>» вдоль линии через каждые ~90 dp — видно, куда идёт маршрут. */
+    private void arrows(Canvas c, float[] xs, float[] ys, int col) {
+        arrowP.setStyle(Paint.Style.STROKE);
+        arrowP.setStrokeWidth(1.6f * density);
+        arrowP.setStrokeCap(Paint.Cap.ROUND);
+        arrowP.setStrokeJoin(Paint.Join.ROUND);
+        arrowP.setColor(col);
+        float step = 90 * density, a = 3.2f * density, carry = step / 2;
+        for (int i = 1; i < xs.length; i++) {
+            float dx = xs[i] - xs[i - 1], dy = ys[i] - ys[i - 1];
+            float len = (float) Math.hypot(dx, dy);
+            if (len < 1) continue;
+            float ux = dx / len, uy = dy / len;
+            float d = carry;
+            while (d < len) {
+                float x = xs[i - 1] + ux * d, y = ys[i - 1] + uy * d;
+                path.reset();
+                path.moveTo(x - ux * a - uy * a, y - uy * a + ux * a);
+                path.lineTo(x, y);
+                path.lineTo(x - ux * a + uy * a, y - uy * a - ux * a);
+                c.drawPath(path, arrowP);
+                d += step;
+            }
+            carry = d - len;
         }
     }
 

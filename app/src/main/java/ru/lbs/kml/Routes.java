@@ -16,8 +16,10 @@ import java.util.Locale;
 /** Маршруты из прямых участков: хранение, расчёты по участкам, экспорт в KML. */
 final class Routes {
 
-    static final int[] COLORS = {0xFF00E5FF, 0xFFFFB300, 0xFF76FF03, 0xFFFF4081, 0xFFFFFFFF, 0xFF7C4DFF};
-    static final String[] COLOR_NAMES = {"Бирюзовый", "Янтарный", "Салатовый", "Розовый", "Белый", "Фиолетовый"};
+    static final int[] COLORS = {0xFF00E5FF, 0xFFFFB300, 0xFF76FF03, 0xFFFF4081, 0xFFFFFFFF, 0xFF7C4DFF,
+            0xFFFF3D3D, 0xFFFF6D00, 0xFFFFEA00, 0xFF00C853, 0xFF2979FF, 0xFF212121};
+    static final String[] COLOR_NAMES = {"Бирюзовый", "Янтарный", "Салатовый", "Розовый", "Белый", "Фиолетовый",
+            "Красный", "Оранжевый", "Жёлтый", "Зелёный", "Синий", "Чёрный"};
 
     static final class Route {
         String id, name;

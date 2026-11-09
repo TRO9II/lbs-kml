@@ -168,6 +168,138 @@ final class PinIcons {
                 c.drawLine(0.32f * r, 0, 0.98f * r, 0, S);
                 c.drawCircle(0, 0, 0.14f * r, F);
                 break;
+            case "relay": { // ретранслятор: мачта и волны
+                S.setStrokeWidth(0.17f * r);
+                c.drawLine(0, -0.2f * r, -0.42f * r, 0.95f * r, S);
+                c.drawLine(0, -0.2f * r, 0.42f * r, 0.95f * r, S);
+                c.drawLine(-0.24f * r, 0.4f * r, 0.24f * r, 0.4f * r, S);
+                c.drawCircle(0, -0.28f * r, 0.17f * r, F);
+                android.graphics.RectF o = new android.graphics.RectF();
+                for (int k = 1; k <= 2; k++) {
+                    float rr = (0.32f + 0.3f * k) * r;
+                    o.set(-rr, -0.28f * r - rr, rr, -0.28f * r + rr);
+                    c.drawArc(o, -150, 50, false, S);
+                    c.drawArc(o, -80, 50, false, S);
+                }
+                break;
+            }
+            case "eye": { // наблюдательный пункт
+                P.moveTo(-0.98f * r, 0);
+                P.quadTo(0, -0.95f * r, 0.98f * r, 0);
+                P.quadTo(0, 0.95f * r, -0.98f * r, 0);
+                P.close();
+                c.drawPath(P, F);
+                F.setColor(bg);
+                c.drawCircle(0, 0, 0.36f * r, F);
+                F.setColor(fg);
+                c.drawCircle(0, 0, 0.2f * r, F);
+                break;
+            }
+            case "pos": { // позиция: бруствер с бойницами
+                P.moveTo(-0.95f * r, 0.75f * r);
+                P.lineTo(-0.95f * r, -0.2f * r);
+                P.lineTo(-0.55f * r, -0.2f * r);
+                P.lineTo(-0.55f * r, -0.62f * r);
+                P.lineTo(-0.2f * r, -0.62f * r);
+                P.lineTo(-0.2f * r, -0.2f * r);
+                P.lineTo(0.2f * r, -0.2f * r);
+                P.lineTo(0.2f * r, -0.62f * r);
+                P.lineTo(0.55f * r, -0.62f * r);
+                P.lineTo(0.55f * r, -0.2f * r);
+                P.lineTo(0.95f * r, -0.2f * r);
+                P.lineTo(0.95f * r, 0.75f * r);
+                P.close();
+                c.drawPath(P, F);
+                break;
+            }
+            case "mine": { // мины: шар с шипами
+                c.drawCircle(0, 0.08f * r, 0.5f * r, F);
+                S.setStrokeWidth(0.16f * r);
+                for (int i = 0; i < 8; i++) {
+                    double a = i * Math.PI / 4;
+                    c.drawLine((float) Math.cos(a) * 0.5f * r, 0.08f * r + (float) Math.sin(a) * 0.5f * r,
+                            (float) Math.cos(a) * 0.9f * r, 0.08f * r + (float) Math.sin(a) * 0.9f * r, S);
+                }
+                break;
+            }
+            case "drone": { // БПЛА: крест и четыре винта
+                S.setStrokeWidth(0.16f * r);
+                c.drawLine(-0.55f * r, -0.55f * r, 0.55f * r, 0.55f * r, S);
+                c.drawLine(0.55f * r, -0.55f * r, -0.55f * r, 0.55f * r, S);
+                c.drawRoundRect(-0.2f * r, -0.2f * r, 0.2f * r, 0.2f * r, 0.06f * r, 0.06f * r, F);
+                S.setStrokeWidth(0.12f * r);
+                for (int i = 0; i < 4; i++) {
+                    float x = (i % 2 == 0 ? -0.62f : 0.62f) * r, y = (i < 2 ? -0.62f : 0.62f) * r;
+                    c.drawCircle(x, y, 0.3f * r, S);
+                }
+                break;
+            }
+            case "ew": // РЭБ: молния
+                P.moveTo(0.18f * r, -0.98f * r);
+                P.lineTo(-0.62f * r, 0.12f * r);
+                P.lineTo(-0.05f * r, 0.12f * r);
+                P.lineTo(-0.25f * r, 0.98f * r);
+                P.lineTo(0.62f * r, -0.18f * r);
+                P.lineTo(0.05f * r, -0.18f * r);
+                P.close();
+                c.drawPath(P, F);
+                break;
+            case "store": { // склад: ящик
+                c.drawRoundRect(-0.85f * r, -0.62f * r, 0.85f * r, 0.75f * r, 0.1f * r, 0.1f * r, F);
+                S.setColor(bg);
+                S.setStrokeWidth(0.12f * r);
+                c.drawLine(-0.85f * r, -0.2f * r, 0.85f * r, -0.2f * r, S);
+                c.drawLine(-0.85f * r, -0.62f * r, 0.85f * r, 0.75f * r, S);
+                c.drawLine(0.85f * r, -0.62f * r, -0.85f * r, 0.75f * r, S);
+                S.setColor(fg);
+                break;
+            }
+            case "shelter": { // укрытие: купол со входом
+                P.moveTo(-0.95f * r, 0.75f * r);
+                P.cubicTo(-0.95f * r, -0.95f * r, 0.95f * r, -0.95f * r, 0.95f * r, 0.75f * r);
+                P.close();
+                c.drawPath(P, F);
+                F.setColor(bg);
+                P.reset();
+                P.moveTo(-0.3f * r, 0.75f * r);
+                P.cubicTo(-0.3f * r, 0.05f * r, 0.3f * r, 0.05f * r, 0.3f * r, 0.75f * r);
+                P.close();
+                c.drawPath(P, F);
+                break;
+            }
+            case "fuel": { // ГСМ: канистра
+                P.moveTo(-0.6f * r, -0.5f * r);
+                P.lineTo(-0.2f * r, -0.9f * r);
+                P.lineTo(0.62f * r, -0.9f * r);
+                P.lineTo(0.62f * r, 0.95f * r);
+                P.lineTo(-0.6f * r, 0.95f * r);
+                P.close();
+                c.drawPath(P, F);
+                S.setColor(bg);
+                S.setStrokeWidth(0.12f * r);
+                c.drawLine(-0.3f * r, -0.1f * r, 0.35f * r, 0.6f * r, S);
+                c.drawLine(0.35f * r, -0.1f * r, -0.3f * r, 0.6f * r, S);
+                S.setColor(fg);
+                break;
+            }
+            case "target": // цель: кольца и точка
+                S.setStrokeWidth(0.15f * r);
+                c.drawCircle(0, 0, 0.82f * r, S);
+                c.drawCircle(0, 0, 0.48f * r, S);
+                c.drawCircle(0, 0, 0.18f * r, F);
+                break;
+            case "block": { // блокпост: шлагбаум
+                c.drawRect(-0.85f * r, -0.1f * r, -0.6f * r, 0.95f * r, F);
+                c.save();
+                c.rotate(-12, -0.72f * r, 0);
+                c.drawRoundRect(-0.72f * r, -0.28f * r, 0.98f * r, 0.06f * r, 0.08f * r, 0.08f * r, F);
+                F.setColor(bg);
+                c.drawRect(-0.2f * r, -0.28f * r, 0.1f * r, 0.06f * r, F);
+                c.drawRect(0.4f * r, -0.28f * r, 0.7f * r, 0.06f * r, F);
+                F.setColor(fg);
+                c.restore();
+                break;
+            }
             case "■":
                 c.drawRoundRect(-0.6f * r, -0.6f * r, 0.6f * r, 0.6f * r, 0.12f * r, 0.12f * r, F);
                 break;

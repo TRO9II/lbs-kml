@@ -30,6 +30,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.MotionEvent;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
@@ -307,6 +308,15 @@ public class MapActivity extends Activity {
         findViewById(R.id.offlineChip).setOnClickListener(v -> openMenu(true));
         findViewById(R.id.navStop).setOnClickListener(v -> { if (guideOn()) stopGuide(true); else stopNav(); });
         findViewById(R.id.navPanel).setOnClickListener(v -> { if (guideOn()) guideAdjust(); });
+        findViewById(R.id.targetCard).setOnClickListener(v -> {
+            // нажатие на цель — выбрать, что с ней сделать
+            try {
+                double tl = Double.parseDouble(prefs.getString("targetLat", "0")), tn = Double.parseDouble(prefs.getString("targetLon", "0"));
+                flyTo(tl, tn, Math.max(14, map.getZoomLevelDouble()));
+                placeActions(tl, tn);
+            } catch (Exception ignored) {
+            }
+        });
         findViewById(R.id.targetCard).setOnLongClickListener(v -> {
             try {
                 startNav(Collections.singletonList(new double[]{Double.parseDouble(prefs.getString("targetLat", "0")),
@@ -2101,7 +2111,7 @@ public class MapActivity extends Activity {
             return;
         }
         GeoPoint c = (GeoPoint) map.getMapCenter();
-        editPoint(null, c.getLatitude(), c.getLongitude(), null);
+        placeActions(c.getLatitude(), c.getLongitude());
     }
 
     private boolean onMapLongPress(GeoPoint p) {
@@ -2109,8 +2119,87 @@ public class MapActivity extends Activity {
             toolAdd(p.getLatitude(), p.getLongitude());
             return true;
         }
-        editPoint(null, p.getLatitude(), p.getLongitude(), null);
+        placeActions(p.getLatitude(), p.getLongitude());
         return true;
+    }
+
+    /** Самые нужные значки — для быстрой метки одним нажатием. */
+    private static final String[] QUICK_ICONS = {"eye", "pos", "relay", "ew", "drone", "mine", "target", "shelter", "store", "block", "!", "✚"};
+
+    /** Нажатие на прицел или долгое нажатие на карту: что сделать с этим местом. */
+    private void placeActions(double lat, double lon) {
+        sheet("Это место");
+        coordsCard(lat, lon);
+        // быстрая метка: значок → точка сохраняется сразу, с названием по значку
+        hSection("БЫСТРАЯ МЕТКА");
+        android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(0, 0, 0, (int) dp(4));
+        float den = getResources().getDisplayMetrics().density;
+        int col = prefs.getInt("lastColor", UserPoints.COLORS[0]);
+        for (String ic : QUICK_ICONS) {
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+            cell.setPadding((int) dp(4), (int) dp(6), (int) dp(4), (int) dp(6));
+            cell.setBackgroundResource(R.drawable.bg_sheet_chip);
+            ImageView iv = new ImageView(this);
+            iv.setImageBitmap(UserPoints.pin(col, den * 1.25f, ic));
+            cell.addView(iv, new LinearLayout.LayoutParams((int) dp(36), (int) dp(36)));
+            TextView t = new TextView(this);
+            String nm = iconName(ic);
+            t.setText(nm.replace(" (НП)", ""));
+            t.setTextSize(11);
+            t.setMaxLines(1);
+            t.setTextColor(getColor(R.color.hud_text));
+            t.setPadding(0, (int) dp(3), 0, 0);
+            cell.addView(t);
+            cell.setOnClickListener(v -> {
+                UserPoints.Point p = new UserPoints.Point();
+                p.id = Long.toString(System.currentTimeMillis(), 36);
+                p.created = System.currentTimeMillis();
+                p.name = nm;
+                p.note = "";
+                p.color = col;
+                p.icon = ic;
+                p.lat = lat;
+                p.lon = lon;
+                userPoints.add(p);
+                savePoints();
+                vibrate(30);
+                closeSheet();
+                Toast.makeText(this, "Метка «" + nm + "» сохранена · нажмите на неё, чтобы изменить", Toast.LENGTH_SHORT).show();
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams((int) dp(78), LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.setMarginEnd((int) dp(6));
+            row.addView(cell, lp);
+        }
+        hs.addView(row);
+        sheetContent.addView(hs);
+        hSection("ДЕЙСТВИЯ");
+        int tc = getColor(R.color.hud_text);
+        toolTiles(
+                toolTile(R.drawable.ic_add, "Точка…", getColor(R.color.hud_accent), () -> editPoint(null, lat, lon, null)),
+                toolTile(R.drawable.ic_route, "Маршрут", tc, () -> { closeSheet(); startTool(TOOL_ROUTE, null); toolAdd(lat, lon); }),
+                toolTile(R.drawable.ic_ruler, "Линейка", tc, () -> { closeSheet(); startTool(TOOL_RULER, null); toolAdd(lat, lon); }));
+        toolTiles(
+                toolTile(R.drawable.ic_flag, "Навести", tc, () -> { closeSheet(); setTarget(lat, lon, "Цель"); }),
+                toolTile(R.drawable.ic_nav, "Вести сюда", tc, () -> { closeSheet(); startNav(Collections.singletonList(new double[]{lat, lon}), 0, "Цель"); }),
+                toolTile(R.drawable.ic_area, "Зона", tc, () -> { closeSheet(); startTool(TOOL_AREA, null); toolAdd(lat, lon); }));
+        boolean grp = chat != null && chat.active();
+        toolTiles(
+                toolTile(R.drawable.ic_compass, "Ориентир", tc, () -> { if (resMarks.size() >= 6) resMarks.clear(); addResMark("Ориентир " + (resMarks.size() + 1), lat, lon); }),
+                toolTile(R.drawable.ic_share, "Текстом", tc, () -> sharePointText("Точка", lat, lon)),
+                grp ? toolTile(R.drawable.ic_chat, "В чат", tc, () -> { sendPoint("Точка", lat, lon); openChat(); })
+                        : toolTile(R.drawable.ic_qr, "QR-код", tc, () -> {
+                            UserPoints.Point q = new UserPoints.Point();
+                            q.name = "Точка";
+                            q.note = "";
+                            q.lat = lat;
+                            q.lon = lon;
+                            showQr(QrCodec.encodePoint(q), "Точка");
+                        }));
     }
 
     // ================= Свои точки =================
@@ -2650,25 +2739,116 @@ public class MapActivity extends Activity {
                     "Нажмите на прицел в центре карты — точка встанет туда.\nИли подержите палец на нужном месте.");
             return;
         }
-        hSection("БЛИЖАЙШИЕ К ЦЕНТРУ КАРТЫ");
+        // сортировка
+        final int mode = prefs.getInt("ptSort", 0);
+        String[] names = {"Ближе к центру", "Ближе ко мне", "Новые", "По имени", "По значку", "По цвету"};
+        android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        LinearLayout chips = new LinearLayout(this);
+        chips.setPadding(0, (int) dp(6), 0, (int) dp(6));
+        for (int i = 0; i < names.length; i++) {
+            final int k = i;
+            TextView ch = hChip(names[i], 0, i == mode, v -> { prefs.edit().putInt("ptSort", k).apply(); showPointsList(); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (int) dp(34));
+            lp.setMarginEnd((int) dp(6));
+            chips.addView(ch, lp);
+        }
+        hs.addView(chips);
+        sheetContent.addView(hs);
         GeoPoint c = (GeoPoint) map.getMapCenter();
+        android.location.Location me = myLoc == null ? null : myLoc.getLocation();
+        final double cLat = mode == 1 && me != null ? me.getLatitude() : c.getLatitude(),
+                cLon = mode == 1 && me != null ? me.getLongitude() : c.getLongitude();
+        if (mode == 1 && me == null) Toast.makeText(this, "GPS ещё не определил место — считаю от центра карты", Toast.LENGTH_SHORT).show();
         final List<UserPoints.Point> sorted = new ArrayList<>(userPoints);
-        final double cLat = c.getLatitude(), cLon = c.getLongitude();
-        Collections.sort(sorted, (a, b) -> Double.compare(
-                Geo.inverse(cLat, cLon, a.lat, a.lon)[0], Geo.inverse(cLat, cLon, b.lat, b.lon)[0]));
+        final java.text.Collator coll = java.text.Collator.getInstance(new Locale("ru"));
+        switch (mode) {
+            case 2: Collections.sort(sorted, (a, b) -> Long.compare(b.created, a.created)); break;
+            case 3: Collections.sort(sorted, (a, b) -> coll.compare(a.name == null ? "" : a.name, b.name == null ? "" : b.name)); break;
+            case 4: Collections.sort(sorted, (a, b) -> {
+                int x = coll.compare(iconName(a.icon), iconName(b.icon));
+                return x != 0 ? x : coll.compare(a.name == null ? "" : a.name, b.name == null ? "" : b.name);
+            }); break;
+            case 5: Collections.sort(sorted, (a, b) -> {
+                int ia = 0, ib = 0;
+                for (int i = 0; i < UserPoints.COLORS.length; i++) { if (UserPoints.COLORS[i] == a.color) ia = i; if (UserPoints.COLORS[i] == b.color) ib = i; }
+                return ia != ib ? Integer.compare(ia, ib) : coll.compare(a.name == null ? "" : a.name, b.name == null ? "" : b.name);
+            }); break;
+            default: Collections.sort(sorted, (a, b) -> Double.compare(
+                    Geo.inverse(cLat, cLon, a.lat, a.lon)[0], Geo.inverse(cLat, cLon, b.lat, b.lon)[0]));
+        }
+        String lastGroup = null;
         float den = getResources().getDisplayMetrics().density;
         for (UserPoints.Point p : sorted) {
+            if (mode == 4) {
+                String gname = iconName(p.icon).toUpperCase(new Locale("ru"));
+                if (!gname.equals(lastGroup)) { hSection(gname); lastGroup = gname; }
+            }
             double[] inv = Geo.inverse(cLat, cLon, p.lat, p.lon);
             ImageView pin = new ImageView(this);
             pin.setImageBitmap(UserPoints.pin(p.color, den, p.icon));
             pin.setLayoutParams(new LinearLayout.LayoutParams((int) dp(26), (int) dp(35)));
-            ImageView edit = hIconButton(R.drawable.ic_info, getColor(R.color.hud_text2), v -> editPoint(p, p.lat, p.lon, null));
-            hRow(pin, p.name, Geo.dist(inv[0]) + " · " + String.format(Locale.US, "%.0f°", inv[1]) + " · "
-                    + Sk42.format(p.lat, p.lon), edit, v -> {
-                closeSheet();
-                map.getController().animateTo(new GeoPoint(p.lat, p.lon), Math.max(13.0, map.getZoomLevelDouble()), 800L);
+            ImageView share = hIconButton(R.drawable.ic_share, getColor(R.color.hud_text2), v -> exportOnePoint(p));
+            share.setContentDescription("Выгрузить эту точку в KML");
+            String when = p.created > 0 ? new SimpleDateFormat("dd.MM", Locale.US).format(new Date(p.created)) + " · " : "";
+            hRow(pin, p.name == null || p.name.isEmpty() ? "Точка" : p.name,
+                    (mode == 2 ? when : "") + Geo.dist(inv[0]) + " · " + String.format(Locale.US, "%.0f°", inv[1]) + " · " + Sk42.format(p.lat, p.lon),
+                    share, v -> {
+                        map.getController().animateTo(new GeoPoint(p.lat, p.lon), Math.max(14.0, map.getZoomLevelDouble()), 700L);
+                        showPointInfo(p);
+                    });
+        }
+    }
+
+    /** Выборочный экспорт: отметить точки (или маршруты) и выгрузить одним KML. */
+    private void pickExport(boolean pts) {
+        sheet(pts ? "Выбрать точки" : "Выбрать маршруты");
+        final java.util.Set<Object> sel = new java.util.HashSet<>();
+        final TextView[] cnt = new TextView[1];
+        float den = getResources().getDisplayMetrics().density;
+        List<?> items = pts ? new ArrayList<>(userPoints) : new ArrayList<>(routes);
+        if (items.isEmpty()) { emptyState(pts ? R.drawable.ic_place : R.drawable.ic_route, pts ? "Точек нет" : "Маршрутов нет", ""); return; }
+        for (Object o : items) {
+            CheckBox cb = new CheckBox(this);
+            cb.setButtonTintList(ColorStateList.valueOf(getColor(R.color.hud_accent)));
+            cb.setClickable(false);
+            View icon;
+            String title, sub;
+            if (pts) {
+                UserPoints.Point p = (UserPoints.Point) o;
+                ImageView pin = new ImageView(this);
+                pin.setImageBitmap(UserPoints.pin(p.color, den, p.icon));
+                pin.setLayoutParams(new LinearLayout.LayoutParams((int) dp(26), (int) dp(35)));
+                icon = pin;
+                title = p.name == null || p.name.isEmpty() ? "Точка" : p.name;
+                sub = Sk42.format(p.lat, p.lon);
+            } else {
+                Routes.Route r = (Routes.Route) o;
+                icon = routeSwatch(r.color);
+                title = r.name;
+                sub = r.area ? "Зона · " + Routes.areaText(Routes.area(r.pts)) : Geo.dist(Routes.length(r.pts));
+            }
+            hRow(icon, title, sub, cb, v -> {
+                if (sel.contains(o)) sel.remove(o); else sel.add(o);
+                cb.setChecked(sel.contains(o));
+                cnt[0].setText("Выгрузить · " + sel.size());
             });
         }
+        footer("Отмена", "Выгрузить", v -> {
+            if (sel.isEmpty()) { Toast.makeText(this, "Ничего не отмечено", Toast.LENGTH_SHORT).show(); return; }
+            String day = new SimpleDateFormat("dd_MM_yyyy", Locale.US).format(new Date());
+            if (pts) {
+                List<UserPoints.Point> l = new ArrayList<>();
+                for (UserPoints.Point p : userPoints) if (sel.contains(p)) l.add(p);
+                saveAndShare("Tochki_" + l.size() + "_" + day + ".kml", UserPoints.toKml(l), "Отправить точки");
+            } else {
+                List<Routes.Route> l = new ArrayList<>();
+                for (Routes.Route r : routes) if (sel.contains(r)) l.add(r);
+                saveAndShare("Marshruty_" + l.size() + "_" + day + ".kml", Routes.toKmlAll(l), "Отправить маршруты");
+            }
+            closeSheet();
+        });
+        cnt[0] = (TextView) sheetFooter.getChildAt(1);
     }
 
     private void showExport() {
@@ -2682,6 +2862,7 @@ public class MapActivity extends Activity {
             saveAndShare("Tochki_" + new SimpleDateFormat("dd_MM_yyyy", Locale.US).format(new Date()) + ".gpx",
                     UserPoints.toGpx(userPoints), "Отправить точки", "application/gpx+xml");
         });
+        hRow(hIcon(R.drawable.ic_check, tx, 22), "Выбрать точки…", "Отметить нужные и выгрузить одним файлом", null, v -> pickExport(true));
         hSection("МАРШРУТЫ · " + routes.size());
         hRow(hIcon(R.drawable.ic_route, tx, 22), "Все маршруты в KML", "Линии и контрольные точки", null, v -> {
             closeSheet();
@@ -2695,7 +2876,8 @@ public class MapActivity extends Activity {
             saveAndShare("Marshruty_" + new SimpleDateFormat("dd_MM_yyyy", Locale.US).format(new Date()) + ".gpx",
                     Routes.toGpx(routes), "Отправить маршруты", "application/gpx+xml");
         });
-        hSection("ЛИНИЯ ФРОНТА");
+        hRow(hIcon(R.drawable.ic_check, tx, 22), "Выбрать маршруты…", "Отметить нужные и выгрузить одним файлом", null, v -> pickExport(false));
+        hSection("ЛБС");
         hRow(hIcon(R.drawable.ic_lbs, 0xFFFF5A4E, 22), "Файл ЛБС (KML)", lbsDate.isEmpty() ? "не загружена" : "снимок " + lbsDate,
                 null, v -> { closeSheet(); openLbsFile(true); });
         TextView note = new TextView(this);
@@ -3096,22 +3278,7 @@ public class MapActivity extends Activity {
 
         hSection("ЦВЕТ ЛИНИИ");
         final int[] chosen = {editingRoute != null ? editingRoute.color : isArea ? Routes.COLORS[3] : Routes.COLORS[0]};
-        LinearLayout colors = new LinearLayout(this);
-        final List<View> sw = new ArrayList<>();
-        for (int i = 0; i < Routes.COLORS.length; i++) {
-            final int col = Routes.COLORS[i];
-            View v = new View(this);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(34), 1);
-            lp.setMarginEnd((int) dp(8));
-            v.setOnClickListener(x -> {
-                chosen[0] = col;
-                for (int k = 0; k < sw.size(); k++) sw.get(k).setBackground(swatchHud(Routes.COLORS[k], Routes.COLORS[k] == col));
-            });
-            v.setBackground(swatchHud(col, col == chosen[0]));
-            sw.add(v);
-            colors.addView(v, lp);
-        }
-        sheetContent.addView(colors);
+        routeColorGrid(chosen, null);
 
         footer("Отмена", "Сохранить", v -> {
             Routes.Route r = editingRoute;
@@ -3186,34 +3353,32 @@ public class MapActivity extends Activity {
 
     private void routeActions(Routes.Route r) {
         sheet(r.name);
-        LinearLayout info = hCard();
-        TextView t = new TextView(this);
+        // шапка: цветная полоска и главные цифры
         List<Routes.Leg> legs = Routes.legs(r.pts);
-        StringBuilder sb = new StringBuilder(Geo.dist(Routes.length(r.pts))).append(" · ").append(legs.size()).append(" уч.");
-        if (r.area) sb = new StringBuilder("Площадь ").append(Routes.areaText(Routes.area(r.pts))).append("\nПериметр ")
-                .append(Geo.dist(Routes.perimeter(r.pts))).append(" · ").append(r.pts.size()).append(" углов");
-        else if (!legs.isEmpty())
-            sb.append("\nПервый участок: ").append(String.format(Locale.US, "%.1f°", legs.get(0).az))
-              .append(" (").append(Geo.mils(legs.get(0).grid)).append(")");
-        t.setText(sb);
-        t.setTextColor(getColor(R.color.hud_text));
-        t.setTextSize(13.5f);
-        info.addView(t);
-        sheetContent.addView(info);
-        int tx = getColor(R.color.hud_text);
-        hSection("ДЕЙСТВИЯ");
-        hRow(hIcon(R.drawable.ic_eye, tx, 22), "Показать на карте", null, null, v -> { closeSheet(); fitRoute(r); });
-        if (!r.area) {
-            hRow(hIcon(R.drawable.ic_nav, 0xFF42A5F5, 22), "Вести по маршруту", "Стрелка, расстояние и время до каждой КТ", null,
-                    v -> { closeSheet(); navRoute(r, false); });
-            hRow(hIcon(R.drawable.ic_undo, 0xFF42A5F5, 22), "Вести обратно", "Возврат тем же путём (по треку назад)", null,
-                    v -> { closeSheet(); navRoute(r, true); });
+        LinearLayout stats = new LinearLayout(this);
+        stats.setOrientation(LinearLayout.HORIZONTAL);
+        if (r.area) {
+            statCell(stats, Routes.areaText(Routes.area(r.pts)), "площадь", r.color);
+            statCell(stats, Geo.dist(Routes.perimeter(r.pts)), "периметр", 0);
+            statCell(stats, Integer.toString(r.pts.size()), "углов", 0);
+        } else {
+            statCell(stats, Geo.dist(Routes.length(r.pts)), "длина", r.color);
+            statCell(stats, Integer.toString(legs.size()), legs.size() == 1 ? "участок" : "участков", 0);
+            statCell(stats, legs.isEmpty() ? "—" : Geo.mils(legs.get(0).grid), "дир. угол 1-го", 0);
         }
-        hRow(hIcon(r.area ? R.drawable.ic_area : R.drawable.ic_route, tx, 22), "Изменить точки", null, null,
-                v -> { closeSheet(); startTool(r.area ? TOOL_AREA : TOOL_ROUTE, r); });
-        hRow(hIcon(R.drawable.ic_qr, tx, 22), "Передать по QR-коду", "На другой телефон без интернета", null,
-                v -> showQr(QrCodec.encodeRoute(r), r.name));
-        hRow(hIcon(R.drawable.ic_table, tx, 22), "Таблица участков", "Длины, азимуты, дир. углы, координаты", null, v -> {
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sl.bottomMargin = (int) dp(10);
+        sheetContent.addView(stats, sl);
+        if (!r.area)
+            actionRow(
+                    vAction(R.drawable.ic_nav, "Вести", true, v -> { closeSheet(); navRoute(r, false); }),
+                    vAction(R.drawable.ic_undo, "Обратно", false, v -> { closeSheet(); navRoute(r, true); }),
+                    vAction(R.drawable.ic_eye, "Показать", false, v -> { closeSheet(); fitRoute(r); }));
+        else actionRow(vAction(R.drawable.ic_eye, "Показать на карте", true, v -> { closeSheet(); fitRoute(r); }));
+        int tc = getColor(R.color.hud_text);
+        toolTiles(
+                toolTile(r.area ? R.drawable.ic_area : R.drawable.ic_route, "Изменить", tc, () -> { closeSheet(); startTool(r.area ? TOOL_AREA : TOOL_ROUTE, r); }),
+                toolTile(R.drawable.ic_table, "Таблица", tc, () -> {
             closeSheet();
             List<double[]> keep = new ArrayList<>(toolPts);
             toolPts.clear();
@@ -3221,25 +3386,110 @@ public class MapActivity extends Activity {
             toolTable();
             toolPts.clear();
             toolPts.addAll(keep);
+        }),
+                r.area ? toolTile(R.drawable.ic_qr, "QR-код", tc, () -> showQr(QrCodec.encodeRoute(r), r.name))
+                        : toolTile(R.drawable.ic_mountain, "Профиль", tc, () -> showProfile(r.pts, r.name)));
+        boolean grp = chat != null && chat.active();
+        toolTiles(
+                r.area ? toolTile(R.drawable.ic_share, "Файл KML", tc, () -> exportOneRoute(r))
+                        : toolTile(R.drawable.ic_qr, "QR-код", tc, () -> showQr(QrCodec.encodeRoute(r), r.name)),
+                grp ? toolTile(R.drawable.ic_my_location, "В группу", tc, () -> { closeSheet(); shareToGroupMap(objFromRoute(r)); })
+                        : toolTile(R.drawable.ic_label, "Название", tc, () -> renameRoute(r)),
+                toolTile(R.drawable.ic_delete, "Удалить", 0xFFFF6B60, () -> new AlertDialog.Builder(this)
+                        .setTitle("Удалить «" + r.name + "»?")
+                        .setPositiveButton("Удалить", (d2, w2) -> {
+                            routes.remove(r);
+                            saveRoutes();
+                            showRoutes();
+                        })
+                        .setNegativeButton("Отмена", null)
+                        .show()));
+        if (!r.area || grp) hChipRow(
+                r.area ? hChip("Название", R.drawable.ic_label, false, v -> renameRoute(r)) : hChip("Файл KML", R.drawable.ic_share, false, v -> exportOneRoute(r)),
+                grp ? hChip("Название", R.drawable.ic_label, false, v -> renameRoute(r)) : null);
+        hSection("ЦВЕТ");
+        final int[] chosen = {r.color};
+        routeColorGrid(chosen, () -> {
+            r.color = chosen[0];
+            r.visible = true;
+            saveRoutes();
+            map.invalidate();
         });
-        if (!r.area)
-            hRow(hIcon(R.drawable.ic_mountain, tx, 22), "Профиль высот", "Подъёмы, спуски, перепад", null, v -> showProfile(r.pts, r.name));
-        if (chat != null && chat.active())
-            hRow(hIcon(R.drawable.ic_my_location, tx, 22), "На общую карту группы", "Увидят все участники", null,
-                    v -> { closeSheet(); shareToGroupMap(objFromRoute(r)); });
-        hRow(hIcon(R.drawable.ic_share, tx, 22), "Экспорт в KML", "Для AlpineQuest", null, v -> {
-            closeSheet();
-            saveAndShare(r.name.replaceAll("[^A-Za-z0-9А-Яа-яЁё_-]", "_") + ".kml", Routes.toKml(r), "Отправить маршрут");
-        });
-        hRow(hIcon(R.drawable.ic_delete, 0xFFFF6B60, 22), "Удалить маршрут", null, null, v -> new AlertDialog.Builder(this)
-                .setTitle("Удалить «" + r.name + "»?")
-                .setPositiveButton("Удалить", (d2, w2) -> {
-                    routes.remove(r);
-                    saveRoutes();
-                    showRoutes();
+    }
+
+    private void statCell(LinearLayout row, String big, String small, int accent) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding((int) dp(12), (int) dp(10), (int) dp(8), (int) dp(10));
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(14));
+        g.setColor(0xFF1F232A);
+        g.setStroke((int) dp(accent != 0 ? 1.5f : 1), accent != 0 ? accent : getColor(R.color.hud_line));
+        c.setBackground(g);
+        TextView b = new TextView(this);
+        b.setText(big);
+        b.setTextSize(16);
+        b.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        b.setTextColor(getColor(R.color.hud_text));
+        b.setSingleLine(true);
+        c.addView(b);
+        TextView s2 = new TextView(this);
+        s2.setText(small);
+        s2.setTextSize(11.5f);
+        s2.setTextColor(getColor(R.color.hud_text2));
+        s2.setSingleLine(true);
+        c.addView(s2);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        if (row.getChildCount() > 0) lp.setMarginStart((int) dp(8));
+        row.addView(c, lp);
+    }
+
+    private void exportOneRoute(Routes.Route r) {
+        saveAndShare(r.name.replaceAll("[^A-Za-z0-9А-Яа-яЁё_-]", "_") + ".kml", Routes.toKml(r), "Отправить маршрут");
+    }
+
+    private void renameRoute(Routes.Route r) {
+        final EditText in = new EditText(this);
+        in.setText(r.name);
+        in.setSingleLine(true);
+        in.setSelection(in.getText().length());
+        new AlertDialog.Builder(this)
+                .setTitle("Название")
+                .setView(in)
+                .setPositiveButton("Сохранить", (d, w) -> {
+                    String n = in.getText().toString().trim();
+                    if (!n.isEmpty()) { r.name = n; saveRoutes(); }
+                    routeActions(r);
                 })
                 .setNegativeButton("Отмена", null)
-                .show());
+                .show();
+    }
+
+    /** Сетка цветов линии: по 6 в ряд. onPick — после выбора (может быть null). */
+    private void routeColorGrid(int[] chosen, Runnable onPick) {
+        final List<View> sw = new ArrayList<>();
+        LinearLayout rowV = null;
+        for (int i = 0; i < Routes.COLORS.length; i++) {
+            if (i % 6 == 0) {
+                rowV = new LinearLayout(this);
+                LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                rl.bottomMargin = (int) dp(8);
+                sheetContent.addView(rowV, rl);
+            }
+            final int col = Routes.COLORS[i];
+            View v = new View(this);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(34), 1);
+            lp.setMarginEnd((int) dp(8));
+            v.setContentDescription(Routes.COLOR_NAMES[i]);
+            v.setOnClickListener(x -> {
+                chosen[0] = col;
+                for (int k = 0; k < sw.size(); k++) sw.get(k).setBackground(swatchHud(Routes.COLORS[k], Routes.COLORS[k] == col));
+                if (onPick != null) onPick.run();
+            });
+            v.setBackground(swatchHud(col, col == chosen[0]));
+            sw.add(v);
+            rowV.addView(v, lp);
+        }
     }
 
     private void fitRoute(Routes.Route r) {
