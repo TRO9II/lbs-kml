@@ -10984,8 +10984,12 @@ public class MapActivity extends Activity {
     /** Инструкция: короткие разделы, открываются по нажатию. open — какой раздел раскрыть (-1 — ни одного). */
     private void showGuide(int open) {
         sheet("Инструкция");
-        if (open < 0) hChipRow(hChip("О карте и легенда", R.drawable.ic_info, false, v -> showInfo()),
-                hChip("Вопросы — в Telegram", R.drawable.ic_send, false, v -> openTgChannel()));
+        if (open < 0) {
+            hChipRow(hChip("О карте и легенда", R.drawable.ic_info, false, v -> showInfo()),
+                    hChip("Telegram-канал", R.drawable.ic_send, false, v -> openTgChannel()));
+            View gap = new View(this);
+            sheetContent.addView(gap, new LinearLayout.LayoutParams(1, (int) dp(10)));
+        }
         final List<View> bodies = new ArrayList<>();
         for (int i = 0; i < GUIDE.length; i++) {
             Object[] g = GUIDE[i];
