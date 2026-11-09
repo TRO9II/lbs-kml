@@ -1449,8 +1449,32 @@ final class ChatClient {
     }
 
     /** Найти приглашение в тексте: rubezh2://join?… или ссылка http://сервер/join#… (в т.ч. внутри сообщения). */
+    private static final byte[] INV_KEY = "rubezh-inv".getBytes(StandardCharsets.UTF_8);
+
+    /** Скрыть адрес сервера в ссылке (маскировка: в ссылке не видно ни IP, ни порта). */
+    static String packInvite(String query) {
+        byte[] b = query.getBytes(StandardCharsets.UTF_8);
+        for (int i = 0; i < b.length; i++) b[i] ^= INV_KEY[i % INV_KEY.length];
+        return android.util.Base64.encodeToString(b, android.util.Base64.URL_SAFE | android.util.Base64.NO_PADDING | android.util.Base64.NO_WRAP);
+    }
+
+    static String unpackInvite(String d) {
+        try {
+            byte[] b = android.util.Base64.decode(d, android.util.Base64.URL_SAFE | android.util.Base64.NO_PADDING | android.util.Base64.NO_WRAP);
+            for (int i = 0; i < b.length; i++) b[i] ^= INV_KEY[i % INV_KEY.length];
+            String q = new String(b, StandardCharsets.UTF_8);
+            return q.contains("r=") && q.contains("c=") ? "rubezh2://join?" + q : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    static final String INVITE_PAGE = "https://tro9ii.github.io/lbs-kml/j#";
+
     static String normalizeInvite(String s) {
         if (s == null) return null;
+        java.util.regex.Matcher pd = java.util.regex.Pattern.compile("(?:rubezh2://join\\?d=|/j#)([A-Za-z0-9_-]{8,})").matcher(s);
+        if (pd.find()) return unpackInvite(pd.group(1));
         int i = s.indexOf("rubezh2://join?");
         if (i >= 0) return s.substring(i).split("\\s")[0];
         if (s.trim().startsWith("rubezh://join?")) return s.trim();
@@ -1484,9 +1508,7 @@ final class ChatClient {
             } else rest.append(rest.length() > 0 ? "&" : "").append(part);
         }
         if (srv == null) return null;
-        if (srv.startsWith("https://")) srv = "http://" + srv.substring(8); // браузер не знает наш сертификат
-        while (srv.endsWith("/")) srv = srv.substring(0, srv.length() - 1);
-        return srv + "/join#" + rest;
+        return INVITE_PAGE + packInvite(n.substring("rubezh2://join?".length()));
     }
 
     /** Вступить по приглашению: заявка уходит администратору. */
