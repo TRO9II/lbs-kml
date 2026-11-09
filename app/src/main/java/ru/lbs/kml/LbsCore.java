@@ -80,7 +80,7 @@ final class LbsCore {
 
     static Result buildAndSave(Context c, String data) throws Exception {
         KmlBuilder.Parsed p = KmlBuilder.parse(data);
-        if (p.lines.isEmpty()) throw new Exception("пустая линия фронта");
+        if (p.lines.isEmpty()) throw new Exception("пустая ЛБС");
 
         List<double[][]> base = updateHistory(c, p);
         List<double[][]> added = Collections.emptyList(), removed = Collections.emptyList();
@@ -261,7 +261,7 @@ final class LbsCore {
         if (nm == null || nm.getNotificationChannel(CHANNEL) != null) return;
         NotificationChannel ch = new NotificationChannel(CHANNEL, "Новая ЛБС",
                 NotificationManager.IMPORTANCE_DEFAULT);
-        ch.setDescription("Уведомления о новой линии фронта");
+        ch.setDescription("Уведомления об изменении ЛБС");
         nm.createNotificationChannel(ch);
     }
 

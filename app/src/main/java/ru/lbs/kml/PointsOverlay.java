@@ -142,7 +142,10 @@ public class PointsOverlay extends Overlay {
             if (orient != 0f) pj.rotateAndScalePoint(pt.x, pt.y, sp); else sp.set(pt.x, pt.y);
             // метка круглая, центр — в самой точке
             float dx = e.getX() - sp.x, dy = e.getY() - sp.y;
-            if (Math.abs(dx) <= w / 2 + slop && Math.abs(dy) <= h / 2 + slop) {
+            // нажать можно и на значок, и на подпись справа от него
+            float tw = p.name == null || p.name.isEmpty() ? 0 : text.measureText(p.name);
+            if (dx >= -(w / 2 + slop) && dx <= w / 2 + tw + slop && Math.abs(dy) <= h / 2 + slop) {
+                if (dx > w / 2) dx = w / 2; // попадание по подписи считаем как по значку
                 dist.put(p, dx * dx + dy * dy);
                 out.add(p);
             }

@@ -148,20 +148,18 @@ final class Sk42 {
         return skToWgs(sk[0], sk[1]);
     }
 
-    /** "X 5 354 120  Y 7 412 860" */
+    /** "X 53 54 120   Y 74 12 860" — как принято в войсках: км по два знака, метры тремя. */
     static String format(double lat, double lon) {
         double[] r = fromWgs(lat, lon);
         return "X " + group(Math.round(r[0])) + "   Y " + group(Math.round(r[1]));
     }
 
-    private static String group(long v) {
-        String s = Long.toString(v);
-        StringBuilder sb = new StringBuilder();
-        int k = 0;
-        for (int i = s.length() - 1; i >= 0; i--) {
-            sb.append(s.charAt(i));
-            if (++k % 3 == 0 && i > 0) sb.append(' ');
-        }
-        return sb.reverse().toString();
+    /** 5287286 → "52 87 286". */
+    static String group(long v) {
+        String s = Long.toString(Math.abs(v)), sign = v < 0 ? "-" : "";
+        if (s.length() <= 3) return sign + s;
+        String tail = s.substring(s.length() - 3), rest = s.substring(0, s.length() - 3);
+        if (rest.length() <= 2) return sign + rest + " " + tail;
+        return sign + rest.substring(0, rest.length() - 2) + " " + rest.substring(rest.length() - 2) + " " + tail;
     }
 }

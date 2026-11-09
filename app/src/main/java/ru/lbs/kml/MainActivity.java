@@ -265,7 +265,7 @@ public class MainActivity extends Activity {
             return;
         }
         running = false;
-        showState("Строю линию фронта…", true);
+        showState("Строю ЛБС…", true);
         final String data = res;
         new Thread(() -> {
             try {

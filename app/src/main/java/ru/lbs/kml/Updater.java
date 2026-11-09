@@ -16,7 +16,7 @@ import java.net.URL;
 /** Скачивание новой версии и установка поверх — прямо из приложения. */
 final class Updater {
 
-    static final String APK_URL = "https://github.com/TRO9II/lbs-kml/releases/download/latest/LbsKml.apk";
+    static final String APK_URL = "https://github.com/TRO9II/lbs-kml/releases/download/latest/Rubezh.apk";
 
     interface Progress {
         void on(long done, long total);

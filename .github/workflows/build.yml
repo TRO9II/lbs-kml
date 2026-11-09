@@ -37,12 +37,14 @@ jobs:
         run: gradle assembleDebug --no-daemon
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk LbsKml.apk
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk Rubezh.apk
+          cp Rubezh.apk LbsKml.apk  # старое имя — для автообновления версий до 3.26
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LbsKml-apk
-          path: LbsKml.apk
+          name: Rubezh-apk
+          path: Rubezh.apk
 
       - name: Publish to release "latest"
         env:
@@ -58,7 +60,7 @@ jobs:
           [ -s notes.txt ] || echo "- Исправления и улучшения" > notes.txt
           echo "" >> notes.txt
           echo "v$VERSION · сборка ${GITHUB_SHA::7}" >> notes.txt
-          gh release create latest LbsKml.apk --title "Рубеж v$VERSION" --notes-file notes.txt
+          gh release create latest Rubezh.apk LbsKml.apk --title "Рубеж v$VERSION" --notes-file notes.txt
 
       - name: Post update to Telegram channel
         if: env.NEW_VERSION == '1' || inputs.post_tg
@@ -74,7 +76,7 @@ jobs:
           notes = html.escape(open("tg.txt", encoding="utf-8").read().strip())
           text = (f"🆕 <b>Рубеж v{os.environ['VERSION']}</b>\n\n{notes}\n\n"
                   "Приложение предложит обновиться само при запуске. "
-                  "Или скачайте: <a href=\"https://github.com/TRO9II/lbs-kml/releases/download/latest/LbsKml.apk\">LbsKml.apk</a>")
+                  "Или скачайте: <a href=\"https://github.com/TRO9II/lbs-kml/releases/download/latest/Rubezh.apk\">Rubezh.apk</a>")
           req = urllib.request.Request(
               f"https://api.telegram.org/bot{os.environ['TG_TOKEN'].strip()}/sendMessage",
               data=json.dumps({"chat_id": os.environ["TG_CHAT"].strip(), "text": text, "parse_mode": "HTML",
