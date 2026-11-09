@@ -1,6 +1,8 @@
 name: Fetch DeepState sample
 on:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -22,7 +24,7 @@ jobs:
               subprocess.run(['curl','-sS','-A',UA,'-o','out/%s.json'%n,'https://deepstatemap.live/api/history/%d/geojson'%x['id']])
           PY
           ls -la out
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ds
-          path: out
+      - run: |
+          cd out && gzip -9 *.json && git init -q && git checkout -q -b dsdata && git add . \
+            && git -c user.name=ci -c user.email=ci@x commit -qm data \
+            && git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" dsdata
