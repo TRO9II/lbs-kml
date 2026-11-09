@@ -32,6 +32,7 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -60,6 +61,22 @@ final class ChatClient {
         double lat, lon;
         boolean mine, hasLoc;
         transient String data; // base64 голоса/фото при отправке и приёме
+        String to = "";        // личное сообщение: кому (id участника)
+        long re;               // ответ на сообщение с этим номером
+        String rq = "";        // цитата: «Позывной: текст»
+        long ref;              // edit / del / react: над каким сообщением
+        long edited;           // когда исправлено
+        String rx = "";        // реакции: {"👍":["id1","id2"]}
+        transient boolean queued; // ждёт отправки (нет связи)
+        String qid = "";       // локальный номер в очереди
+        int ttlSec;            // срок жизни при отправке из очереди
+
+        boolean meta() { return kind.equals("edit") || kind.equals("del") || kind.equals("react"); }
+
+        boolean dm() { return !to.isEmpty(); }
+
+        /** С кем личная переписка (для своего — получатель, для чужого — отправитель). */
+        String peer(String me) { return dev.equals(me) ? to : dev; }
 
         JSONObject json() throws Exception {
             JSONObject o = new JSONObject();
@@ -80,6 +97,12 @@ final class ChatClient {
             if (!op.isEmpty()) o.put("op", op);
             if (!oid.isEmpty()) o.put("oid", oid);
             if (!obj.isEmpty()) o.put("obj", obj);
+            if (!to.isEmpty()) o.put("to", to);
+            if (re > 0) o.put("re", re);
+            if (!rq.isEmpty()) o.put("rq", rq);
+            if (ref > 0) o.put("ref", ref);
+            if (edited > 0) o.put("ed", edited);
+            if (!rx.isEmpty()) o.put("rx", rx);
             return o;
         }
 
@@ -109,6 +132,14 @@ final class ChatClient {
             m.oid = o.optString("oid", "");
             m.obj = o.optString("obj", "");
             m.data = o.has("a") ? o.optString("a") : null;
+            m.to = o.optString("to", "");
+            m.re = o.optLong("re");
+            m.rq = o.optString("rq", "");
+            m.ref = o.optLong("ref");
+            m.edited = o.optLong("ed");
+            m.rx = o.optString("rx", "");
+            m.qid = o.optString("qid", "");
+            m.ttlSec = o.optInt("ttl");
             return m;
         }
     }
@@ -163,6 +194,18 @@ final class ChatClient {
         default void onReads() {}
 
         default void onObjects() {}
+
+        /** Сообщения исправлены / удалены / получили реакцию. */
+        default void onChanged() {}
+
+        /** Изменилась очередь неотправленного. */
+        default void onOutbox() {}
+
+        /** Сервер отказался принять сообщение из очереди. */
+        default void onSendFailed(String why) {}
+
+        /** Активной стала другая группа. */
+        default void onGroupSwitched() {}
 
         void onStatus(String status, boolean ok);
     }
@@ -385,17 +428,423 @@ final class ChatClient {
                     any = true;
                 }
             }
-            if (any) {
-                File f = store();
-                try {
-                    StringBuilder sb = new StringBuilder();
-                    for (Msg m : history) sb.append(m.json().put("s", m.seq)).append('\n');
-                    if (f != null) java.nio.file.Files.write(f.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
-                } catch (Exception ignored) {
-                }
-            }
+            if (any) rewriteStore();
         }
         return any;
+    }
+
+    /** Переписать ленту на диске целиком (после правки / удаления / реакции). */
+    private void rewriteStore() {
+        File f = store();
+        if (f == null) return;
+        try {
+            StringBuilder sb = new StringBuilder();
+            synchronized (history) {
+                for (Msg m : history) sb.append(m.json().put("s", m.seq)).append('\n');
+            }
+            java.nio.file.Files.write(f.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+        }
+    }
+
+    // ---------- ответ, правка, удаление, реакции ----------
+
+    Msg find(long seq) {
+        synchronized (history) {
+            for (int i = history.size() - 1; i >= 0; i--) if (history.get(i).seq == seq) return history.get(i);
+        }
+        return null;
+    }
+
+    /** Служебное сообщение над target: в личной переписке — тоже лично. */
+    private Msg metaFor(Msg target, String kind) {
+        Msg m = new Msg();
+        m.kind = kind;
+        m.ref = target.seq;
+        if (target.dm()) m.to = target.peer(me);
+        return m;
+    }
+
+    void edit(Msg target, String text, Consumer<String> fail) {
+        Msg m = metaFor(target, "edit");
+        m.text = text;
+        send(m, null, fail);
+    }
+
+    /** Удалить у всех: служебное сообщение + стереть оригинал с сервера. */
+    void delete(Msg target, Consumer<String> fail) {
+        Msg m = metaFor(target, "del");
+        send(m, null, fail);
+        final long seq = target.seq;
+        bg(() -> {
+            try {
+                http("POST", "/api/v2/unsend?seq=" + seq, "{}", 15000);
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
+    void react(Msg target, String emoji) {
+        Msg m = metaFor(target, "react");
+        m.text = emoji;
+        send(m, null, null);
+    }
+
+    boolean canDelete(Msg t) {
+        return t.dev.equals(me) || isAdmin();
+    }
+
+    /** Реакции сообщения: смайл → кто поставил. */
+    static Map<String, List<String>> reactions(Msg m) {
+        Map<String, List<String>> out = new java.util.LinkedHashMap<>();
+        if (m.rx.isEmpty()) return out;
+        try {
+            JSONObject o = new JSONObject(m.rx);
+            for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) {
+                String k = it.next();
+                JSONArray a = o.getJSONArray(k);
+                List<String> l = new ArrayList<>();
+                for (int i = 0; i < a.length(); i++) l.add(a.getString(i));
+                if (!l.isEmpty()) out.put(k, l);
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    /** Применить edit / del / react. true — лента изменилась. */
+    private boolean applyMeta(Msg m, List<Msg> added) {
+        Msg t = find(m.ref);
+        if (t == null || t.meta()) return false;
+        if (t.dm() != m.dm()) return false; // личное правится только лично
+        if (t.dm() && !(t.peer(me).equals(m.peer(me)))) return false; // и только в той же переписке
+        switch (m.kind) {
+            case "edit":
+                if (!t.dev.equals(m.dev)) return false;
+                t.text = m.text;
+                t.edited = m.t;
+                return true;
+            case "del": {
+                Person p = people.get(m.dev);
+                if (!t.dev.equals(m.dev) && (p == null || !p.admin())) return false;
+                synchronized (history) {
+                    history.remove(t);
+                }
+                added.remove(t);
+                if (!t.media.isEmpty()) new File(t.media).delete();
+                return true;
+            }
+            case "react":
+                try {
+                    String e = m.text.trim();
+                    if (e.isEmpty() || e.length() > 16) return false;
+                    JSONObject o = t.rx.isEmpty() ? new JSONObject() : new JSONObject(t.rx);
+                    boolean had = false;
+                    JSONObject out = new JSONObject();
+                    for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) {
+                        String k = it.next();
+                        JSONArray a = o.getJSONArray(k), b = new JSONArray();
+                        for (int i = 0; i < a.length(); i++) {
+                            if (a.getString(i).equals(m.dev)) { if (k.equals(e)) had = true; continue; } // одна реакция от человека
+                            b.put(a.getString(i));
+                        }
+                        if (b.length() > 0) out.put(k, b);
+                    }
+                    if (!had) {
+                        JSONArray a = out.optJSONArray(e);
+                        if (a == null) a = new JSONArray();
+                        a.put(m.dev);
+                        out.put(e, a);
+                    }
+                    t.rx = out.length() == 0 ? "" : out.toString();
+                    return true;
+                } catch (Exception ex) {
+                    return false;
+                }
+        }
+        return false;
+    }
+
+    // ---------- личные сообщения ----------
+
+    private final Map<String, byte[]> dmKeys = new ConcurrentHashMap<>();
+
+    private byte[] dmKey(String other) throws Exception {
+        Person p = people.get(other);
+        if (p == null || p.pub.isEmpty()) {
+            refreshPeople();
+            p = people.get(other);
+        }
+        if (p == null || p.pub.isEmpty()) throw new Exception("нет ключа участника");
+        byte[] k = dmKeys.get(p.pub);
+        if (k != null) return k;
+        PublicKey pk = KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(unb64(p.pub)));
+        KeyAgreement ka = KeyAgreement.getInstance("ECDH");
+        ka.init(myPair().getPrivate());
+        ka.doPhase(pk, true);
+        k = sha("rubezh-dm|", ka.generateSecret());
+        dmKeys.put(p.pub, k);
+        return k;
+    }
+
+    /** Личное сообщение шифруется общим ключом двоих (ECDH) — ни сервер, ни остальные, ни создатель группы его не прочтут. */
+    private String encryptDm(String plain, String to) throws Exception {
+        return "d." + b64(gcm(true, dmKey(to), ("dm|" + room + "|" + me + "|" + to).getBytes(StandardCharsets.UTF_8),
+                plain.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private String decryptDm(String blob, String from, String to) throws Exception {
+        String other = from.equals(me) ? to : from;
+        return new String(gcm(false, dmKey(other), ("dm|" + room + "|" + from + "|" + to).getBytes(StandardCharsets.UTF_8),
+                unb64(blob.substring(2))), StandardCharsets.UTF_8);
+    }
+
+    /** Личные переписки: собеседник → последнее сообщение. */
+    Map<String, Msg> dialogs() {
+        Map<String, Msg> out = new java.util.LinkedHashMap<>();
+        synchronized (history) {
+            for (Msg m : history) if (m.dm()) out.put(m.peer(me), m);
+        }
+        return out;
+    }
+
+    // ---------- очередь без связи ----------
+
+    private final List<Msg> outbox = new ArrayList<>();
+    private final Map<String, Object[]> outCb = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicBoolean flushing = new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile boolean flushAgain;
+
+    List<Msg> outbox() {
+        synchronized (outbox) {
+            return new ArrayList<>(outbox);
+        }
+    }
+
+    private File outFile() {
+        return room.isEmpty() ? null : new File(app.getFilesDir(), "chat2_" + room + "_out.jsonl");
+    }
+
+    private void saveOutbox() {
+        File f = outFile();
+        if (f == null) return;
+        try {
+            StringBuilder sb = new StringBuilder();
+            synchronized (outbox) {
+                for (Msg m : outbox) {
+                    JSONObject o = m.json().put("qid", m.qid).put("ttl", m.ttlSec);
+                    if (m.data != null) o.put("a", m.data);
+                    sb.append(o).append('\n');
+                }
+            }
+            if (sb.length() == 0) f.delete();
+            else java.nio.file.Files.write(f.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void loadOutbox() {
+        synchronized (outbox) {
+            outbox.clear();
+            File f = outFile();
+            if (f == null || !f.exists()) return;
+            try {
+                for (String line : new String(java.nio.file.Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).split("\n")) {
+                    if (line.isEmpty()) continue;
+                    Msg m = Msg.of(new JSONObject(line));
+                    m.queued = true;
+                    m.mine = true;
+                    outbox.add(m);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** Отменить неотправленное. */
+    void cancelQueued(Msg m) {
+        synchronized (outbox) {
+            outbox.remove(m);
+        }
+        outCb.remove(m.qid);
+        saveOutbox();
+        each(Listener::onOutbox);
+    }
+
+    /** Отправить всё, что накопилось (по порядку). */
+    void flush() {
+        if (!flushing.compareAndSet(false, true)) {
+            flushAgain = true;
+            return;
+        }
+        bg(() -> {
+            try {
+                do {
+                    flushAgain = false;
+                    flushOnce();
+                } while (flushAgain);
+            } finally {
+                flushing.set(false);
+            }
+        });
+    }
+
+    private void flushOnce() {
+        while (true) {
+            Msg m;
+            synchronized (outbox) {
+                if (outbox.isEmpty()) return;
+                m = outbox.get(0);
+            }
+            if (!active()) return;
+            final String rm = room;
+            boolean done;
+            String why = null;
+            try {
+                String plain = m.wire().toString();
+                String body = m.dm() ? encryptDm(plain, m.to) : encrypt(plain);
+                String q = "";
+                if (m.ttlSec > 0) q += "?ttl=" + m.ttlSec;
+                if (m.dm()) q += (q.isEmpty() ? "?" : "&") + "to=" + m.to;
+                http("POST", "/api/v2/send" + q, body, 60000);
+                done = true;
+            } catch (ServerError e) {
+                if (e.code >= 500) return; // сервер занят — попробуем позже
+                done = false;
+                why = e.getMessage();
+            } catch (Exception e) {
+                return; // нет связи — ждём
+            }
+            if (!rm.equals(room)) return; // группу переключили
+            synchronized (outbox) {
+                outbox.remove(m);
+            }
+            saveOutbox();
+            Object[] cb = outCb.remove(m.qid);
+            if (done) {
+                if (cb != null && cb[0] != null) ok((Runnable) cb[0]);
+            } else {
+                final String w = why;
+                if (cb != null && cb[1] != null) {
+                    @SuppressWarnings("unchecked") Consumer<String> f = (Consumer<String>) cb[1];
+                    ui.post(() -> f.accept(w));
+                } else each(l -> l.onSendFailed(w));
+            }
+            each(Listener::onOutbox);
+        }
+    }
+
+    // ---------- несколько групп ----------
+
+    static final class Group {
+        String room = "", name = "";
+        boolean active;
+    }
+
+    private static boolean slotKey(String k) {
+        return k.startsWith("c2") && !k.equals("c2Groups");
+    }
+
+    private JSONObject slots() {
+        try {
+            return new JSONObject(prefs.getString("c2Groups", "{}"));
+        } catch (Exception e) {
+            return new JSONObject();
+        }
+    }
+
+    /** Все группы на этом телефоне; активная — первой. */
+    List<Group> groups() {
+        List<Group> out = new ArrayList<>();
+        if (configured()) {
+            Group g = new Group();
+            g.room = room;
+            g.name = groupName();
+            g.active = true;
+            out.add(g);
+        }
+        JSONObject all = slots();
+        for (java.util.Iterator<String> it = all.keys(); it.hasNext(); ) {
+            String k = it.next();
+            if (k.equals(room)) continue;
+            Group g = new Group();
+            g.room = k;
+            g.name = all.optJSONObject(k) == null ? "Группа" : all.optJSONObject(k).optString("name", "Группа");
+            out.add(g);
+        }
+        return out;
+    }
+
+    /** Убрать текущую группу «в ящик» (настройки сохраняются, лента остаётся на диске). */
+    private synchronized void park() {
+        if (!configured()) return;
+        try {
+            JSONObject v = new JSONObject();
+            SharedPreferences.Editor ed = prefs.edit();
+            for (Map.Entry<String, ?> e : prefs.getAll().entrySet()) {
+                if (!slotKey(e.getKey())) continue;
+                Object x = e.getValue();
+                String t = x instanceof Long ? "l" : x instanceof Integer ? "i" : x instanceof Boolean ? "b" : x instanceof Float ? "f" : "s";
+                v.put(e.getKey(), new JSONArray().put(t).put(String.valueOf(x)));
+                ed.remove(e.getKey());
+            }
+            JSONObject all = slots();
+            all.put(room, new JSONObject().put("name", groupName()).put("p", v));
+            ed.putString("c2Groups", all.toString());
+            ed.commit();
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Достать группу из «ящика» в текущие настройки. */
+    private synchronized boolean unpark(String rm) {
+        JSONObject all = slots();
+        JSONObject g = all.optJSONObject(rm);
+        if (g == null) return false;
+        try {
+            SharedPreferences.Editor ed = prefs.edit();
+            for (Map.Entry<String, ?> e : prefs.getAll().entrySet()) if (slotKey(e.getKey())) ed.remove(e.getKey());
+            JSONObject v = g.getJSONObject("p");
+            for (java.util.Iterator<String> it = v.keys(); it.hasNext(); ) {
+                String k = it.next();
+                JSONArray a = v.getJSONArray(k);
+                String t = a.getString(0), x = a.getString(1);
+                switch (t) {
+                    case "l": ed.putLong(k, Long.parseLong(x)); break;
+                    case "i": ed.putInt(k, Integer.parseInt(x)); break;
+                    case "b": ed.putBoolean(k, Boolean.parseBoolean(x)); break;
+                    case "f": ed.putFloat(k, Float.parseFloat(x)); break;
+                    default: ed.putString(k, x);
+                }
+            }
+            all.remove(rm);
+            ed.putString("c2Groups", all.toString());
+            ed.commit();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Сделать активной другую группу. */
+    void switchTo(String rm) {
+        if (rm.equals(room)) return;
+        stop();
+        park();
+        if (!unpark(rm)) return;
+        load();
+        start();
+        each(Listener::onGroupSwitched);
+    }
+
+    /** После выхода / удаления — перейти в оставшуюся группу, если есть. */
+    private boolean activateAnother() {
+        JSONObject all = slots();
+        java.util.Iterator<String> it = all.keys();
+        if (!it.hasNext()) return false;
+        if (!unpark(it.next())) return false;
+        load();
+        return true;
     }
 
     private static ChatClient instance;
@@ -525,6 +974,8 @@ final class ChatClient {
         me = prefs.getString("c2Me", "");
         token = prefs.getString("c2Token", "");
         role = prefs.getString("c2Role", "");
+        tlsFp = prefs.getString("c2Tls", "");
+        tlsTried = 0;
         lastSeq = prefs.getLong("c2Seq", 0);
         keys.clear();
         try {
@@ -537,7 +988,14 @@ final class ChatClient {
         }
         epoch = 0;
         for (int e : keys.keySet()) epoch = Math.max(epoch, e);
+        mver = -1;
+        rver = -1;
+        lastReadSent = 0;
+        members.clear();
+        reads.clear();
+        dmKeys.clear();
         loadObjs();
+        loadOutbox();
         people.clear();
         try {
             parsePeople(new JSONArray(prefs.getString("c2People", "[]")));
@@ -598,15 +1056,23 @@ final class ChatClient {
         }
     }
 
+    /** Стереть текущую группу с телефона (другие группы остаются). */
     private void wipeLocal() {
         File f = store();
         if (f != null) f.delete();
-        prefs.edit().remove("c2Server").remove("c2Room").remove("c2Me").remove("c2Token").remove("c2Role")
-                .remove("c2Seq").remove("c2Keys").remove("c2People").remove("c2Group").remove("c2Priv").remove("c2Pub")
-                .remove("c2MVer").remove("c2Objs").remove("c2RekeyAt").remove("c2PendSeen").apply();
+        File of = outFile();
+        if (of != null) of.delete();
+        SharedPreferences.Editor ed = prefs.edit();
+        for (Map.Entry<String, ?> e : prefs.getAll().entrySet()) if (slotKey(e.getKey())) ed.remove(e.getKey());
+        ed.commit();
         File md = new File(app.getFilesDir(), "chatmedia");
         File[] fs = md.listFiles();
-        if (fs != null) for (File x : fs) x.delete();
+        if (fs != null && !room.isEmpty()) for (File x : fs) if (x.getName().startsWith(room + "_")) x.delete();
+        synchronized (outbox) {
+            outbox.clear();
+        }
+        outCb.clear();
+        tlsFp = "";
         objs.clear();
         reads.clear();
         server = room = me = token = role = "";
@@ -737,11 +1203,96 @@ final class ChatClient {
     }
 
     private String http(String method, String path, String body, int readTimeout) throws Exception {
-        return http(server, room, me, token, method, path, body, readTimeout);
+        return http(server, tlsFp, room, me, token, method, path, body, readTimeout);
     }
 
-    private static String http(String srv, String rm, String id, String tok, String method, String path, String body, int readTimeout) throws Exception {
-        HttpURLConnection con = (HttpURLConnection) new URL(srv + path + (path.contains("?") ? "&" : "?") + "room=" + rm).openConnection();
+    // ---------- HTTPS с запомненным сертификатом ----------
+
+    private volatile String tlsFp = "";
+    private long tlsTried;
+
+    /** Защищено ли соединение с сервером. */
+    boolean secure() { return !tlsFp.isEmpty(); }
+
+    String tlsFingerprint() { return tlsFp; }
+
+    static String hex(byte[] b) {
+        StringBuilder sb = new StringBuilder();
+        for (byte x : b) sb.append(String.format("%02x", x));
+        return sb.toString();
+    }
+
+    /** Доверяем только сертификату с отпечатком fp; если fp == null — запоминаем увиденный в seen[0]. */
+    private static javax.net.ssl.SSLSocketFactory pinned(String fp, String[] seen) throws Exception {
+        javax.net.ssl.X509TrustManager tm = new javax.net.ssl.X509TrustManager() {
+            @Override
+            public void checkClientTrusted(java.security.cert.X509Certificate[] c, String a) throws java.security.cert.CertificateException {
+                throw new java.security.cert.CertificateException("client");
+            }
+
+            @Override
+            public void checkServerTrusted(java.security.cert.X509Certificate[] c, String a) throws java.security.cert.CertificateException {
+                if (c == null || c.length == 0) throw new java.security.cert.CertificateException("нет сертификата");
+                String got;
+                try {
+                    got = hex(MessageDigest.getInstance("SHA-256").digest(c[0].getEncoded()));
+                } catch (Exception e) {
+                    throw new java.security.cert.CertificateException(e);
+                }
+                if (fp == null) { if (seen != null) seen[0] = got; return; }
+                if (!fp.equalsIgnoreCase(got)) throw new java.security.cert.CertificateException("сертификат сервера изменился — возможна подмена");
+            }
+
+            @Override
+            public java.security.cert.X509Certificate[] getAcceptedIssuers() { return new java.security.cert.X509Certificate[0]; }
+        };
+        javax.net.ssl.SSLContext ctx = javax.net.ssl.SSLContext.getInstance("TLS");
+        ctx.init(null, new javax.net.ssl.TrustManager[]{tm}, new SecureRandom());
+        return ctx.getSocketFactory();
+    }
+
+    private static HttpURLConnection open(String srv, String fp, String pathAndQuery) throws Exception {
+        if (fp != null && !fp.isEmpty()) {
+            String u = (srv.startsWith("http://") ? "https://" + srv.substring(7) : srv) + pathAndQuery;
+            javax.net.ssl.HttpsURLConnection c = (javax.net.ssl.HttpsURLConnection) new URL(u).openConnection();
+            c.setSSLSocketFactory(pinned(fp, null));
+            c.setHostnameVerifier((h, sess) -> true); // проверяем отпечаток, а не имя: у сервера нет домена
+            return c;
+        }
+        return (HttpURLConnection) new URL(srv + pathAndQuery).openConnection();
+    }
+
+    /** Попробовать перейти на HTTPS: сервер новой версии отвечает на том же порту. */
+    private void tryTls() {
+        if (!tlsFp.isEmpty() || !server.startsWith("http://")) return;
+        long t = System.currentTimeMillis();
+        if (t - tlsTried < 10 * 60_000) return;
+        tlsTried = t;
+        try {
+            String[] seen = new String[1];
+            javax.net.ssl.HttpsURLConnection c = (javax.net.ssl.HttpsURLConnection) new URL("https://" + server.substring(7) + "/api/ping").openConnection();
+            c.setSSLSocketFactory(pinned(null, seen));
+            c.setHostnameVerifier((h, sess) -> true);
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            if (c.getResponseCode() != 200 || seen[0] == null) return;
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            try (InputStream in = c.getInputStream()) {
+                byte[] buf = new byte[4096];
+                int k;
+                while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+            }
+            String claimed = new JSONObject(new String(bo.toByteArray(), StandardCharsets.UTF_8)).optString("tls");
+            if (!claimed.equalsIgnoreCase(seen[0])) return;
+            tlsFp = seen[0];
+            prefs.edit().putString("c2Tls", tlsFp).apply();
+        } catch (Exception ignored) {
+            // сервер старой версии — остаёмся на HTTP, попробуем позже
+        }
+    }
+
+    private static String http(String srv, String fp, String rm, String id, String tok, String method, String path, String body, int readTimeout) throws Exception {
+        HttpURLConnection con = open(srv, fp, path + (path.contains("?") ? "&" : "?") + "room=" + rm);
         con.setRequestMethod(method);
         con.setConnectTimeout(10000);
         con.setReadTimeout(readTimeout);
@@ -834,15 +1385,18 @@ final class ChatClient {
 
     /** Создать группу: я — создатель, ключ первой эпохи — у меня. */
     void create(String srv, String name, Runnable done, Consumer<String> fail) {
+        stop();
+        final String prev = room;
+        park();
         bg(() -> {
             try {
-                wipeLocal();
+                load();
                 String s = normServer(srv), rm = rnd(16), id = rnd(8), tok = rnd(16);
                 prefs.edit().putString("c2Server", s).putString("c2Room", rm).putString("c2Me", id).putString("c2Token", tok)
                         .putString("c2Group", name == null || name.trim().isEmpty() ? "Группа" : name.trim()).apply();
                 load();
                 JSONObject j = new JSONObject().put("member", id).put("token", tok).put("profile", profileJson());
-                http(s, rm, "", "", "POST", "/api/v2/create", j.toString(), 15000);
+                http(s, "", rm, "", "", "POST", "/api/v2/create", j.toString(), 15000);
                 byte[] k = new byte[32];
                 new SecureRandom().nextBytes(k);
                 keys.put(1, k);
@@ -850,9 +1404,11 @@ final class ChatClient {
                 saveKeys();
                 role = "owner";
                 prefs.edit().putString("c2Role", role).apply();
+                tryTls();
                 ok(done);
             } catch (Exception e) {
                 wipeLocal();
+                if (!prev.isEmpty() && unpark(prev)) { load(); start(); }
                 err(fail, e);
             }
         });
@@ -869,7 +1425,7 @@ final class ChatClient {
                 String t = inv.trim();
                 if (t.startsWith("rubezh://")) throw new Exception("это приглашение в старую группу — попросите новое");
                 String q = t.substring("rubezh2://join?".length());
-                String s = null, r = null, c = null, n = "Группа";
+                String s = null, r = null, c = null, n = "Группа", fp = "";
                 for (String part : q.split("&")) {
                     int i = part.indexOf('=');
                     if (i < 0) continue;
@@ -878,35 +1434,73 @@ final class ChatClient {
                     else if (a.equals("r")) r = v;
                     else if (a.equals("c")) c = v;
                     else if (a.equals("n")) n = v;
+                    else if (a.equals("f") && v.matches("[0-9a-fA-F]{64}")) fp = v.toLowerCase(Locale.ROOT);
                 }
                 if (s == null || r == null || c == null) throw new Exception("неполное приглашение");
-                wipeLocal();
+                for (Group g : groups()) if (g.room.equals(r)) throw new Exception("вы уже в этой группе");
+                stop();
+                prevJoin = room;
+                park();
+                load();
                 String id = rnd(8), tok = rnd(16);
-                prefs.edit().putString("c2Server", s).putString("c2Room", r).putString("c2Me", id).putString("c2Token", tok)
-                        .putString("c2Group", n).apply();
+                prefs.edit().putString("c2Server", normServer(s)).putString("c2Room", r).putString("c2Me", id).putString("c2Token", tok)
+                        .putString("c2Group", n).putString("c2Tls", fp).apply();
                 load();
                 JSONObject j = new JSONObject().put("code", c).put("member", id).put("token", tok).put("profile", profileJson());
-                http(s, r, "", "", "POST", "/api/v2/join", j.toString(), 15000);
+                http(s, fp, r, "", "", "POST", "/api/v2/join", j.toString(), 15000);
                 role = "pending";
                 prefs.edit().putString("c2Role", role).apply();
+                if (fp.isEmpty()) tryTls();
+                prevJoin = "";
                 ok(done);
             } catch (Exception e) {
-                wipeLocal();
+                if (!prevJoin.isEmpty()) {
+                    wipeLocal();
+                    if (unpark(prevJoin)) { load(); start(); }
+                    prevJoin = "";
+                }
                 err(fail, e);
             }
         });
     }
 
-    void leave(Runnable done) {
+    private volatile String prevJoin = "";
+
+    /** Экстренно: выйти из всех групп на телефоне. */
+    void leaveAll() {
+        for (int guard = 0; configured() && guard < 50; guard++) {
+            leaveOne();
+            if (!activateAnother()) break;
+        }
+        prefs.edit().remove("c2Groups").commit();
+    }
+
+    private void leaveOne() {
         stop();
-        final String s = server, r = room, id = me, tok = token;
+        final String s = server, r = room, id = me, tok = token, f = tlsFp;
         bg(() -> {
             try {
-                http(s, r, id, tok, "POST", "/api/v2/leave", "{}", 10000);
+                http(s, f, r, id, tok, "POST", "/api/v2/leave", "{}", 10000);
             } catch (Exception ignored) {
             }
         });
         wipeLocal();
+    }
+
+    void leave(Runnable done) {
+        stop();
+        final String s = server, r = room, id = me, tok = token, f = tlsFp;
+        bg(() -> {
+            try {
+                http(s, f, r, id, tok, "POST", "/api/v2/leave", "{}", 10000);
+            } catch (Exception ignored) {
+            }
+        });
+        wipeLocal();
+        if (activateAnother()) {
+            start();
+            each(Listener::onGroupSwitched);
+        }
         if (done != null) done.run();
     }
 
@@ -916,7 +1510,8 @@ final class ChatClient {
             try {
                 JSONObject o = new JSONObject(http("POST", "/api/v2/invite", new JSONObject().put("hours", hours).put("uses", uses).toString(), 15000));
                 String inv = "rubezh2://join?s=" + URLEncoder.encode(server, "UTF-8") + "&r=" + room
-                        + "&c=" + o.getString("code") + "&n=" + URLEncoder.encode(groupName(), "UTF-8");
+                        + "&c=" + o.getString("code") + "&n=" + URLEncoder.encode(groupName(), "UTF-8")
+                        + (tlsFp.isEmpty() ? "" : "&f=" + tlsFp);
                 ui.post(() -> done.accept(inv));
             } catch (Exception e) {
                 err(fail, e);
@@ -1049,21 +1644,28 @@ final class ChatClient {
 
     void setTtl(int sec) { prefs.edit().putInt("c2Ttl", sec).apply(); }
 
+    /** Отправка всегда идёт через очередь: нет связи — сообщение подождёт и уйдёт само. */
     void send(Msg m, Runnable okR, Consumer<String> fail) {
+        if (!active()) {
+            err(fail, new Exception(pending() ? "ждём подтверждения администратора" : "вы не в группе"));
+            return;
+        }
         m.from = callsign();
         m.dev = me;
+        m.mine = true;
         m.t = System.currentTimeMillis();
         final int tt = m.kind.equals("obj") || m.kind.equals("snap") ? 0 : ttl();
+        m.ttlSec = tt;
         if (tt > 0) m.exp = m.t + tt * 1000L;
-        bg(() -> {
-            try {
-                if (!active()) throw new Exception(pending() ? "ждём подтверждения администратора" : "вы не в группе");
-                http("POST", "/api/v2/send" + (tt > 0 ? "?ttl=" + tt : ""), encrypt(m.wire().toString()), 60000);
-                ok(okR);
-            } catch (Exception e) {
-                err(fail, e);
-            }
-        });
+        m.qid = rnd(6);
+        m.queued = true;
+        if (okR != null || fail != null) outCb.put(m.qid, new Object[]{okR, fail});
+        synchronized (outbox) {
+            outbox.add(m);
+        }
+        saveOutbox();
+        each(Listener::onOutbox);
+        flush();
     }
 
     void sendLoc(double lat, double lon, float acc, float heading, boolean off) {
@@ -1115,6 +1717,10 @@ final class ChatClient {
                         final String rr = newRole;
                         wipeLocal();
                         each(l -> l.onRole(rr));
+                        if (activateAnother()) {
+                            start();
+                            each(Listener::onGroupSwitched);
+                        }
                         break;
                     }
                     boolean roleChanged = !newRole.equals(role);
@@ -1159,14 +1765,19 @@ final class ChatClient {
                             }
                             each(Listener::onReads);
                         }
+                        boolean changed = false;
                         for (int i = 0; i < arr.length(); i++) {
                             JSONObject e = arr.getJSONObject(i);
                             long s = e.getLong("s");
                             if (s <= lastSeq) continue;
                             lastSeq = s;
                             try {
-                                Msg m = Msg.of(new JSONObject(decrypt(e.getString("b"))));
+                                String o2 = e.optString("o", "");
+                                String plain = o2.isEmpty() ? decrypt(e.getString("b")) : decryptDm(e.getString("b"), e.optString("m"), o2);
+                                Msg m = Msg.of(new JSONObject(plain));
                                 m.seq = s;
+                                m.to = o2; // кому — тоже подтверждает сервер
+                                m.qid = "";
                                 m.dev = e.optString("m", m.dev); // отправителя подтверждает сервер
                                 if (e.optLong("x") > 0) m.exp = e.optLong("x");
                                 if (e.optLong("t") > 0) m.t = e.optLong("t"); // время сервера: у всех одинаковое
@@ -1178,8 +1789,16 @@ final class ChatClient {
                                     m.data = null;
                                 }
                                 if (m.kind.equals("obj") || m.kind.equals("snap")) {
+                                    if (m.dm()) continue;
                                     if (applyObj(m)) objChanged = true;
                                     if (m.kind.equals("snap")) continue; // в ленте не показываем
+                                }
+                                if (m.meta()) {
+                                    if (applyMeta(m, added)) changed = true;
+                                    continue;
+                                }
+                                synchronized (history) {
+                                    history.add(m);
                                 }
                                 added.add(m);
                             } catch (Exception bad) {
@@ -1215,6 +1834,7 @@ final class ChatClient {
                                 }
                             }
                         }
+                        if (gen != my) break; // группу переключили, пока разбирали ответ
                         if (memChanged) each(Listener::onMembers);
                         if (o.optLong("last") < lastSeq) lastSeq = o.optLong("last");
                         prefs.edit().putLong("c2Seq", lastSeq).apply();
@@ -1222,13 +1842,12 @@ final class ChatClient {
                             saveObjs();
                             each(Listener::onObjects);
                         }
-                        if (!added.isEmpty()) {
-                            synchronized (history) {
-                                history.addAll(added);
-                            }
-                            persist(added);
-                            each(l -> l.onMessages(added));
-                        }
+                        if (changed) rewriteStore();
+                        else if (!added.isEmpty()) persist(added);
+                        if (!added.isEmpty()) each(l -> l.onMessages(added));
+                        if (changed) each(Listener::onChanged);
+                        if (!outbox.isEmpty()) flush();
+                        tryTls();
                     } else {
                         Thread.sleep(pending() ? 8000 : 2000); // ожидающий опрашивает реже
                     }

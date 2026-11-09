@@ -191,7 +191,7 @@ public class GroupService extends Service {
         }
         nm.notify(ID_MSG, new Notification.Builder(this, CH_MSG)
                 .setSmallIcon(R.drawable.ic_chat)
-                .setContentTitle(m.from.isEmpty() ? chat.groupName() : m.from)
+                .setContentTitle((m.from.isEmpty() ? chat.groupName() : m.from) + (m.dm() ? " · лично" : ""))
                 .setContentText(text)
                 .setAutoCancel(true)
                 .setContentIntent(openApp("openChat"))

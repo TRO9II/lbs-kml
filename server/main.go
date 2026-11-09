@@ -136,7 +136,7 @@ func main() {
 
 	http.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
 		cors(w)
-		fmt.Fprintf(w, `{"ok":true,"server":"rubezh","time":%d}`, time.Now().UnixMilli())
+		fmt.Fprintf(w, `{"ok":true,"server":"rubezh","time":%d,"tls":%q,"v":2}`, time.Now().UnixMilli(), certFP)
 	})
 
 	http.HandleFunc("/api/send", func(w http.ResponseWriter, req *http.Request) {
@@ -275,5 +275,5 @@ func main() {
 
 	srv := &http.Server{Addr: *addr, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("Рубеж: сервер слушает %s, данные в %s", *addr, *dir)
-	log.Fatal(srv.ListenAndServe())
+	log.Fatal(srv.Serve(listen(*addr, *dir)))
 }

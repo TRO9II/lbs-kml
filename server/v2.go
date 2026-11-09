@@ -56,6 +56,7 @@ type msg2 struct {
 	T int64  `json:"t"`
 	M string `json:"m"`
 	X int64  `json:"x,omitempty"` // когда удалить (мс), 0 — хранить
+	O string `json:"o,omitempty"` // личное сообщение: кому (видят только двое)
 	B string `json:"b"`
 }
 
@@ -132,9 +133,16 @@ func (h *hub2) open(id string, create bool) (*room2, error) {
 		sc.Buffer(make([]byte, 1<<20), maxBlob2*3)
 		tnow := now()
 		for sc.Scan() {
-			p := strings.SplitN(sc.Text(), "\t", 5)
+			p := strings.SplitN(sc.Text(), "\t", 6)
 			var m msg2
-			if len(p) == 5 {
+			if len(p) == 6 {
+				m.S, _ = strconv.ParseInt(p[0], 10, 64)
+				m.T, _ = strconv.ParseInt(p[1], 10, 64)
+				m.M = p[2]
+				m.X, _ = strconv.ParseInt(p[3], 10, 64)
+				m.O = p[4]
+				m.B = p[5]
+			} else if len(p) == 5 {
 				m.S, _ = strconv.ParseInt(p[0], 10, 64)
 				m.T, _ = strconv.ParseInt(p[1], 10, 64)
 				m.M = p[2]
@@ -183,7 +191,7 @@ func (r *room2) compact() {
 	}
 	w := bufio.NewWriter(f)
 	for _, m := range r.msgs {
-		fmt.Fprintf(w, "%d\t%d\t%s\t%d\t%s\n", m.S, m.T, m.M, m.X, m.B)
+		fmt.Fprintf(w, "%d\t%d\t%s\t%d\t%s\t%s\n", m.S, m.T, m.M, m.X, m.O, m.B)
 	}
 	w.Flush()
 	f.Close()
@@ -627,13 +635,20 @@ func registerV2(dir string) {
 		if ttl, _ := strconv.ParseInt(req.URL.Query().Get("ttl"), 10, 64); ttl > 0 && ttl <= 30*24*3600 {
 			exp = now() + ttl*1000
 		}
+		to := req.URL.Query().Get("to")
+		if to != "" {
+			if t := r.meta.Members[to]; t == nil || !isActive(t) || to == m.ID {
+				fail(w, 400, "bad recipient")
+				return
+			}
+		}
 		r.last++
-		x := msg2{r.last, now(), m.ID, exp, s}
+		x := msg2{r.last, now(), m.ID, exp, to, s}
 		r.msgs = append(r.msgs, x)
 		if len(r.msgs) > keepMsgs {
 			r.msgs = r.msgs[len(r.msgs)-keepMsgs:]
 		}
-		fmt.Fprintf(r.file, "%d\t%d\t%s\t%d\t%s\n", x.S, x.T, x.M, x.X, x.B)
+		fmt.Fprintf(r.file, "%d\t%d\t%s\t%d\t%s\t%s\n", x.S, x.T, x.M, x.X, x.O, x.B)
 		r.logged++
 		if r.expire() || r.logged > len(r.msgs)*2+100 {
 			r.compact()
@@ -641,6 +656,29 @@ func registerV2(dir string) {
 		close(r.wake)
 		r.wake = make(chan struct{})
 		jsonOut(w, map[string]int64{"s": x.S, "t": x.T})
+	})
+
+	// unsend: стереть сообщение с сервера (автор или администратор)
+	http.HandleFunc("/api/v2/unsend", func(w http.ResponseWriter, req *http.Request) {
+		r, m, ok := auth(w, req, "member")
+		if !ok {
+			return
+		}
+		defer r.mu.Unlock()
+		seq, _ := strconv.ParseInt(req.URL.Query().Get("seq"), 10, 64)
+		for i, x := range r.msgs {
+			if x.S != seq {
+				continue
+			}
+			if x.M != m.ID && !isAdmin(m) {
+				fail(w, 403, "forbidden")
+				return
+			}
+			r.msgs = append(r.msgs[:i], r.msgs[i+1:]...)
+			r.compact()
+			break
+		}
+		jsonOut(w, map[string]bool{"ok": true})
 	})
 
 	http.HandleFunc("/api/v2/loc", func(w http.ResponseWriter, req *http.Request) {
@@ -705,7 +743,7 @@ func registerV2(dir string) {
 			if isActive(m) {
 				size, tn := 0, now()
 				for _, x := range r.msgs {
-					if x.S > since && (x.X == 0 || x.X > tn) {
+					if x.S > since && (x.X == 0 || x.X > tn) && (x.O == "" || x.O == m.ID || x.M == m.ID) {
 						if len(msgs) >= 500 || (size > maxPollOut && len(msgs) > 0) {
 							break
 						}

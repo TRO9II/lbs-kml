@@ -739,6 +739,7 @@ public class MapActivity extends Activity {
             ((ViewGroup) chatHeader.getParent()).removeView(chatHeader);
             chatHeader = null;
         }
+        removeChatBar();
         hideEmoji();
         View host = findViewById(R.id.genSheet), panel = findViewById(R.id.genPanel), scrim = findViewById(R.id.genScrim);
         ((TextView) findViewById(R.id.genTitle)).setText(title);
@@ -770,6 +771,8 @@ public class MapActivity extends Activity {
         chatOpen = false;
         chatList = null;
         chatStatus = null;
+        chatPeer = "";
+        chatReply = chatEdit = null;
         panel.animate().translationY(dp(800)).setDuration(170).withEndAction(() -> host.setVisibility(View.GONE)).start();
         scrim.animate().alpha(0f).setDuration(170).start();
     }
@@ -5831,28 +5834,64 @@ public class MapActivity extends Activity {
         chat = ChatClient.get(this);
         chatUnread = prefs.getInt("chatUnread", 0);
         showChatBadge();
-        findViewById(R.id.btnChat).setOnClickListener(v -> openChat());
+        findViewById(R.id.btnChat).setOnClickListener(v -> { chatPeer = ""; openChat(); });
         chat.setListener(new ChatClient.Listener() {
             @Override
             public void onMessages(List<ChatClient.Msg> added) {
                 int fromOthers = 0;
+                ChatClient.Msg other = null;
                 for (ChatClient.Msg m : added) {
                     if (!m.mine) fromOthers++;
                     if (!m.mine && m.kind.equals("sos")) showSos(m);
+                    boolean here = chatOpen && chatList != null && inConv(m);
+                    if (!m.mine && m.dm() && !here) dmUnread(m.peer(chat.deviceId()), 1);
+                    if (!m.mine && chatOpen && !here) other = m;
                 }
                 if (chatOpen) chat.markRead();
                 if (chatOpen && chatList != null) {
-                    for (ChatClient.Msg m : added) addBubble(m);
+                    for (ChatClient.Msg m : added) if (inConv(m)) addBubble(m);
+                    renderQueue();
                     scrollChatDown();
+                    if (other != null) Toast.makeText(MapActivity.this, (other.from.isEmpty() ? "Сообщение" : other.from)
+                            + (other.dm() ? " (лично): " : " (в группе): ") + snippet(other), Toast.LENGTH_SHORT).show();
+                    if (chatDmIcon != null) updateDmIcon();
                 } else if (fromOthers > 0) {
                     chatUnread += fromOthers;
                     prefs.edit().putInt("chatUnread", chatUnread).apply();
                     showChatBadge();
                     vibrate(120);
                     ChatClient.Msg last = added.get(added.size() - 1);
-                    Toast.makeText(MapActivity.this, (last.from.isEmpty() ? "Сообщение" : last.from) + ": "
-                            + (last.kind.equals("pt") ? "📍 " + last.ptName : last.text), Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MapActivity.this, (last.from.isEmpty() ? "Сообщение" : last.from) + (last.dm() ? " (лично)" : "") + ": "
+                            + snippet(last), Toast.LENGTH_SHORT).show();
                 }
+            }
+
+            @Override
+            public void onChanged() {
+                if (chatOpen && chatList != null) rebuildChatList();
+            }
+
+            @Override
+            public void onOutbox() {
+                if (chatOpen && chatList != null) renderQueue();
+            }
+
+            @Override
+            public void onSendFailed(String why) {
+                Toast.makeText(MapActivity.this, "Сервер не принял сообщение: " + why, Toast.LENGTH_LONG).show();
+            }
+
+            @Override
+            public void onGroupSwitched() {
+                membersOverlay.setMembers(chat.members());
+                refreshGroupMap();
+                map.invalidate();
+                chatUnread = 0;
+                prefs.edit().putInt("chatUnread", 0).apply();
+                chatPending = 0;
+                showChatBadge();
+                restartGroupService();
+                if (chatOpen) { chatPeer = ""; openChat(); }
             }
 
             @Override
@@ -6053,8 +6092,11 @@ public class MapActivity extends Activity {
         chat.start();
         chat.purgeExpired();
         readMarks.clear();
-        sheet(chat.groupName());
+        bubbleRows.clear();
+        chatReply = chatEdit = null;
+        sheet(chatPeer.isEmpty() ? chat.groupName() : "Лично · " + peerName(chatPeer));
         setSheetFull(true);
+        if (!chatPeer.isEmpty()) dmUnread(chatPeer, -1);
         chatOpen = true;
         chat.markRead();
         chatUnread = 0;
@@ -6071,8 +6113,11 @@ public class MapActivity extends Activity {
         lastBubbleT = 0;
         chatList.setMinimumHeight(0);
         sheetContent.addView(chatList);
-        List<ChatClient.Msg> hist = chat.history();
-        if (hist.isEmpty()) {
+        List<ChatClient.Msg> hist = convHistory();
+        if (hist.isEmpty() && !chatPeer.isEmpty()) {
+            emptyHint(chatList, "Личная переписка с " + peerName(chatPeer),
+                    "Её видите только вы двое: шифруется ключом, который есть лишь у вас, — ни сервер, ни остальные участники, ни создатель группы её не прочтут.");
+        } else if (hist.isEmpty()) {
             LinearLayout em = new LinearLayout(this);
             em.setOrientation(LinearLayout.VERTICAL);
             em.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
@@ -6115,9 +6160,18 @@ public class MapActivity extends Activity {
             chatList.addView(em);
         }
         int from = Math.max(0, hist.size() - 200);
+        if (chatJump > 0) for (int i = 0; i < hist.size(); i++) if (hist.get(i).seq == chatJump) { from = Math.min(from, Math.max(0, i - 20)); break; }
         for (int i = from; i < hist.size(); i++) addBubble(hist.get(i));
+        chatQueueBox = new LinearLayout(this);
+        chatQueueBox.setOrientation(LinearLayout.VERTICAL);
+        sheetContent.addView(chatQueueBox);
+        renderQueue();
         chatScroll = findViewById(R.id.genScroll);
-        scrollChatDown();
+        if (chatJump > 0) {
+            final long j = chatJump;
+            chatJump = 0;
+            chatScroll.postDelayed(() -> jumpTo(j), 150);
+        } else scrollChatDown();
 
         // строка ввода внизу
         sheetFooter.removeAllViews();
@@ -6127,7 +6181,8 @@ public class MapActivity extends Activity {
         ImageView plus = hIconButton(R.drawable.ic_add, getColor(R.color.hud_text), v -> chatAttach());
         plus.setContentDescription("Вложения, статус, SOS");
         sheetFooter.addView(plus, new LinearLayout.LayoutParams((int) dp(42), (int) dp(42)));
-        final EditText input = hInput("Сообщение", "");
+        final EditText input = hInput(chatPeer.isEmpty() ? "Сообщение" : "Лично для " + peerName(chatPeer), "");
+        chatInput = input;
         final ImageView smile = hIconButton(R.drawable.ic_smile, getColor(R.color.hud_text2), null);
         smile.setContentDescription("Смайлы");
         input.setMinHeight((int) dp(48));
@@ -6180,15 +6235,27 @@ public class MapActivity extends Activity {
                 chatVoiceStart();
                 return;
             }
+            input.setText("");
+            if (chatEdit != null) {
+                ChatClient.Msg t = chatEdit;
+                removeChatBar();
+                if (!txt.equals(t.text)) chat.edit(t, txt, err -> Toast.makeText(this, "Не изменено: " + err, Toast.LENGTH_LONG).show());
+                return;
+            }
             ChatClient.Msg m = new ChatClient.Msg();
             m.text = txt;
-            input.setText("");
+            if (chatReply != null) {
+                m.re = chatReply.seq;
+                m.rq = (chatReply.mine ? chat.callsign() : chatReply.from) + "\n" + snippet(chatReply);
+                removeChatBar();
+            }
             sendChat(m);
         });
     }
 
     private void sendChat(ChatClient.Msg m) {
-        chat.send(m, () -> { }, err -> Toast.makeText(this, "Не отправлено: " + err, Toast.LENGTH_LONG).show());
+        if (m.to.isEmpty() && !chatPeer.isEmpty() && !m.kind.equals("sos") && !m.kind.equals("st")) m.to = chatPeer;
+        chat.send(m, null, err -> Toast.makeText(this, "Не отправлено: " + err, Toast.LENGTH_LONG).show());
     }
 
     private void scrollChatDown() {
@@ -6206,13 +6273,23 @@ public class MapActivity extends Activity {
         chatStatus.setTextSize(12.5f);
         chatStatus.setSingleLine(true);
         chatStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        if (!chatPeer.isEmpty()) {
+            ImageView back = hIconButton(R.drawable.ic_back, getColor(R.color.hud_text), v -> { chatPeer = ""; openChat(); });
+            back.setContentDescription("В общий чат группы");
+            head.addView(back, new LinearLayout.LayoutParams((int) dp(36), (int) dp(40)));
+        }
         head.addView(chatStatus, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        head.addView(headIcon(R.drawable.ic_search, 0, getColor(R.color.hud_text), "Поиск по чату", v -> chatSearch("")));
+        if (chatPeer.isEmpty()) {
+            chatDmIcon = headIcon(R.drawable.ic_lock, dmUnreadTotal(), getColor(R.color.hud_text), "Личные сообщения", v -> showDialogs());
+            head.addView(chatDmIcon);
+        } else chatDmIcon = null;
         chatStatus.setOnClickListener(v -> {
             if (chat.isAdmin()) Toast.makeText(this, chat.lastStatus() + (chat.lastError().isEmpty() ? "" : "\n" + chat.lastError()), Toast.LENGTH_LONG).show();
         });
-        head.addView(headIcon(R.drawable.ic_my_location, chat.members().size(), sharing() ? 0xFF66BB6A : getColor(R.color.hud_text), "Люди на карте",
+        if (chatPeer.isEmpty()) head.addView(headIcon(R.drawable.ic_my_location, chat.members().size(), sharing() ? 0xFF66BB6A : getColor(R.color.hud_text), "Люди на карте",
                 v -> { chatOpen = false; sheetFooter.setVisibility(View.GONE); showMembers(); }));
-        head.addView(headIcon(R.drawable.ic_place, chat.objects().size(), getColor(R.color.hud_text), "Карта группы",
+        if (chatPeer.isEmpty()) head.addView(headIcon(R.drawable.ic_place, chat.objects().size(), getColor(R.color.hud_text), "Карта группы",
                 v -> { chatOpen = false; sheetFooter.setVisibility(View.GONE); showGroupObjects(); }));
         int pend = 0;
         if (chat.isAdmin()) for (ChatClient.Person p : chat.people()) if (p.role.equals("pending")) pend++;
@@ -6331,6 +6408,10 @@ public class MapActivity extends Activity {
 
     private void addBubble(ChatClient.Msg m) {
         if (chatList == null) return;
+        addBubble(m, chatList);
+    }
+
+    private void addBubble(ChatClient.Msg m, LinearLayout chatList) {
         if (chatList.getChildCount() == 1 && "empty".equals(chatList.getChildAt(0).getTag())) chatList.removeAllViews();
         String day = dayLabel(m.t);
         if (!day.equals(lastBubbleDay)) {
@@ -6377,7 +6458,8 @@ public class MapActivity extends Activity {
 
         boolean sos = m.kind.equals("sos"), st = m.kind.equals("st");
         int bg = sos ? 0xFFC62828 : m.mine ? 0xFF5C2622 : 0xFF252A32;
-        LinearLayout row = new LinearLayout(this);
+        SwipeRow row = new SwipeRow(this);
+        if (!m.queued) row.onSwipe = () -> startReply(m);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity((m.mine ? android.view.Gravity.END : android.view.Gravity.START) | android.view.Gravity.BOTTOM);
         if (!m.mine) { // аватар с инициалами у первого сообщения серии
@@ -6415,6 +6497,7 @@ public class MapActivity extends Activity {
             who.setTextColor(sos ? Color.WHITE : callColor(m.from));
             b.addView(who);
         }
+        if (m.re > 0 && !m.rq.isEmpty()) b.addView(quoteView(m));
         if (sos || st) {
             TextView lab = new TextView(this);
             lab.setText(sos ? "SOS · ТРЕВОГА" : "СТАТУС");
@@ -6463,6 +6546,7 @@ public class MapActivity extends Activity {
             pl.topMargin = (int) dp(3);
             b.addView(photoV, pl);
             photoV.setOnClickListener(v -> showPhoto(m));
+            photoV.setOnLongClickListener(v -> { msgMenu(b, m); return true; });
         }
         if (m.kind.equals("pt")) {
             LinearLayout pc = new LinearLayout(this);
@@ -6492,7 +6576,7 @@ public class MapActivity extends Activity {
             t.setTextColor(Color.WHITE);
             t.setLineSpacing(dp(1), 1f);
             b.addView(t);
-            t.setOnLongClickListener(v -> { copy(m.text, "Текст скопирован"); return true; });
+            t.setOnLongClickListener(v -> { msgMenu(b, m); return true; });
         }
         if (m.kind.equals("pt") || m.hasLoc) {
             if (!m.kind.equals("pt")) {
@@ -6517,12 +6601,14 @@ public class MapActivity extends Activity {
             acts.addView(sv, svl);
             b.addView(acts);
         }
+        View rxRow = reactionsView(m);
+        if (rxRow != null) b.addView(rxRow);
         TextView tm = new TextView(this);
         tm.setText(readText(m));
         tm.setTextSize(10.5f);
         tm.setTextColor(0x99FFFFFF);
         tm.setGravity(android.view.Gravity.END);
-        if (m.mine) {
+        if (m.mine && !m.queued) {
             readMarks.put(m.seq, tm);
             int[] rb = chat.readBy(m.seq);
             if (rb[1] > 0 && rb[0] == rb[1]) tm.setTextColor(0xFF90CAF9);
@@ -6538,6 +6624,18 @@ public class MapActivity extends Activity {
                 b.setLayoutParams(bl);
             }
         });
+        if (m.queued) {
+            b.setAlpha(0.75f);
+            b.setOnClickListener(v -> new AlertDialog.Builder(this)
+                    .setTitle("Ждёт связи")
+                    .setMessage("Сообщение уйдёт само, как только появится связь с сервером.")
+                    .setPositiveButton("Отменить отправку", (d, w) -> chat.cancelQueued(m))
+                    .setNegativeButton("Пусть ждёт", null)
+                    .show());
+        } else {
+            b.setOnLongClickListener(v -> { msgMenu(b, m); return true; });
+            bubbleRows.put(m.seq, row);
+        }
         LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         rl.topMargin = (int) dp(cont ? 2 : 8);
         chatList.addView(row, rl);
@@ -6669,8 +6767,16 @@ public class MapActivity extends Activity {
     /** Создать группу или вступить. */
     private void chatSetup() {
         chatOpen = false;
-        sheet("Чат группы");
-        emptyState(R.drawable.ic_chat, "Вы пока не в группе",
+        boolean more = chat.configured();
+        sheet(more ? "Ещё одна группа" : "Чат группы");
+        if (more) {
+            TextView t = new TextView(this);
+            t.setText("Текущая группа «" + chat.groupName() + "» останется на телефоне — переключаться можно в настройках группы.");
+            t.setTextColor(getColor(R.color.hud_text2));
+            t.setTextSize(12.5f);
+            t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(8));
+            sheetContent.addView(t);
+        } else emptyState(R.drawable.ic_chat, "Вы пока не в группе",
                 "Создайте группу на своём сервере и пригласите остальных QR-кодом, либо вступите по приглашению.");
         hRow(hIcon(R.drawable.ic_qr, getColor(R.color.hud_accent), 22), "Вступить по приглашению", "Сканировать QR-код у администратора", null,
                 v -> { closeSheet(); scanQr(); });
@@ -6845,9 +6951,10 @@ public class MapActivity extends Activity {
                 if (!restHead) { hSection("В ГРУППЕ"); restHead = true; }
                 String sub = p.roleName() + " · " + (p.id.equals(chat.deviceId()) ? "это вы" : "был(а) " + MembersOverlay.age(p.seen)
                         + (MembersOverlay.age(p.seen).equals("сейчас") ? "" : " назад"));
+                boolean other = !p.id.equals(chat.deviceId());
                 hRow(personDot(p), p.callsign.isEmpty() ? "без позывного" : p.callsign, sub,
-                        admin && !p.id.equals(chat.deviceId()) && !p.role.equals("owner") ? hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18) : null,
-                        admin && !p.id.equals(chat.deviceId()) && !p.role.equals("owner") ? v -> personActions(p) : null);
+                        other ? hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18) : null,
+                        other ? v -> personActions(p) : null);
             } else if (admin) {
                 if (!goneHead) { hSection("БЫВШИЕ"); goneHead = true; }
                 hRow(personDot(p), p.callsign.isEmpty() ? "без позывного" : p.callsign, p.roleName(), null, null);
@@ -6887,6 +6994,11 @@ public class MapActivity extends Activity {
         sheetContent.addView(card);
         int tx = getColor(R.color.hud_text);
         hSection("ДЕЙСТВИЯ");
+        hRow(hIcon(R.drawable.ic_lock, getColor(R.color.hud_accent), 22), "Написать лично", "Увидите только вы двое", null, v -> openDm(p.id));
+        if (!chat.isAdmin() || p.role.equals("owner")) {
+            hChipRow(hChip("Назад к участникам", R.drawable.ic_back, false, v -> showPeople()));
+            return;
+        }
         if (p.role.equals("admin"))
             hRow(hIcon(R.drawable.ic_lock, tx, 22), "Снять права администратора", null, null,
                     v -> chat.manage("member", p, this::showPeople, err -> Toast.makeText(this, err, Toast.LENGTH_LONG).show()));
@@ -6923,7 +7035,24 @@ public class MapActivity extends Activity {
         }
         layerDivider(g1);
         layerLink(g1, R.drawable.ic_chat, "Позывной", chat.callsign(), v -> askCallsign(this::openChat));
+        layerDivider(g1);
+        layerLink(g1, R.drawable.ic_lock, "Соединение", chat.secure() ? "HTTPS" : "обычное",
+                v -> Toast.makeText(this, chat.secure()
+                        ? "Канал до сервера зашифрован, сертификат сервера запомнен — подменить сервер незаметно нельзя."
+                        : "Сообщения и так зашифрованы на телефоне. Когда сервер обновится (сам, в течение часа), канал до него тоже станет защищённым.", Toast.LENGTH_LONG).show());
         setBlock("ГРУППА · вы " + roleName, g1);
+
+        LinearLayout g0 = layerBox();
+        List<ChatClient.Group> gs = chat.groups();
+        for (int i = 0; i < gs.size(); i++) {
+            ChatClient.Group gr = gs.get(i);
+            if (i > 0) layerDivider(g0);
+            layerLink(g0, gr.active ? R.drawable.ic_check : R.drawable.ic_chat, gr.name, gr.active ? "открыта" : "перейти",
+                    gr.active ? null : v -> switchGroup(gr));
+        }
+        layerDivider(g0);
+        layerLink(g0, R.drawable.ic_add, "Ещё группа", "создать или вступить", v -> chatSetup());
+        setBlock("ГРУППЫ НА ТЕЛЕФОНЕ", g0);
 
         LinearLayout g2 = layerBox();
         setSwitch(g2, "Показывать меня на карте", prefs.getBoolean("shareLoc", false), on -> { setSharing(on); chatSettings(); });
@@ -6970,10 +7099,13 @@ public class MapActivity extends Activity {
                 .setPositiveButton("Выйти", (d, w) -> {
                     if (prefs.getBoolean("shareLoc", false)) chat.sendLoc(0, 0, 0, Float.NaN, true);
                     prefs.edit().putBoolean("shareLoc", false).apply();
-                    chat.leave(null);
-                    membersOverlay.setMembers(new ArrayList<>());
+                    String left = chat.groupName();
                     closeSheet();
-                    Toast.makeText(this, "Вы вышли из группы", Toast.LENGTH_SHORT).show();
+                    chat.leave(null);
+                    membersOverlay.setMembers(chat.members());
+                    refreshGroupMap();
+                    Toast.makeText(this, "Вы вышли из группы «" + left + "»" + (chat.configured() ? " · открыта «" + chat.groupName() + "»" : ""),
+                            Toast.LENGTH_LONG).show();
                 })
                 .setNegativeButton("Отмена", null)
                 .show());
@@ -7452,13 +7584,590 @@ public class MapActivity extends Activity {
         } else hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
     }
 
+
+    // ================= Ответы, реакции, правка, личные, поиск, группы =================
+
+    private String chatPeer = "";
+    private ChatClient.Msg chatReply, chatEdit;
+    private View chatBar, chatDmIcon;
+    private LinearLayout chatQueueBox;
+    private EditText chatInput;
+    private long chatJump;
+    private final Map<Long, View> bubbleRows = new HashMap<>();
+
+    /** Сообщение относится к открытой переписке (общей или личной). */
+    private boolean inConv(ChatClient.Msg m) {
+        if (chatPeer.isEmpty()) return !m.dm();
+        return m.dm() && m.peer(chat.deviceId()).equals(chatPeer);
+    }
+
+    private List<ChatClient.Msg> convHistory() {
+        List<ChatClient.Msg> out = new ArrayList<>();
+        for (ChatClient.Msg m : chat.history()) if (inConv(m)) out.add(m);
+        return out;
+    }
+
+    private String peerName(String id) {
+        String n = chat.nameOf(id);
+        return n.isEmpty() ? "участник" : n;
+    }
+
+    private static String snippet(ChatClient.Msg m) {
+        String t;
+        switch (m.kind) {
+            case "pt": t = "📍 " + (m.ptName.isEmpty() ? "Точка" : m.ptName); break;
+            case "photo": t = "📷 Фото" + (m.text.isEmpty() ? "" : ": " + m.text); break;
+            case "voice": t = "🎤 Голосовое"; break;
+            case "st": t = "⚑ " + m.text; break;
+            case "sos": t = "SOS " + m.text; break;
+            default: t = m.text;
+        }
+        t = t.replace('\n', ' ');
+        return t.length() > 90 ? t.substring(0, 88) + "…" : t;
+    }
+
+    private void emptyHint(LinearLayout list, String title, String text) {
+        LinearLayout em = new LinearLayout(this);
+        em.setOrientation(LinearLayout.VERTICAL);
+        em.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        em.setPadding((int) dp(20), (int) dp(48), (int) dp(20), 0);
+        em.setTag("empty");
+        ImageView ic = hIcon(R.drawable.ic_lock, getColor(R.color.hud_text2), 28);
+        em.addView(ic, new LinearLayout.LayoutParams((int) dp(40), (int) dp(40)));
+        TextView t1 = new TextView(this);
+        t1.setText(title);
+        t1.setTextSize(15.5f);
+        t1.setTextColor(getColor(R.color.hud_text));
+        t1.setGravity(android.view.Gravity.CENTER);
+        t1.setPadding(0, (int) dp(12), 0, (int) dp(4));
+        em.addView(t1);
+        TextView t2 = new TextView(this);
+        t2.setText(text);
+        t2.setTextSize(12.5f);
+        t2.setGravity(android.view.Gravity.CENTER);
+        t2.setTextColor(getColor(R.color.hud_text2));
+        em.addView(t2);
+        list.addView(em);
+    }
+
+    /** Перерисовать ленту, сохранив положение (после правки / удаления / реакции). */
+    private void rebuildChatList() {
+        if (chatList == null) return;
+        int y = chatScroll == null ? 0 : chatScroll.getScrollY();
+        boolean bottom = chatScroll == null || chatScroll.getChildAt(0) == null
+                || y + chatScroll.getHeight() >= chatScroll.getChildAt(0).getHeight() - dp(80);
+        chatList.removeAllViews();
+        readMarks.clear();
+        bubbleRows.clear();
+        lastBubbleDay = "";
+        lastBubbleDev = "";
+        lastBubbleT = 0;
+        List<ChatClient.Msg> hist = convHistory();
+        for (int i = Math.max(0, hist.size() - 200); i < hist.size(); i++) addBubble(hist.get(i));
+        renderQueue();
+        if (chatScroll != null) {
+            if (bottom) scrollChatDown();
+            else chatScroll.post(() -> chatScroll.scrollTo(0, y));
+        }
+    }
+
+    /** Неотправленное (нет связи) — внизу ленты, полупрозрачным. */
+    private void renderQueue() {
+        if (chatQueueBox == null || chatList == null) return;
+        chatQueueBox.removeAllViews();
+        String d = lastBubbleDay, dev = lastBubbleDev;
+        long t = lastBubbleT;
+        for (ChatClient.Msg q : chat.outbox()) if (!q.meta() && !q.kind.equals("obj") && inConv(q)) addBubble(q, chatQueueBox);
+        lastBubbleDay = d;
+        lastBubbleDev = dev;
+        lastBubbleT = t;
+    }
+
+    /** Прокрутить к сообщению и коротко подсветить его. */
+    private void jumpTo(long seq) {
+        View r = bubbleRows.get(seq);
+        if (r == null || chatScroll == null) {
+            Toast.makeText(this, "Сообщение уже недоступно", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        int top = r.getTop() + ((View) r.getParent()).getTop();
+        chatScroll.smoothScrollTo(0, Math.max(0, top - (int) dp(80)));
+        r.setBackgroundColor(0x3342A5F5);
+        r.postDelayed(() -> r.setBackgroundColor(Color.TRANSPARENT), 1200);
+    }
+
+    private View quoteView(ChatClient.Msg m) {
+        int nl = m.rq.indexOf('\n');
+        String who = nl < 0 ? "" : m.rq.substring(0, nl), what = nl < 0 ? m.rq : m.rq.substring(nl + 1);
+        LinearLayout q = new LinearLayout(this);
+        q.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(8));
+        g.setColor(0x26FFFFFF);
+        q.setBackground(g);
+        q.setPadding((int) dp(8), (int) dp(4), (int) dp(8), (int) dp(5));
+        TextView a = new TextView(this);
+        a.setText(who.isEmpty() ? "Ответ" : who);
+        a.setTextSize(12);
+        a.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        a.setTextColor(who.isEmpty() ? 0xFF90CAF9 : callColor(who));
+        q.addView(a);
+        TextView b = new TextView(this);
+        b.setText(what);
+        b.setTextSize(12.5f);
+        b.setMaxLines(2);
+        b.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        b.setTextColor(0xCCFFFFFF);
+        q.addView(b);
+        q.setOnClickListener(v -> jumpTo(m.re));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) dp(3);
+        lp.bottomMargin = (int) dp(3);
+        q.setLayoutParams(lp);
+        return q;
+    }
+
+    /** Реакции под текстом: «👍 2». Своя подсвечена; нажатие — поставить / снять. */
+    private View reactionsView(ChatClient.Msg m) {
+        Map<String, List<String>> rx = ChatClient.reactions(m);
+        if (rx.isEmpty() || m.queued) return null;
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setPadding(0, (int) dp(5), 0, 0);
+        for (Map.Entry<String, List<String>> e : rx.entrySet()) {
+            boolean mine = e.getValue().contains(chat.deviceId());
+            TextView c = new TextView(this);
+            c.setText(e.getKey() + (e.getValue().size() > 1 ? " " + e.getValue().size() : ""));
+            c.setTextSize(13);
+            c.setTextColor(Color.WHITE);
+            GradientDrawable g = new GradientDrawable();
+            g.setCornerRadius(dp(11));
+            g.setColor(mine ? 0x6642A5F5 : 0x26FFFFFF);
+            if (mine) g.setStroke((int) dp(1), 0xFF64B5F6);
+            c.setBackground(g);
+            c.setPadding((int) dp(7), (int) dp(2), (int) dp(7), (int) dp(2));
+            c.setOnClickListener(v -> chat.react(m, e.getKey()));
+            c.setOnLongClickListener(v -> {
+                StringBuilder who = new StringBuilder();
+                for (String id : e.getValue()) who.append(who.length() > 0 ? ", " : "").append(id.equals(chat.deviceId()) ? "вы" : peerName(id));
+                Toast.makeText(this, e.getKey() + " " + who, Toast.LENGTH_SHORT).show();
+                return true;
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.setMarginEnd((int) dp(4));
+            r.addView(c, lp);
+        }
+        return r;
+    }
+
+    private static final String[] QUICK_RX = {"👍", "❤️", "😂", "😮", "🔥", "✅", "❌"};
+
+    /** Долгое нажатие на сообщение: реакции и действия. */
+    private void msgMenu(View anchor, ChatClient.Msg m) {
+        if (m.queued) return;
+        vibrate(20);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(14));
+        bg.setColor(0xFF2A2F37);
+        bg.setStroke((int) dp(1), getColor(R.color.hud_line));
+        box.setBackground(bg);
+        box.setPadding((int) dp(6), (int) dp(6), (int) dp(6), (int) dp(6));
+        final android.widget.PopupWindow pw = new android.widget.PopupWindow(box, LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT, true);
+        LinearLayout rx = new LinearLayout(this);
+        rx.setOrientation(LinearLayout.HORIZONTAL);
+        for (String e : QUICK_RX) {
+            TextView t = new TextView(this);
+            t.setText(e);
+            t.setTextSize(22);
+            t.setPadding((int) dp(6), (int) dp(4), (int) dp(6), (int) dp(4));
+            t.setOnClickListener(v -> { pw.dismiss(); chat.react(m, e); });
+            rx.addView(t);
+        }
+        box.addView(rx);
+        View line = new View(this);
+        line.setBackgroundColor(getColor(R.color.hud_line));
+        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1);
+        ll.topMargin = ll.bottomMargin = (int) dp(4);
+        box.addView(line, ll);
+        menuItem(box, pw, R.drawable.ic_undo, "Ответить", getColor(R.color.hud_text), () -> startReply(m));
+        if (!m.text.isEmpty()) menuItem(box, pw, R.drawable.ic_save, "Копировать текст", getColor(R.color.hud_text), () -> copy(m.text, "Текст скопирован"));
+        if (m.mine && (m.kind.equals("msg") || m.kind.equals("photo")) && !m.text.isEmpty())
+            menuItem(box, pw, R.drawable.ic_label, "Изменить", getColor(R.color.hud_text), () -> startEdit(m));
+        if (!m.mine && !m.dm() && !m.dev.isEmpty())
+            menuItem(box, pw, R.drawable.ic_lock, "Ответить лично", getColor(R.color.hud_text), () -> openDm(m.dev));
+        if (chat.canDelete(m))
+            menuItem(box, pw, R.drawable.ic_delete, m.mine ? "Удалить у всех" : "Удалить (администратор)", 0xFFFF6B60, () -> new AlertDialog.Builder(this)
+                    .setTitle("Удалить сообщение у всех?")
+                    .setMessage("Оно пропадёт у всех участников и сотрётся с сервера.")
+                    .setPositiveButton("Удалить", (d, w) -> chat.delete(m, err -> Toast.makeText(this, "Не удалено: " + err, Toast.LENGTH_LONG).show()))
+                    .setNegativeButton("Отмена", null)
+                    .show());
+        pw.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        pw.setElevation(dp(10));
+        pw.setOutsideTouchable(true);
+        pw.showAsDropDown(anchor, 0, (int) dp(4));
+    }
+
+    private void menuItem(LinearLayout box, android.widget.PopupWindow pw, int icon, String text, int color, Runnable r) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(14.5f);
+        t.setTextColor(color);
+        t.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        android.graphics.drawable.Drawable d = getDrawable(icon).mutate();
+        d.setTint(color);
+        int sz = (int) dp(18);
+        d.setBounds(0, 0, sz, sz);
+        t.setCompoundDrawables(d, null, null, null);
+        t.setCompoundDrawablePadding((int) dp(12));
+        t.setPadding((int) dp(10), (int) dp(9), (int) dp(18), (int) dp(9));
+        t.setOnClickListener(v -> { pw.dismiss(); r.run(); });
+        box.addView(t);
+    }
+
+    private void startReply(ChatClient.Msg m) {
+        if (chatInput == null || !chatOpen) return;
+        chatEdit = null;
+        chatReply = m;
+        showChatBar(R.drawable.ic_undo, "Ответ " + (m.mine ? "себе" : m.from), snippet(m));
+        chatInput.requestFocus();
+        showKeyboard(chatInput);
+    }
+
+    private void startEdit(ChatClient.Msg m) {
+        if (chatInput == null) return;
+        chatReply = null;
+        chatEdit = m;
+        showChatBar(R.drawable.ic_label, "Изменение", snippet(m));
+        chatInput.setText(m.text);
+        chatInput.setSelection(chatInput.getText().length());
+        chatInput.requestFocus();
+        showKeyboard(chatInput);
+    }
+
+    private void showKeyboard(View v) {
+        v.post(() -> {
+            android.view.inputmethod.InputMethodManager im = getSystemService(android.view.inputmethod.InputMethodManager.class);
+            if (im != null) im.showSoftInput(v, 0);
+        });
+    }
+
+    /** Полоска над строкой ввода: «Ответ …» / «Изменение» с крестиком. */
+    private void showChatBar(int icon, String title, String text) {
+        removeChatBar0();
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        bar.setPadding((int) dp(12), (int) dp(6), (int) dp(4), (int) dp(2));
+        ImageView ic = hIcon(icon, getColor(R.color.hud_accent), 18);
+        bar.addView(ic, new LinearLayout.LayoutParams((int) dp(22), (int) dp(22)));
+        View acc = new View(this);
+        acc.setBackgroundColor(getColor(R.color.hud_accent));
+        LinearLayout.LayoutParams al = new LinearLayout.LayoutParams((int) dp(2), (int) dp(32));
+        al.setMarginStart((int) dp(10));
+        al.setMarginEnd((int) dp(8));
+        bar.addView(acc, al);
+        LinearLayout tx = new LinearLayout(this);
+        tx.setOrientation(LinearLayout.VERTICAL);
+        TextView a = new TextView(this);
+        a.setText(title);
+        a.setTextSize(12.5f);
+        a.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        a.setTextColor(getColor(R.color.hud_accent));
+        tx.addView(a);
+        TextView b = new TextView(this);
+        b.setText(text);
+        b.setTextSize(12.5f);
+        b.setSingleLine(true);
+        b.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        b.setTextColor(getColor(R.color.hud_text2));
+        tx.addView(b);
+        bar.addView(tx, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        ImageView x = hIconButton(R.drawable.ic_close, getColor(R.color.hud_text2), v -> {
+            if (chatEdit != null && chatInput != null) chatInput.setText("");
+            removeChatBar();
+        });
+        bar.addView(x, new LinearLayout.LayoutParams((int) dp(40), (int) dp(40)));
+        LinearLayout panel = findViewById(R.id.genPanel);
+        panel.addView(bar, panel.indexOfChild(findViewById(R.id.genFooter)));
+        chatBar = bar;
+    }
+
+    private void removeChatBar0() {
+        if (chatBar != null && chatBar.getParent() != null) ((ViewGroup) chatBar.getParent()).removeView(chatBar);
+        chatBar = null;
+    }
+
+    private void removeChatBar() {
+        removeChatBar0();
+        chatReply = chatEdit = null;
+    }
+
+    /** Строка ленты, которую можно смахнуть влево, чтобы ответить. */
+    private final class SwipeRow extends LinearLayout {
+        Runnable onSwipe;
+        private float x0, y0;
+        private boolean drag;
+        private final int slop = android.view.ViewConfiguration.get(MapActivity.this).getScaledTouchSlop();
+
+        SwipeRow(android.content.Context c) {
+            super(c);
+            setOrientation(HORIZONTAL);
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(android.view.MotionEvent e) {
+            if (onSwipe == null) return false;
+            switch (e.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    x0 = e.getRawX();
+                    y0 = e.getRawY();
+                    drag = false;
+                    break;
+                case android.view.MotionEvent.ACTION_MOVE:
+                    float dx = e.getRawX() - x0, dy = e.getRawY() - y0;
+                    if (!drag && dx < -slop * 1.5f && Math.abs(dx) > Math.abs(dy) * 1.6f) {
+                        drag = true;
+                        getParent().requestDisallowInterceptTouchEvent(true);
+                        return true;
+                    }
+                    break;
+            }
+            return false;
+        }
+
+        @Override
+        public boolean onTouchEvent(android.view.MotionEvent e) {
+            if (!drag) return e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN && onSwipe != null;
+            float dx = Math.min(0, e.getRawX() - x0);
+            switch (e.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_MOVE:
+                    setTranslationX(Math.max(-dp(90), dx));
+                    return true;
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    boolean fire = dx < -dp(60) && e.getActionMasked() == android.view.MotionEvent.ACTION_UP;
+                    animate().translationX(0).setDuration(150).start();
+                    drag = false;
+                    if (fire) {
+                        vibrate(15);
+                        onSwipe.run();
+                    }
+                    return true;
+            }
+            return true;
+        }
+    }
+
+    // ---------- личные сообщения ----------
+
+    private void openDm(String peer) {
+        if (peer.equals(chat.deviceId())) return;
+        chatPeer = peer;
+        openChat();
+    }
+
+    private JSONObject dmUnreadMap() {
+        try {
+            return new JSONObject(prefs.getString("c2DmUnread", "{}"));
+        } catch (Exception e) {
+            return new JSONObject();
+        }
+    }
+
+    /** delta > 0 — прибавить, < 0 — обнулить. */
+    private void dmUnread(String peer, int delta) {
+        try {
+            JSONObject o = dmUnreadMap();
+            if (delta < 0) o.remove(peer);
+            else o.put(peer, o.optInt(peer) + delta);
+            prefs.edit().putString("c2DmUnread", o.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private int dmUnreadTotal() {
+        JSONObject o = dmUnreadMap();
+        int n = 0;
+        for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) n += o.optInt(it.next());
+        return n;
+    }
+
+    private void updateDmIcon() {
+        if (chatDmIcon == null || chatDmIcon.getParent() == null) return;
+        ViewGroup p = (ViewGroup) chatDmIcon.getParent();
+        int i = p.indexOfChild(chatDmIcon);
+        p.removeView(chatDmIcon);
+        chatDmIcon = headIcon(R.drawable.ic_lock, dmUnreadTotal(), getColor(R.color.hud_text), "Личные сообщения", v -> showDialogs());
+        p.addView(chatDmIcon, i);
+    }
+
+    /** Список личных переписок и участников, кому можно написать. */
+    private void showDialogs() {
+        chatOpen = false;
+        sheetFooter.setVisibility(View.GONE);
+        sheet("Личные сообщения");
+        Map<String, ChatClient.Msg> last = chat.dialogs();
+        JSONObject unread = dmUnreadMap();
+        List<ChatClient.Person> ps = new ArrayList<>();
+        for (ChatClient.Person p : chat.people()) if (p.active() && !p.id.equals(chat.deviceId())) ps.add(p);
+        Collections.sort(ps, (a, b) -> {
+            ChatClient.Msg ma = last.get(a.id), mb = last.get(b.id);
+            long ta = ma == null ? 0 : ma.t, tb = mb == null ? 0 : mb.t;
+            return ta != tb ? Long.compare(tb, ta) : a.callsign.compareToIgnoreCase(b.callsign);
+        });
+        if (ps.isEmpty()) {
+            emptyState(R.drawable.ic_lock, "Пока некому писать", "Когда в группе появятся другие участники, им можно будет написать лично.");
+        }
+        SimpleDateFormat hm = new SimpleDateFormat("HH:mm", Locale.US), dm = new SimpleDateFormat("dd.MM", Locale.US);
+        for (ChatClient.Person p : ps) {
+            ChatClient.Msg m = last.get(p.id);
+            String sub = m == null ? "написать" : (m.mine ? "Вы: " : "") + snippet(m) + " · "
+                    + (dayLabel(m.t).equals("Сегодня") ? hm : dm).format(new Date(m.t));
+            int n = unread.optInt(p.id);
+            View right = null;
+            if (n > 0) {
+                TextView b = new TextView(this);
+                b.setText(Integer.toString(n));
+                b.setTextSize(11);
+                b.setTextColor(Color.WHITE);
+                b.setGravity(android.view.Gravity.CENTER);
+                b.setMinWidth((int) dp(20));
+                b.setPadding((int) dp(5), (int) dp(1), (int) dp(5), (int) dp(1));
+                GradientDrawable g = new GradientDrawable();
+                g.setCornerRadius(dp(10));
+                g.setColor(getColor(R.color.hud_accent));
+                b.setBackground(g);
+                right = b;
+            }
+            hRow(personDot(p), p.callsign.isEmpty() ? "без позывного" : p.callsign, sub, right, v -> openDm(p.id));
+        }
+        TextView t = new TextView(this);
+        t.setText("Личное сообщение шифруется ключом, который есть только у вас двоих. Ни сервер, ни остальные, ни создатель группы его не прочтут.");
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setTextSize(12);
+        t.setPadding((int) dp(4), (int) dp(12), (int) dp(4), 0);
+        sheetContent.addView(t);
+        hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> { chatPeer = ""; openChat(); }));
+    }
+
+    // ---------- поиск ----------
+
+    private void chatSearch(String q0) {
+        chatOpen = false;
+        sheetFooter.setVisibility(View.GONE);
+        final String peer = chatPeer;
+        sheet(peer.isEmpty() ? "Поиск по чату" : "Поиск · " + peerName(peer));
+        final EditText in = hInput("Слово, позывной или название точки", q0);
+        in.setSingleLine(true);
+        sheetContent.addView(in);
+        final String[] kind = {"all"};
+        String[][] kinds = {{"all", "Всё"}, {"msg", "Текст"}, {"pt", "Точки"}, {"photo", "Фото"}, {"voice", "Голос"}, {"st", "Статусы"}, {"mine", "Мои"}};
+        android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        LinearLayout chips = new LinearLayout(this);
+        chips.setPadding(0, (int) dp(8), 0, (int) dp(4));
+        hs.addView(chips);
+        sheetContent.addView(hs);
+        final LinearLayout res = new LinearLayout(this);
+        res.setOrientation(LinearLayout.VERTICAL);
+        sheetContent.addView(res);
+        final Runnable[] run = new Runnable[1];
+        final List<TextView> cl = new ArrayList<>();
+        for (String[] k : kinds) {
+            TextView c = hChip(k[1], 0, k[0].equals("all"), v -> {
+                kind[0] = k[0];
+                for (int i = 0; i < cl.size(); i++) styleChip(cl.get(i), kinds[i][0].equals(kind[0]));
+                run[0].run();
+            });
+            cl.add(c);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (int) dp(34));
+            lp.setMarginEnd((int) dp(6));
+            chips.addView(c, lp);
+        }
+        run[0] = () -> {
+            res.removeAllViews();
+            String q = in.getText().toString().trim().toLowerCase(Locale.ROOT);
+            List<ChatClient.Msg> all = convHistory();
+            int n = 0;
+            SimpleDateFormat f = new SimpleDateFormat("dd.MM HH:mm", Locale.US);
+            for (int i = all.size() - 1; i >= 0 && n < 100; i--) {
+                ChatClient.Msg m = all.get(i);
+                if (m.kind.equals("obj")) continue;
+                String k = kind[0];
+                if (k.equals("mine") ? !m.mine : !k.equals("all") && !(k.equals("st") ? m.kind.equals("st") || m.kind.equals("sos") : m.kind.equals(k))) continue;
+                String hay = (m.text + " " + m.ptName + " " + m.from).toLowerCase(Locale.ROOT);
+                if (!q.isEmpty() && !hay.contains(q)) continue;
+                n++;
+                TextView av = new TextView(this);
+                av.setText(MembersOverlay.initials(m.mine ? chat.callsign() : m.from));
+                av.setTextColor(Color.WHITE);
+                av.setTextSize(11);
+                av.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                av.setGravity(android.view.Gravity.CENTER);
+                GradientDrawable g = new GradientDrawable();
+                g.setShape(GradientDrawable.OVAL);
+                g.setColor(callColor(m.mine ? chat.callsign() : m.from));
+                av.setBackground(g);
+                av.setLayoutParams(new LinearLayout.LayoutParams((int) dp(30), (int) dp(30)));
+                LinearLayout keep = sheetContent;
+                sheetContent = res;
+                final long seq = m.seq;
+                hRow(av, snippet(m), (m.mine ? "Вы" : m.from) + " · " + f.format(new Date(m.t)), null, v -> {
+                    hideKeyboard();
+                    chatPeer = peer;
+                    chatJump = seq;
+                    openChat();
+                });
+                sheetContent = keep;
+            }
+            if (n == 0) {
+                TextView t = new TextView(this);
+                t.setText(q.isEmpty() && kind[0].equals("all") ? "Введите слово для поиска" : "Ничего не найдено");
+                t.setTextColor(getColor(R.color.hud_text2));
+                t.setTextSize(13);
+                t.setPadding((int) dp(6), (int) dp(14), 0, 0);
+                res.addView(t);
+            }
+        };
+        in.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence c, int a1, int a2, int a3) {}
+            @Override public void onTextChanged(CharSequence c, int a1, int a2, int a3) {}
+            @Override public void afterTextChanged(Editable e) { run[0].run(); }
+        });
+        run[0].run();
+        in.requestFocus();
+        showKeyboard(in);
+        hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> { hideKeyboard(); chatPeer = peer; openChat(); }));
+    }
+
+    private void styleChip(TextView c, boolean on) {
+        c.setBackgroundResource(on ? R.drawable.bg_accent_btn : R.drawable.bg_sheet_chip);
+        c.setTextColor(on ? Color.WHITE : getColor(R.color.hud_text));
+    }
+
+    // ---------- несколько групп ----------
+
+    private void switchGroup(ChatClient.Group g) {
+        if (prefs.getBoolean("shareLoc", false)) chat.sendLoc(0, 0, 0, Float.NaN, true); // в старой группе меня больше не видно
+        ShareLoc.reset();
+        ShareLoc.clearTail();
+        chatPeer = "";
+        chat.switchTo(g.room);
+        Toast.makeText(this, "Открыта группа «" + chat.groupName() + "»", Toast.LENGTH_SHORT).show();
+        openChat();
+    }
+
     // ================= Прочитано =================
 
     private final Map<Long, TextView> readMarks = new HashMap<>();
 
     private String readText(ChatClient.Msg m) {
         String time = new SimpleDateFormat("HH:mm", Locale.US).format(new Date(m.t));
-        String ttl = m.exp > 0 ? "⏱ " : "";
+        String ttl = (m.exp > 0 ? "⏱ " : "") + (m.edited > 0 ? "изм. " : "");
+        if (m.queued) return ttl + time + "  🕓 ждёт связи";
         if (!m.mine) return ttl + time;
         int[] r = chat.readBy(m.seq);
         if (r[1] == 0 || r[0] == 0) return ttl + time + "  ✓";
@@ -7487,7 +8196,7 @@ public class MapActivity extends Activity {
             if (track != null) track = null;
             if (locOn) stopLocation();
             if (chat != null) {
-                if (chat.configured()) chat.leave(null);
+                chat.leaveAll();
                 chat.dropLegacy();
             }
             GroupService.stop(this);
