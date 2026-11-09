@@ -212,6 +212,7 @@ public class MapActivity extends Activity {
         userPoints = UserPoints.load(this);
         pointsOverlay.setPoints(userPoints);
         refreshGeoMine();
+        refreshFireLines();
         pointsOverlay.setListener((hits, e, mv) -> tapPoints(hits, groupPtsOverlay.hits(e, mv)));
         routes = Routes.load(this);
         pathOverlay.setSaved(allRoutes());
@@ -2379,6 +2380,7 @@ public class MapActivity extends Activity {
                 toolTile(R.drawable.ic_area, "Зона", tc, () -> { closeSheet(); startTool(TOOL_AREA, null); toolAdd(lat, lon); }));
         toolTiles(
                 toolTile(R.drawable.ic_eye, "Зона видимости", tc, () -> showViewshedSetup(lat, lon, "Это место")),
+                toolTile(R.drawable.ic_flag, "Цель и поправки", tc, () -> { setFireSlot(2, lat, lon, ""); showFire(); }),
                 toolTile(R.drawable.ic_rings, "Круги", tc, () -> editGeo(quickPoint(lat, lon, "Центр", "target"), 1)),
                 toolTile(R.drawable.ic_sector, "Сектор", tc, () -> editGeo(quickPoint(lat, lon, "НП", "eye"), 0)));
         boolean grp = chat != null && chat.active();
@@ -5855,6 +5857,10 @@ public class MapActivity extends Activity {
                     GeoPoint c = (GeoPoint) map.getMapCenter();
                     editGeo(quickPoint(c.getLatitude(), c.getLongitude(), "НП", "eye"), 0);
                 }));
+        toolTiles(
+                toolTile(R.drawable.ic_flag, "Цель и поправки", tx, this::showFire),
+                toolTile(R.drawable.ic_compass, "Где я (засечка)", tx, this::showResection),
+                toolTile(R.drawable.ic_download, "Печать района", tx, this::showPrint));
         hSection("МАРШРУТЫ");
         toolTiles(
                 toolTile(R.drawable.ic_route, "По прямым", tx, () -> startTool(TOOL_ROUTE, null)),
@@ -5874,13 +5880,11 @@ public class MapActivity extends Activity {
                         () -> setTracking(track == null)));
         hSection("ПРОЧЕЕ");
         toolTiles(
-                toolTile(R.drawable.ic_compass, "Где я (засечка)", tx, this::showResection),
-                toolTile(R.drawable.ic_download, "Печать района", tx, this::showPrint),
-                toolTile(R.drawable.ic_sun, "Солнце и Луна", tx, this::showSun));
+                toolTile(R.drawable.ic_sun, "Солнце и Луна", tx, this::showSun),
+                toolTile(R.drawable.ic_info, "Инструкция", tx, () -> showGuide(-1)),
+                toolTile(R.drawable.ic_qr, "Принять по QR", tx, this::scanQr));
         toolTiles(
-                toolTile(R.drawable.ic_qr, "Принять по QR", tx, this::scanQr),
-                toolTile(R.drawable.ic_import, "Импорт KML/GPX", tx, () -> pickFile(REQ_IMPORT)),
-                toolTile(R.drawable.ic_info, "Инструкция", tx, () -> showGuide(-1)));
+                toolTile(R.drawable.ic_import, "Импорт KML/GPX", tx, () -> pickFile(REQ_IMPORT)));
     }
 
     private View toolTile(int icon, String label, int tint, Runnable action) {
@@ -8591,6 +8595,280 @@ public class MapActivity extends Activity {
                 .show());
     }
 
+
+    // ================= Цель и поправки =================
+    // Чистая геометрия по карте: дальность, дирекционный угол, превышение, смещение точки
+    // относительно линии наблюдения. Баллистики (прицел, заряды, таблицы) здесь нет.
+
+    private static final String[] FIRE_KEYS = {"fireOp", "fireNp", "fireT"};
+    private static final String[] FIRE_NAMES = {"Огневая позиция (ОП)", "Наблюдатель (НП)", "Цель"};
+
+    /** {lat, lon} и название в Object[]; null — не задано. */
+    private Object[] fireSlot(int i) {
+        String v = prefs.getString(FIRE_KEYS[i], "");
+        if (v.isEmpty()) return null;
+        try {
+            String[] a = v.split(";", 3);
+            return new Object[]{new double[]{Double.parseDouble(a[0]), Double.parseDouble(a[1])}, a.length > 2 ? a[2] : ""};
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void setFireSlot(int i, double lat, double lon, String name) {
+        prefs.edit().putString(FIRE_KEYS[i], lat + ";" + lon + ";" + name.replace(";", ",")).apply();
+        refreshFireLines();
+    }
+
+    private void refreshFireLines() {
+        if (geoOverlay == null) return;
+        Object[] op = fireSlot(0), np = fireSlot(1), t = fireSlot(2);
+        boolean show = prefs.getBoolean("fireShow", true);
+        geoOverlay.setFire(show && op != null ? (double[]) op[0] : null, show && np != null ? (double[]) np[0] : null,
+                show && t != null ? (double[]) t[0] : null);
+        map.invalidate();
+    }
+
+    private static String milsSigned(double deg) {
+        long m = Math.round(Math.abs(deg) / 0.06);
+        return (deg < 0 ? "−" : "+") + String.format(Locale.US, "%d-%02d", m / 100, m % 100);
+    }
+
+    private void showFire() {
+        sheet("Цель и поправки");
+        for (int i = 0; i < 3; i++) {
+            if (i == 1 && fireSlot(2) == null) continue; // НП нужен для поправок — когда цель уже есть
+            final int slot = i;
+            Object[] v = fireSlot(i);
+            ImageView ic = hIcon(i == 0 ? R.drawable.ic_place : i == 1 ? R.drawable.ic_eye : R.drawable.ic_flag,
+                    i == 0 ? 0xFFFF9100 : i == 1 ? 0xFF64B5F6 : 0xFFFF5252, 22);
+            String sub = v == null ? (i == 1 ? "не задан — поправки от ОП" : "не задано · нажмите, чтобы выбрать")
+                    : (((String) v[1]).isEmpty() ? "" : v[1] + " · ") + Sk42.format(((double[]) v[0])[0], ((double[]) v[0])[1]);
+            hRow(ic, FIRE_NAMES[i], sub, null, x -> pickFireSlot(slot));
+        }
+        Object[] op = fireSlot(0), np = fireSlot(1), t = fireSlot(2);
+        if (op != null && t != null) {
+            double[] a = (double[]) op[0], b = (double[]) t[0];
+            double[] inv = Geo.inverse(a[0], a[1], b[0], b[1]);
+            double grid = Geo.gridBearing(a[0], a[1], b[0], b[1]);
+            hSection("ОТ ОП ДО ЦЕЛИ");
+            LinearLayout card = hCard();
+            addKV(card, "Дальность", Geo.dist(inv[0]));
+            addKV(card, "Дир. угол", Geo.mils(grid) + "  (" + String.format(Locale.US, "%.1f°", grid) + ")");
+            addKV(card, "Азимут истинный", String.format(Locale.US, "%.1f°", inv[1]));
+            final TextView hOp = addKV(card, "Высота ОП / цели", "…");
+            final TextView dh = addKV(card, "Превышение цели", "…");
+            final TextView site = addKV(card, "Угол места цели", "…");
+            sheetContent.addView(card);
+            final double dist = inv[0];
+            new Thread(() -> {
+                double h1 = Elevation.sync(this, a[0], a[1]), h2 = Elevation.sync(this, b[0], b[1]);
+                runOnUiThread(() -> {
+                    hOp.setText(Elevation.fmt(h1) + " / " + Elevation.fmt(h2));
+                    if (Double.isNaN(h1) || Double.isNaN(h2)) {
+                        dh.setText("нет данных о рельефе");
+                        site.setText("—");
+                        return;
+                    }
+                    double d = h2 - h1;
+                    dh.setText((d >= 0 ? "+" : "−") + Math.round(Math.abs(d)) + " м");
+                    site.setText(milsSigned(Math.toDegrees(Math.atan2(d, dist))));
+                });
+            }).start();
+            // свой предел дальности — просто сравнение с введённым числом
+            final EditText lim = numInput("Ваш предел, км (необязательно)", prefs.getString("fireLim", ""));
+            final TextView limRes = new TextView(this);
+            limRes.setTextSize(13);
+            limRes.setPadding((int) dp(4), (int) dp(4), (int) dp(4), 0);
+            Runnable upd = () -> {
+                double km = parseNum(lim.getText().toString());
+                prefs.edit().putString("fireLim", lim.getText().toString().trim()).apply();
+                if (Double.isNaN(km) || km <= 0) { limRes.setText(""); return; }
+                double over = dist - km * 1000;
+                limRes.setTextColor(over <= 0 ? 0xFF69F0AE : 0xFFFF6B60);
+                limRes.setText(over <= 0 ? "В пределах · запас " + Geo.dist(-over) : "Дальше предела на " + Geo.dist(over));
+            };
+            lim.addTextChangedListener(new android.text.TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence c, int a1, int a2, int a3) {}
+                @Override public void onTextChanged(CharSequence c, int a1, int a2, int a3) {}
+                @Override public void afterTextChanged(android.text.Editable e) { upd.run(); }
+            });
+            LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            ll.topMargin = (int) dp(8);
+            sheetContent.addView(lim, ll);
+            sheetContent.addView(limRes);
+            upd.run();
+        }
+        if (t != null) {
+            double[] tg = (double[]) t[0];
+            double[] obs = np != null ? (double[]) np[0] : op != null ? (double[]) op[0] : null;
+            hSection("СМЕСТИТЬ ЦЕЛЬ" + (np != null ? " · КАК ВИДИТ НП" : op != null ? " · КАК ВИДНО С ОП" : ""));
+            if (obs == null) {
+                TextView w = new TextView(this);
+                w.setText("Задайте НП или ОП — смещение «вправо/дальше» считается от линии наблюдения.");
+                w.setTextSize(12.5f);
+                w.setTextColor(getColor(R.color.hud_text2));
+                sheetContent.addView(w);
+            } else {
+                final EditText right = numInput("0", ""), far = numInput("0", "");
+                row3(labeled("Вправо +, влево −, м", right), labeled("Дальше +, ближе −, м", far));
+                LinearLayout q = new LinearLayout(this);
+                String[][] qs = {{"←50", "r", "-50"}, {"50→", "r", "50"}, {"−100", "f", "-100"}, {"+100", "f", "100"}};
+                for (String[] x : qs) {
+                    TextView c = hChip(x[0], 0, false, v -> {
+                        EditText e = x[1].equals("r") ? right : far;
+                        double cur = parseNum(e.getText().toString());
+                        e.setText(fmtNum((Double.isNaN(cur) ? 0 : cur) + Double.parseDouble(x[2])));
+                    });
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(36), 1);
+                    lp.setMarginEnd((int) dp(5));
+                    q.addView(c, lp);
+                }
+                LinearLayout.LayoutParams ql = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                ql.topMargin = (int) dp(6);
+                sheetContent.addView(q, ql);
+                final double[] o2 = obs;
+                final Object[] opF = op;
+                hChipRow(hChip("Сместить цель", R.drawable.ic_check, true, v -> {
+                    double r = parseNum(right.getText().toString()), f = parseNum(far.getText().toString());
+                    if (Double.isNaN(r)) r = 0;
+                    if (Double.isNaN(f)) f = 0;
+                    if (r == 0 && f == 0) {
+                        Toast.makeText(this, "Введите смещение в метрах", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    double az = Geo.inverse(o2[0], o2[1], tg[0], tg[1])[1];
+                    double[] p1 = GeoOverlay.dest(tg[0], tg[1], az, f);
+                    double[] p2 = GeoOverlay.dest(p1[0], p1[1], az + 90, r);
+                    StringBuilder msg = new StringBuilder();
+                    if (opF != null) {
+                        double[] a = (double[]) opF[0];
+                        double d0 = Geo.inverse(a[0], a[1], tg[0], tg[1])[0], d1 = Geo.inverse(a[0], a[1], p2[0], p2[1])[0];
+                        double g0 = Geo.gridBearing(a[0], a[1], tg[0], tg[1]), g1 = Geo.gridBearing(a[0], a[1], p2[0], p2[1]);
+                        double dg = ((g1 - g0 + 540) % 360) - 180;
+                        msg.append("От ОП: дальность ").append(Geo.dist(d1)).append(" (").append(d1 >= d0 ? "+" : "−")
+                                .append(Math.round(Math.abs(d1 - d0))).append(" м), дир. угол ").append(Geo.mils(g1))
+                                .append(" (").append(milsSigned(dg)).append(")");
+                    }
+                    String hist = prefs.getString("fireHist", "");
+                    String rec = (r >= 0 ? "вправо " : "влево ") + Math.round(Math.abs(r)) + ", " + (f >= 0 ? "дальше " : "ближе ") + Math.round(Math.abs(f));
+                    hist = (rec + "\n" + hist);
+                    String[] hl = hist.split("\n");
+                    StringBuilder hb = new StringBuilder();
+                    for (int i = 0; i < Math.min(6, hl.length); i++) if (!hl[i].isEmpty()) hb.append(hl[i]).append('\n');
+                    prefs.edit().putString("fireHist", hb.toString().trim())
+                            .putString("firePrev", tg[0] + ";" + tg[1]).apply();
+                    setFireSlot(2, p2[0], p2[1], "Цель (смещена)");
+                    showFire();
+                    if (msg.length() > 0) Toast.makeText(this, msg.toString(), Toast.LENGTH_LONG).show();
+                }));
+                String hist = prefs.getString("fireHist", "");
+                if (!hist.isEmpty()) {
+                    TextView h = new TextView(this);
+                    h.setText("Смещения: " + hist.replace("\n", "  ·  "));
+                    h.setTextSize(12);
+                    h.setTextColor(getColor(R.color.hud_text2));
+                    h.setPadding((int) dp(4), (int) dp(8), (int) dp(4), 0);
+                    sheetContent.addView(h);
+                }
+            }
+            hSection("ЦЕЛЬ");
+            actionRow(
+                    vAction(R.drawable.ic_place, "На карте", true, v -> { closeSheet(); goTo(tg[0], tg[1], "Цель", Sk42.format(tg[0], tg[1]), Math.max(15, map.getZoomLevelDouble())); }),
+                    vAction(R.drawable.ic_flag, "Навести", false, v -> { closeSheet(); setTarget(tg[0], tg[1], "Цель"); }),
+                    vAction(R.drawable.ic_add, "В точки", false, v -> editPoint(null, tg[0], tg[1], "Цель")),
+                    vAction(R.drawable.ic_share, "Текстом", false, v -> sharePointText("Цель", tg[0], tg[1])),
+                    chat != null && chat.active() ? vAction(R.drawable.ic_chat, "В чат", false, v -> { sendPoint("Цель", tg[0], tg[1]); openChat(); }) : null);
+            if (!prefs.getString("firePrev", "").isEmpty())
+                hChipRow(hChip("Вернуть прежнюю цель", R.drawable.ic_back, false, v -> {
+                    String[] a = prefs.getString("firePrev", "").split(";");
+                    try {
+                        setFireSlot(2, Double.parseDouble(a[0]), Double.parseDouble(a[1]), "Цель");
+                    } catch (Exception ignored) {
+                    }
+                    String hist = prefs.getString("fireHist", "");
+                    int nl = hist.indexOf('\n');
+                    prefs.edit().remove("firePrev").putString("fireHist", nl < 0 ? "" : hist.substring(nl + 1)).apply();
+                    showFire();
+                }));
+        }
+        boolean show = prefs.getBoolean("fireShow", true);
+        hChipRow(hChip(show ? "Скрыть линии" : "Линии на карте", R.drawable.ic_eye, false, v -> {
+                    prefs.edit().putBoolean("fireShow", !show).apply();
+                    refreshFireLines();
+                    showFire();
+                }),
+                hChip("Сбросить всё", R.drawable.ic_delete, false, v -> {
+                    SharedPreferences.Editor e = prefs.edit();
+                    for (String k : FIRE_KEYS) e.remove(k);
+                    e.remove("fireHist").remove("firePrev").apply();
+                    refreshFireLines();
+                    showFire();
+                }));
+    }
+
+    /** Откуда взять ОП, НП или цель. */
+    private void pickFireSlot(int slot) {
+        sheet(FIRE_NAMES[slot]);
+        android.location.Location me = myLoc == null ? null : myLoc.getLocation();
+        float den = getResources().getDisplayMetrics().density;
+        hRow(hIcon(R.drawable.ic_my_location, 0xFF42A5F5, 22), "Где я", me == null ? "включите «Где я» — нет GPS" : "по GPS · ±" + Math.round(me.getAccuracy()) + " м", null, v -> {
+            if (me == null) {
+                Toast.makeText(this, "Нет местоположения: включите «Где я»", Toast.LENGTH_LONG).show();
+                return;
+            }
+            setFireSlot(slot, me.getLatitude(), me.getLongitude(), "Где я");
+            showFire();
+        });
+        hRow(hIcon(R.drawable.ic_add, getColor(R.color.hud_text), 22), "Прицел карты", "крестик в центре экрана", null, v -> {
+            GeoPoint c = (GeoPoint) map.getMapCenter();
+            setFireSlot(slot, c.getLatitude(), c.getLongitude(), "");
+            showFire();
+        });
+        if (hasTarget()) {
+            double tl = Double.parseDouble(prefs.getString("targetLat", "0")), tn = Double.parseDouble(prefs.getString("targetLon", "0"));
+            String tnm = prefs.getString("targetName", "Цель");
+            hRow(hIcon(R.drawable.ic_flag, 0xFFFF5252, 22), "Наведённая цель", tnm + " · " + Sk42.format(tl, tn), null, v -> {
+                setFireSlot(slot, tl, tn, tnm);
+                showFire();
+            });
+        }
+        hSection("ВВЕСТИ КООРДИНАТЫ");
+        final EditText in = hInput("X Y СК-42 или 48.12, 37.45", "");
+        in.setSingleLine(true);
+        sheetContent.addView(in);
+        hChipRow(hChip("Применить", R.drawable.ic_check, true, v -> {
+            CoordParse.Result c = CoordParse.parse(in.getText().toString());
+            if (c == null) {
+                Toast.makeText(this, "Координаты не разобрать", Toast.LENGTH_LONG).show();
+                return;
+            }
+            setFireSlot(slot, c.lat, c.lon, "");
+            showFire();
+        }));
+        boolean any = false;
+        for (UserPoints.Point p : userPoints) {
+            if (!any) hSection("ИЗ МОИХ ТОЧЕК");
+            any = true;
+            ImageView pin = new ImageView(this);
+            pin.setImageBitmap(UserPoints.pin(p.color, den, p.icon));
+            hRow(pin, p.name, Sk42.format(p.lat, p.lon), null, v -> { setFireSlot(slot, p.lat, p.lon, p.name); showFire(); });
+        }
+        if (chat != null && chat.configured()) {
+            boolean head = false;
+            for (ChatClient.GObj g : chat.objects()) {
+                if (!g.type.equals("pt") || g.pts.isEmpty()) continue;
+                if (!head) hSection("С КАРТЫ ГРУППЫ");
+                head = true;
+                ImageView pin = new ImageView(this);
+                pin.setImageBitmap(UserPoints.pin(g.color, den, g.icon));
+                double la = g.pts.get(0)[0], lo = g.pts.get(0)[1];
+                hRow(pin, g.name, Sk42.format(la, lo), null, v -> { setFireSlot(slot, la, lo, g.name); showFire(); });
+            }
+        }
+        hChipRow(hChip("Назад", R.drawable.ic_back, false, v -> showFire()));
+    }
+
     private ChatClient.GObj objFromRoute(Routes.Route r) {
         ChatClient.GObj g = new ChatClient.GObj();
         g.type = r.area ? "area" : "route";
@@ -9950,6 +10228,13 @@ public class MapActivity extends Activity {
                     "Отправьте точку «На общую карту группы» — свои увидят и сектор, и круги.",
                     "«Зона видимости» — откуда смотрим и на какой высоте (глаза, мачта, ретранслятор, дрон). Зелёным — куда видно по рельефу, тёмным — нет. Лес и дома не учтены.",
                     "Плашка «👁 Видно …%» сверху — нажмите, чтобы убрать зону с карты."}},
+            {R.drawable.ic_flag, "Цель и поправки", new String[]{
+                    "Инструменты → «Цель и поправки». Задайте ОП (откуда), цель и, если нужно, НП (откуда наблюдают): «Где я», прицел карты, наведённая цель, координаты или точка.",
+                    "Сразу видно: дальность, дирекционный угол в делениях, высоты, превышение и угол места цели.",
+                    "«Ваш предел, км» — впишите своё число, и приложение скажет, в пределах цель или дальше.",
+                    "Смещение: как видит НП — «вправо +/влево −» и «дальше +/ближе −» в метрах. Цель переедет, а от ОП покажется новая дальность и дир. угол с разницей.",
+                    "«Вернуть прежнюю цель» — отменить последнее смещение. Линии ОП и НП видны на карте, их можно скрыть.",
+                    "Это расчёт по карте и рельефу (±10 м по высоте), без баллистики."}},
             {R.drawable.ic_moon, "Ночной режим", new String[]{
                     "Кнопка с луной справа — весь экран становится красным и тёмным: меньше слепит и хуже виден со стороны.",
                     "Удерживайте луну — сменить яркость (темно / средне / ярче). То же — в «Слои» → «Ночь»."}},

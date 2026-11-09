@@ -126,6 +126,15 @@ public class GeoOverlay extends Overlay {
 
     void setViewshed(Viewshed v) { vs = v; }
 
+    // ---------- цель и поправки: линии ОП → цель и НП → цель ----------
+    private double[] fOp, fNp, fT;
+
+    void setFire(double[] op, double[] np, double[] t) {
+        fOp = op;
+        fNp = np;
+        fT = t;
+    }
+
     Viewshed viewshed() { return vs; }
 
     @Override
@@ -146,6 +155,26 @@ public class GeoOverlay extends Overlay {
         }
         for (Item it : group) drawItem(c, pj, it);
         for (Item it : mine) drawItem(c, pj, it);
+        if (fT != null) {
+            xy(pj, fT[0], fT[1]);
+            float tx = pt.x, ty = pt.y;
+            if (fNp != null) fireLine(c, pj, fNp, tx, ty, 0xFF64B5F6, "НП", true);
+            if (fOp != null) fireLine(c, pj, fOp, tx, ty, 0xFFFF9100, "ОП", false);
+        }
+    }
+
+    private void fireLine(Canvas c, Projection pj, double[] from, float tx, float ty, int color, String tag, boolean dashed) {
+        xy(pj, from[0], from[1]);
+        Paint p = dashed ? ring : edge;
+        p.setColor(color);
+        c.drawLine(pt.x, pt.y, tx, ty, p);
+        fill.setColor(color);
+        c.drawCircle(pt.x, pt.y, 4.5f * d, fill);
+        label(c, pt.x, pt.y - 8 * d, tag);
+        if (!dashed) {
+            double[] inv = Geo.inverse(from[0], from[1], fT[0], fT[1]);
+            label(c, (pt.x + tx) / 2, (pt.y + ty) / 2 - 6 * d, Geo.dist(inv[0]));
+        }
     }
 
     private void drawItem(Canvas c, Projection pj, Item it) {
