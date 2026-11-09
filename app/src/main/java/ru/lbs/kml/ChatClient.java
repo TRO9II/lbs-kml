@@ -273,7 +273,7 @@ final class ChatClient {
 
     /** Объект общей карты: точка, маршрут или зона. */
     static final class GObj {
-        String id = "", type = "pt", name = "", icon = "", author = "", authorName = "", note = "";
+        String id = "", type = "pt", name = "", icon = "", author = "", authorName = "", note = "", extra = "";
         int color;
         long t;
         final List<double[]> pts = new ArrayList<>();
@@ -281,6 +281,7 @@ final class ChatClient {
         JSONObject json() throws Exception {
             JSONObject o = new JSONObject().put("id", id).put("ty", type).put("n", name).put("c", color).put("ic", icon)
                     .put("au", author).put("an", authorName).put("t", t).put("no", note);
+            if (!extra.isEmpty()) o.put("x", extra);
             JSONArray a = new JSONArray();
             for (double[] p : pts) a.put(new JSONArray().put(p[0]).put(p[1]));
             return o.put("p", a);
@@ -297,14 +298,49 @@ final class ChatClient {
             g.authorName = o.optString("an");
             g.t = o.optLong("t");
             g.note = o.optString("no");
+            g.extra = o.optString("x", "");
             JSONArray a = o.getJSONArray("p");
             for (int i = 0; i < a.length(); i++) g.pts.add(new double[]{a.getJSONArray(i).getDouble(0), a.getJSONArray(i).getDouble(1)});
             return g;
         }
     }
 
+    /** Оформление группы (название, описание, аватар, цвет, закреп) хранится как особый объект. */
+    static final String INFO_ID = "~info";
+
     List<GObj> objects() {
-        return new ArrayList<>(objs.values());
+        List<GObj> out = new ArrayList<>(objs.values());
+        for (java.util.Iterator<GObj> it = out.iterator(); it.hasNext(); ) if (INFO_ID.equals(it.next().id)) it.remove();
+        return out;
+    }
+
+    GObj groupInfo() {
+        return objs.get(INFO_ID);
+    }
+
+    /** Закреплённое сообщение: {"pin": текст, "seq": номер, "by": кто}. */
+    JSONObject pinned() {
+        GObj g = groupInfo();
+        if (g == null || g.extra.isEmpty()) return null;
+        try {
+            JSONObject o = new JSONObject(g.extra);
+            return o.optString("pin").isEmpty() ? null : o;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Сохранить оформление группы (только администраторы). Пустые значения — оставить как было. */
+    void setGroupInfo(String name, String desc, String avatar, Integer color, JSONObject pin, boolean clearPin, Runnable done, Consumer<String> fail) {
+        GObj cur = groupInfo(), g = new GObj();
+        g.id = INFO_ID;
+        g.type = "info";
+        g.name = name != null ? name : cur != null ? cur.name : groupName();
+        g.note = desc != null ? desc : cur != null ? cur.note : "";
+        g.icon = avatar != null ? avatar : cur != null ? cur.icon : "";
+        g.color = color != null ? color : cur != null ? cur.color : 0;
+        g.extra = clearPin ? "" : pin != null ? pin.toString() : cur != null ? cur.extra : "";
+        putObj(g, done, fail);
     }
 
     GObj object(String id) {
@@ -327,7 +363,10 @@ final class ChatClient {
                 for (int i = 0; i < a.length(); i++) {
                     GObj g = GObj.of(a.getJSONObject(i));
                     GObj cur = objs.get(g.id);
-                    if (cur == null || cur.t < g.t) objs.put(g.id, g);
+                    if (cur == null || cur.t < g.t) {
+                        objs.put(g.id, g);
+                        if (INFO_ID.equals(g.id) && !g.name.trim().isEmpty()) prefs.edit().putString("c2Group", g.name.trim()).apply();
+                    }
                 }
                 return true;
             }
@@ -339,6 +378,13 @@ final class ChatClient {
             }
             GObj g = GObj.of(new JSONObject(m.obj));
             GObj cur = objs.get(g.id);
+            if (INFO_ID.equals(g.id)) {
+                Person p = people.get(m.dev);
+                if (p == null || !p.admin()) return false; // оформление меняют только администраторы
+                objs.put(g.id, g);
+                if (!g.name.trim().isEmpty()) prefs.edit().putString("c2Group", g.name.trim()).apply();
+                return true;
+            }
             if (cur != null && !canEdit(cur, m.dev)) return false;
             if (cur == null) g.author = m.dev; // автор — тот, кого подтвердил сервер
             else g.author = cur.author;
@@ -737,9 +783,38 @@ final class ChatClient {
     // ---------- несколько групп ----------
 
     static final class Group {
-        String room = "", name = "", role = "";
+        String room = "", name = "", role = "", avatar = "";
+        final List<String[]> people = new ArrayList<>(); // {id, позывной} активных участников
         int count;     // участников (по последним известным данным)
         boolean active;
+    }
+
+    private void fillPeople(Group g, String peopleJson) {
+        try {
+            JSONArray a = new JSONArray(peopleJson);
+            String myId = g.active ? me : "";
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.getJSONObject(i);
+                String r = o.optString("role");
+                if (!(r.equals("owner") || r.equals("admin") || r.equals("member"))) continue;
+                String c = "";
+                try {
+                    c = new JSONObject(o.optString("profile", "{}")).optString("c");
+                } catch (Exception ignored) {
+                }
+                g.people.add(new String[]{o.optString("id"), c});
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Мой id в другой (отложенной) группе — чтобы не показывать себя в списках. */
+    String myIdIn(String rm) {
+        if (rm.equals(room)) return me;
+        JSONObject g = slots().optJSONObject(rm);
+        JSONObject p = g == null ? null : g.optJSONObject("p");
+        JSONArray a = p == null ? null : p.optJSONArray("c2Me");
+        return a == null ? "" : a.optString(1);
     }
 
     private static int activeCount(String peopleJson) {
@@ -777,6 +852,9 @@ final class ChatClient {
             g.role = role;
             g.count = activeCount(prefs.getString("c2People", "[]"));
             g.active = true;
+            GObj gi = groupInfo();
+            if (gi != null) g.avatar = gi.icon;
+            fillPeople(g, prefs.getString("c2People", "[]"));
             out.add(g);
         }
         JSONObject all = slots();
@@ -792,6 +870,14 @@ final class ChatClient {
                 JSONArray r = pp.optJSONArray("c2Role"), pe = pp.optJSONArray("c2People");
                 if (r != null) g.role = r.optString(1);
                 if (pe != null) g.count = activeCount(pe.optString(1));
+                if (pe != null) fillPeople(g, pe.optString(1));
+                JSONArray ob = pp.optJSONArray("c2Objs");
+                if (ob != null) try {
+                    JSONArray a = new JSONArray(ob.optString(1));
+                    for (int i = 0; i < a.length(); i++)
+                        if (INFO_ID.equals(a.getJSONObject(i).optString("id"))) g.avatar = a.getJSONObject(i).optString("ic");
+                } catch (Exception ignored) {
+                }
             }
             out.add(g);
         }
@@ -928,6 +1014,8 @@ final class ChatClient {
     String callsign() { return prefs.getString("chatCall", ""); }
 
     String server() { return server; }
+
+    String room() { return room; }
 
     String deviceId() { return me; }
 
@@ -1602,6 +1690,27 @@ final class ChatClient {
         if (done != null) done.run();
     }
 
+    /** Создатель удаляет группу у всех: переписка стирается на сервере. */
+    void destroy(Runnable done, Consumer<String> fail) {
+        final String s = server, r = room, id = me, tok = token, f = tlsFp;
+        bg(() -> {
+            try {
+                http(s, f, r, id, tok, "POST", "/api/v2/destroy", "{}", 15000);
+                ui.post(() -> {
+                    stop();
+                    wipeLocal();
+                    if (activateAnother()) {
+                        start();
+                        each(Listener::onGroupSwitched);
+                    }
+                    if (done != null) done.run();
+                });
+            } catch (Exception e) {
+                err(fail, e);
+            }
+        });
+    }
+
     /** Новое приглашение: срок в часах, число вступлений (0 — без ограничения). */
     void makeInvite(int hours, int uses, Consumer<String> done, Consumer<String> fail) {
         bg(() -> {
@@ -1956,6 +2065,17 @@ final class ChatClient {
                     backoff = 2;
                 } catch (Exception e) {
                     if (!running) break;
+                    if (e instanceof ServerError && ((ServerError) e).code == 403 && "removed".equals(e.getMessage()) && gen == my) {
+                        // нас удалили или группу удалил создатель — убрать её с телефона
+                        running = false;
+                        wipeLocal();
+                        each(l -> l.onRole("removed"));
+                        if (activateAnother()) {
+                            start();
+                            each(Listener::onGroupSwitched);
+                        }
+                        break;
+                    }
                     wasOk = false;
                     final String msg = e.getMessage();
                     lastError = msg == null ? "" : msg;

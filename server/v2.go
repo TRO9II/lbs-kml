@@ -619,6 +619,32 @@ func registerV2(dir string) {
 		jsonOut(w, map[string]bool{"ok": true})
 	})
 
+	// destroy: создатель удаляет группу целиком — переписка стирается, у всех группа пропадает
+	http.HandleFunc("/api/v2/destroy", func(w http.ResponseWriter, req *http.Request) {
+		r, m, ok := auth(w, req, "admin")
+		if !ok {
+			return
+		}
+		defer r.mu.Unlock()
+		if m.Role != "owner" {
+			fail(w, 403, "owner only")
+			return
+		}
+		t := now()
+		for _, x := range r.meta.Members {
+			x.Role = "removed"
+			x.Changed = t
+		}
+		r.meta.Invites = map[string]*invite2{}
+		r.meta.Boxes = map[string]map[string]string{}
+		r.msgs = nil
+		r.locs = map[string]loc2{}
+		r.compact()
+		r.bump()
+		r.save()
+		jsonOut(w, map[string]bool{"ok": true})
+	})
+
 	http.HandleFunc("/api/v2/send", func(w http.ResponseWriter, req *http.Request) {
 		r, m, ok := auth(w, req, "member")
 		if !ok {

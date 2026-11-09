@@ -10,8 +10,8 @@ android {
         applicationId = "ru.lbs.kml"
         minSdk = 29
         targetSdk = 35
-        versionCode = 68
-        versionName = "3.28"
+        versionCode = 69
+        versionName = "3.29"
     }
 
     // Постоянная подпись: ключ кладётся в app/rubezh.jks из секрета GitHub SIGN_KEYSTORE_B64.

@@ -5187,6 +5187,10 @@ public class MapActivity extends Activity {
             if (res == RESULT_OK && data != null && data.getData() != null) sendPhoto(data.getData(), false);
             return;
         }
+        if (req == REQ_GAVATAR) {
+            if (res == RESULT_OK && data != null && data.getData() != null) onGroupAvatarPicked(data.getData());
+            return;
+        }
         if (req == REQ_DICT) {
             if (res == RESULT_OK && data != null && dictTarget != null) {
                 java.util.ArrayList<String> r = data.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS);
@@ -6818,6 +6822,13 @@ public class MapActivity extends Activity {
             @Override
             public void onObjects() {
                 refreshGroupMap();
+                // оформление или закреп могли поменяться — обновить шапку открытого чата
+                if (chatOpen && chatList != null && chatHeader != null) {
+                    ((ViewGroup) chatHeader.getParent()).removeView(chatHeader);
+                    chatHeader = null;
+                    buildChatHeader();
+                    sheet_title_refresh();
+                }
             }
 
             @Override
@@ -7178,6 +7189,10 @@ public class MapActivity extends Activity {
     }
 
     /** Неподвижная строка под заголовком чата: связь и участники слева, значки справа. */
+    private void sheet_title_refresh() {
+        if (chatPeer.isEmpty()) ((TextView) findViewById(R.id.genTitle)).setText(chat.groupName());
+    }
+
     private void buildChatHeader() {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
@@ -7192,6 +7207,13 @@ public class MapActivity extends Activity {
             ImageView back = hIconButton(R.drawable.ic_back, getColor(R.color.hud_text), v -> { chatPeer = ""; openChat(); });
             back.setContentDescription("В общий чат группы");
             head.addView(back, new LinearLayout.LayoutParams((int) dp(36), (int) dp(40)));
+        }
+        if (chatPeer.isEmpty()) {
+            View av = groupAvatarView(chat.groupInfo(), chat.groupName(), 30);
+            LinearLayout.LayoutParams al = new LinearLayout.LayoutParams((int) dp(30), (int) dp(30));
+            al.setMarginEnd((int) dp(8));
+            av.setOnClickListener(v -> { if (chat.isAdmin()) showGroupLook(); else showGroups(); });
+            head.addView(av, al);
         }
         head.addView(chatStatus, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         if (chatPeer.isEmpty()) head.addView(headIcon(R.drawable.ic_layers, 0, getColor(R.color.hud_text), "Мои группы", v -> showGroups()));
@@ -7216,6 +7238,8 @@ public class MapActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         box.addView(head);
         box.addView(line, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1));
+        JSONObject pin = chatPeer.isEmpty() ? chat.pinned() : null;
+        if (pin != null) box.addView(pinnedBar(pin));
         LinearLayout panel = findViewById(R.id.genPanel);
         panel.addView(box, panel.indexOfChild(findViewById(R.id.genScroll)));
         chatHeader = box;
@@ -7354,12 +7378,13 @@ public class MapActivity extends Activity {
             String who = m.mine ? "Вы" : (m.from.isEmpty() ? "Участник" : m.from);
             String nm = m.op.equals("del") ? m.text : "";
             if (!m.op.equals("del")) try { nm = new JSONObject(m.obj).optString("n"); } catch (Exception ignored) { }
-            sys.setText(who + (m.op.equals("del") ? " убрал(а) с карты группы «" : " отметил(а) на карте группы «") + nm + "»  " + time);
+            if (ChatClient.INFO_ID.equals(m.oid)) sys.setText(who + " обновил(а) оформление группы или закреп  " + time);
+            else sys.setText(who + (m.op.equals("del") ? " убрал(а) с карты группы «" : " отметил(а) на карте группы «") + nm + "»  " + time);
             sys.setTextSize(12);
             sys.setTextColor(0xFF90CAF9);
             sys.setGravity(android.view.Gravity.CENTER);
             sys.setPadding((int) dp(16), (int) dp(6), (int) dp(16), (int) dp(6));
-            if (!m.op.equals("del")) sys.setOnClickListener(v -> {
+            if (!m.op.equals("del") && !ChatClient.INFO_ID.equals(m.oid)) sys.setOnClickListener(v -> {
                 ChatClient.GObj g = chat.object(m.oid);
                 if (g != null) { chatOpen = false; sheetFooter.setVisibility(View.GONE); groupObjSheet(g); }
                 else Toast.makeText(this, "Уже убрано с карты группы", Toast.LENGTH_SHORT).show();
@@ -7606,8 +7631,29 @@ public class MapActivity extends Activity {
                     sub += " · " + Geo.dist(Geo.inverse(me.getLatitude(), me.getLongitude(), g.pts.get(0)[0], g.pts.get(0)[1])[0]) + " от вас";
                 else if (g.type.equals("route")) sub += " · " + Geo.dist(Routes.length(g.pts));
                 else if (g.type.equals("area")) sub += " · " + Routes.areaText(Routes.area(g.pts));
-                hRow(lead, g.name.isEmpty() ? "без названия" : g.name, sub, hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18),
-                        v -> groupObjSheet(g));
+                LinearLayout quick = new LinearLayout(this);
+                quick.setOrientation(LinearLayout.HORIZONTAL);
+                ImageView show = hIconButton(R.drawable.ic_eye, getColor(R.color.hud_text), v -> {
+                    closeSheet();
+                    if (g.pts.size() == 1) flyTo(g.pts.get(0)[0], g.pts.get(0)[1], Math.max(15, map.getZoomLevelDouble()));
+                    else {
+                        double n = -90, so = 90, e = -180, w = 180;
+                        for (double[] q : g.pts) { n = Math.max(n, q[0]); so = Math.min(so, q[0]); e = Math.max(e, q[1]); w = Math.min(w, q[1]); }
+                        double pa = Math.max(0.004, (n - so) * 0.15), po = Math.max(0.004, (e - w) * 0.15);
+                        map.zoomToBoundingBox(new BoundingBox(n + pa, e + po, so - pa, w - po), true, (int) dp(40));
+                    }
+                });
+                show.setContentDescription("Показать на карте");
+                quick.addView(show, new LinearLayout.LayoutParams((int) dp(38), (int) dp(38)));
+                if (g.type.equals("pt")) {
+                    ImageView aim = hIconButton(R.drawable.ic_flag, getColor(R.color.hud_text), v -> {
+                        closeSheet();
+                        setTarget(g.pts.get(0)[0], g.pts.get(0)[1], g.name.isEmpty() ? "Точка группы" : g.name);
+                    });
+                    aim.setContentDescription("Навести");
+                    quick.addView(aim, new LinearLayout.LayoutParams((int) dp(38), (int) dp(38)));
+                }
+                hRow(lead, g.name.isEmpty() ? "без названия" : g.name, sub, quick, v -> groupObjSheet(g));
             }
         }
         hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
@@ -7966,6 +8012,10 @@ public class MapActivity extends Activity {
             layerDivider(g1);
             layerLink(g1, R.drawable.ic_qr, "Пригласить", "QR", v -> showInvite());
         }
+        if (chat.isAdmin()) {
+            layerDivider(g1);
+            layerLink(g1, R.drawable.ic_smile, "Оформление", "аватар, описание, цвет", v -> showGroupLook());
+        }
         layerDivider(g1);
         layerLink(g1, R.drawable.ic_chat, "Позывной", chat.callsign(), v -> askCallsign(this::openChat));
         layerDivider(g1);
@@ -8036,6 +8086,8 @@ public class MapActivity extends Activity {
                 .show());
         foot.addView(leave);
         sheetContent.addView(foot);
+        if (chat.role().equals("owner"))
+            hChipRow(hChip("Удалить группу у всех", R.drawable.ic_delete, false, v -> confirmDestroyGroup()));
         hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
     }
 
@@ -8234,7 +8286,8 @@ public class MapActivity extends Activity {
 
     // ================= Статусы и SOS =================
 
-    private static final String[] STATUSES = {"На месте", "Выдвигаюсь", "Всё в норме", "Задерживаюсь", "Нужна помощь", "Связь пропадает"};
+    private static final String[] STATUSES = {"На месте", "Выдвигаюсь", "Всё в норме", "Задерживаюсь", "На позиции", "Возвращаюсь",
+            "Наблюдаю", "Тихо", "Нужна помощь", "Связь пропадает"};
 
     private void showStatuses() {
         chatOpen = false;
@@ -8287,6 +8340,49 @@ public class MapActivity extends Activity {
         n.setPadding((int) dp(4), (int) dp(8), (int) dp(4), 0);
         sheetContent.addView(n);
         hChipRow(hChip("Назад в чат", R.drawable.ic_back, false, v -> openChat()));
+    }
+
+    /** Быстрые статусы в панели смайлов: касание — отправлено (с координатами, если есть GPS). */
+    private void fillStatusGrid(LinearLayout grid) {
+        LinearLayout row = null;
+        for (int i = 0; i < STATUSES.length; i++) {
+            if (i % 2 == 0) {
+                row = new LinearLayout(this);
+                LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                rl.bottomMargin = (int) dp(6);
+                grid.addView(row, rl);
+            }
+            final String st = STATUSES[i];
+            boolean warn = st.equals("Нужна помощь") || st.equals("Связь пропадает");
+            TextView c = hChip(st, R.drawable.ic_flag, false, v -> {
+                vibrate(25);
+                sendStatus("st", st);
+                hideEmoji();
+            });
+            if (warn) c.setTextColor(0xFFFFB74D);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(40), 1);
+            if (i % 2 == 0) lp.setMarginEnd((int) dp(6));
+            row.addView(c, lp);
+        }
+        TextView sos = new TextView(this);
+        sos.setText("SOS — удерживайте 2 секунды");
+        sos.setTextColor(Color.WHITE);
+        sos.setTextSize(14);
+        sos.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        sos.setGravity(android.view.Gravity.CENTER);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(12));
+        g.setColor(0xFFD32F2F);
+        sos.setBackground(g);
+        final Runnable fire = () -> { vibrate(500); sendStatus("sos", "Нужна помощь!"); hideEmoji(); };
+        sos.setOnTouchListener((v, e) -> {
+            if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) { v.setAlpha(0.6f); vibrate(40); v.postDelayed(fire, 2000); }
+            else if (e.getActionMasked() == android.view.MotionEvent.ACTION_UP || e.getActionMasked() == android.view.MotionEvent.ACTION_CANCEL) { v.setAlpha(1f); v.removeCallbacks(fire); }
+            return true;
+        });
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) dp(46));
+        sl.topMargin = (int) dp(4);
+        grid.addView(sos, sl);
     }
 
     private void sendStatus(String kind, String text) {
@@ -8720,6 +8816,15 @@ public class MapActivity extends Activity {
         if (!m.text.isEmpty()) menuItem(box, pw, R.drawable.ic_save, "Копировать текст", getColor(R.color.hud_text), () -> copy(m.text, "Текст скопирован"));
         if (m.mine && (m.kind.equals("msg") || m.kind.equals("photo")) && !m.text.isEmpty())
             menuItem(box, pw, R.drawable.ic_label, "Изменить", getColor(R.color.hud_text), () -> startEdit(m));
+        if (chat.isAdmin() && !m.dm())
+            menuItem(box, pw, R.drawable.ic_flag, "Закрепить", getColor(R.color.hud_text), () -> {
+                try {
+                    JSONObject pin = new JSONObject().put("pin", snippet(m)).put("seq", m.seq).put("by", m.mine ? chat.callsign() : m.from);
+                    chat.setGroupInfo(null, null, null, null, pin, false, () -> Toast.makeText(this, "Закреплено", Toast.LENGTH_SHORT).show(),
+                            err -> Toast.makeText(this, "Не закреплено: " + err, Toast.LENGTH_LONG).show());
+                } catch (Exception ignored) {
+                }
+            });
         if (!m.mine && !m.dm() && !m.dev.isEmpty())
             menuItem(box, pw, R.drawable.ic_lock, "Ответить лично", getColor(R.color.hud_text), () -> openDm(m.dev));
         if (chat.canDelete(m))
@@ -8982,6 +9087,32 @@ public class MapActivity extends Activity {
             }
             hRow(personDot(p), p.callsign.isEmpty() ? "без позывного" : p.callsign, sub, right, v -> openDm(p.id));
         }
+        // люди из других ваших групп: нажатие — перейти в ту группу и написать
+        for (ChatClient.Group g : chat.groups()) {
+            if (g.active) continue;
+            String myId = chat.myIdIn(g.room);
+            boolean head = false;
+            for (String[] pp : g.people) {
+                if (pp[0].equals(myId)) continue;
+                if (!head) { hSection("ГРУППА «" + g.name.toUpperCase(new Locale("ru")) + "»"); head = true; }
+                TextView av = new TextView(this);
+                av.setText(MembersOverlay.initials(pp[1]));
+                av.setTextColor(Color.WHITE);
+                av.setTextSize(11);
+                av.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                av.setGravity(android.view.Gravity.CENTER);
+                GradientDrawable ag = new GradientDrawable();
+                ag.setShape(GradientDrawable.OVAL);
+                ag.setColor(callColor(pp[1]));
+                av.setBackground(ag);
+                av.setLayoutParams(new LinearLayout.LayoutParams((int) dp(30), (int) dp(30)));
+                final String pid = pp[0];
+                hRow(av, pp[1].isEmpty() ? "без позывного" : pp[1], "написать · откроется группа «" + g.name + "»", null, v -> {
+                    switchGroup(g);
+                    openDm(pid);
+                });
+            }
+        }
         TextView t = new TextView(this);
         t.setText("Личное сообщение шифруется ключом, который есть только у вас двоих. Ни сервер, ни остальные, ни создатель группы его не прочтут.");
         t.setTextColor(getColor(R.color.hud_text2));
@@ -9086,6 +9217,236 @@ public class MapActivity extends Activity {
         c.setTextColor(on ? Color.WHITE : getColor(R.color.hud_text));
     }
 
+
+    // ================= Оформление группы, закреп, удаление =================
+
+    private static final int REQ_GAVATAR = 37;
+    private String pendingAvatar;
+
+    private static final int[] GROUP_COLORS = {0, 0xFFFF5A4E, 0xFFFFB300, 0xFF66BB6A, 0xFF29B6F6, 0xFF7E57C2, 0xFFEC407A, 0xFF8D6E63};
+
+    /** Круглый аватар: картинка (base64) или инициалы на цветном круге. */
+    private View avatarFrom(String b64, String seed, String name, int sizeDp, int ring) {
+        android.graphics.Bitmap bm = null;
+        if (b64 != null && !b64.isEmpty()) try {
+            byte[] raw = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
+            bm = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.length);
+        } catch (Exception ignored) {
+        }
+        if (bm != null) {
+            ImageView iv = new ImageView(this);
+            iv.setImageBitmap(bm);
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            GradientDrawable g = new GradientDrawable();
+            g.setShape(GradientDrawable.OVAL);
+            g.setColor(0xFF22262C);
+            if (ring != 0) g.setStroke((int) dp(2), ring);
+            iv.setBackground(g);
+            iv.setClipToOutline(true);
+            iv.setOutlineProvider(android.view.ViewOutlineProvider.BACKGROUND);
+            return iv;
+        }
+        TextView av = new TextView(this);
+        av.setText(MembersOverlay.initials(name));
+        av.setTextColor(Color.WHITE);
+        av.setTextSize(sizeDp * 0.34f);
+        av.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        av.setGravity(android.view.Gravity.CENTER);
+        GradientDrawable ag = new GradientDrawable();
+        ag.setShape(GradientDrawable.OVAL);
+        ag.setColor(callColor(seed));
+        if (ring != 0) ag.setStroke((int) dp(2), ring);
+        av.setBackground(ag);
+        return av;
+    }
+
+    private View groupAvatarView(ChatClient.GObj info, String name, int sizeDp) {
+        return avatarFrom(info == null ? "" : info.icon, name + chat.room(), name, sizeDp, info == null ? 0 : info.color);
+    }
+
+    /** Закреплённое сообщение под шапкой чата. */
+    private View pinnedBar(JSONObject pin) {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        bar.setPadding((int) dp(10), (int) dp(6), (int) dp(2), (int) dp(6));
+        ChatClient.GObj info = chat.groupInfo();
+        int acc = info != null && info.color != 0 ? info.color : getColor(R.color.hud_accent);
+        View stripe = new View(this);
+        stripe.setBackgroundColor(acc);
+        bar.addView(stripe, new LinearLayout.LayoutParams((int) dp(3), (int) dp(30)));
+        LinearLayout tx = new LinearLayout(this);
+        tx.setOrientation(LinearLayout.VERTICAL);
+        tx.setPadding((int) dp(10), 0, (int) dp(6), 0);
+        TextView a = new TextView(this);
+        a.setText("Закреплено" + (pin.optString("by").isEmpty() ? "" : " · " + pin.optString("by")));
+        a.setTextSize(11.5f);
+        a.setTextColor(acc);
+        a.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        tx.addView(a);
+        TextView b = new TextView(this);
+        b.setText(pin.optString("pin"));
+        b.setTextSize(13);
+        b.setSingleLine(true);
+        b.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        b.setTextColor(getColor(R.color.hud_text));
+        tx.addView(b);
+        bar.addView(tx, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        final long seq = pin.optLong("seq");
+        bar.setOnClickListener(v -> {
+            if (bubbleRows.containsKey(seq)) jumpTo(seq);
+            else new AlertDialog.Builder(this).setTitle("Закреплено").setMessage(pin.optString("pin")).setPositiveButton("OK", null).show();
+        });
+        if (chat.isAdmin()) {
+            ImageView x = hIconButton(R.drawable.ic_close, getColor(R.color.hud_text2), v ->
+                    chat.setGroupInfo(null, null, null, null, null, true, () -> Toast.makeText(this, "Откреплено", Toast.LENGTH_SHORT).show(),
+                            err -> Toast.makeText(this, "Не получилось: " + err, Toast.LENGTH_LONG).show()));
+            x.setContentDescription("Открепить");
+            bar.addView(x, new LinearLayout.LayoutParams((int) dp(36), (int) dp(36)));
+        }
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(0xFF1C2026);
+        bar.setBackground(g);
+        return bar;
+    }
+
+    /** Оформление группы: аватар, название, описание, цвет. Видят все участники. */
+    private void showGroupLook() {
+        chatOpen = false;
+        sheetFooter.setVisibility(View.GONE);
+        sheet("Оформление группы");
+        ChatClient.GObj info = chat.groupInfo();
+        final int[] color = {info == null ? 0 : info.color};
+        if (pendingAvatar == null) pendingAvatar = info == null ? "" : info.icon;
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.VERTICAL);
+        top.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        top.setPadding(0, (int) dp(4), 0, (int) dp(10));
+        View av = avatarFrom(pendingAvatar, chat.groupName() + chat.room(), chat.groupName(), 88, color[0]);
+        top.addView(av, new LinearLayout.LayoutParams((int) dp(88), (int) dp(88)));
+        TextView pick = new TextView(this);
+        pick.setText(pendingAvatar.isEmpty() ? "Выбрать фото" : "Сменить фото");
+        pick.setTextColor(getColor(R.color.hud_accent));
+        pick.setTextSize(14);
+        pick.setPadding((int) dp(10), (int) dp(8), (int) dp(10), (int) dp(4));
+        pick.setOnClickListener(v -> {
+            Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+            i.setType("image/*");
+            startActivityForResult(Intent.createChooser(i, "Аватар группы"), REQ_GAVATAR);
+        });
+        top.addView(pick);
+        if (!pendingAvatar.isEmpty()) {
+            TextView rm = new TextView(this);
+            rm.setText("Убрать фото");
+            rm.setTextColor(getColor(R.color.hud_text2));
+            rm.setTextSize(12.5f);
+            rm.setOnClickListener(v -> { pendingAvatar = ""; showGroupLook(); });
+            top.addView(rm);
+        }
+        sheetContent.addView(top);
+        final EditText name = hInput("Название группы", chat.groupName());
+        name.setSingleLine(true);
+        sheetContent.addView(name);
+        final EditText desc = hInput("Описание (необязательно)", info == null ? "" : info.note);
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        dl.topMargin = (int) dp(8);
+        sheetContent.addView(desc, dl);
+        hSection("ЦВЕТ ГРУППЫ");
+        LinearLayout row = new LinearLayout(this);
+        final List<View> sw = new ArrayList<>();
+        for (int c : GROUP_COLORS) {
+            View v = new View(this);
+            int show = c == 0 ? 0xFF555B66 : c;
+            v.setBackground(swatchHud(show, c == color[0]));
+            v.setContentDescription(c == 0 ? "без цвета" : "цвет");
+            v.setOnClickListener(x -> {
+                color[0] = c;
+                for (int k = 0; k < sw.size(); k++) sw.get(k).setBackground(swatchHud(GROUP_COLORS[k] == 0 ? 0xFF555B66 : GROUP_COLORS[k], GROUP_COLORS[k] == c));
+            });
+            sw.add(v);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(34), 1);
+            lp.setMarginEnd((int) dp(8));
+            row.addView(v, lp);
+        }
+        sheetContent.addView(row);
+        TextView n = new TextView(this);
+        n.setText("Аватар, название и описание увидят все участники — и новые тоже. Сообщение можно закрепить: долгое нажатие → «Закрепить».");
+        n.setTextColor(getColor(R.color.hud_text2));
+        n.setTextSize(12);
+        n.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        sheetContent.addView(n);
+        footer("Назад", "Сохранить", v -> {
+            String nm = name.getText().toString().trim();
+            hideKeyboard();
+            chat.setGroupInfo(nm.isEmpty() ? null : nm, desc.getText().toString().trim(), pendingAvatar, color[0], null, false, () -> {
+                Toast.makeText(this, "Оформление сохранено", Toast.LENGTH_SHORT).show();
+            }, err -> Toast.makeText(this, "Не сохранено: " + err, Toast.LENGTH_LONG).show());
+            if (!nm.isEmpty()) prefs.edit().putString("c2Group", nm).apply();
+            pendingAvatar = null;
+            openChat();
+        });
+    }
+
+    /** Фото для аватара: квадрат по центру, 160×160, JPEG. */
+    private void onGroupAvatarPicked(Uri uri) {
+        new Thread(() -> {
+            try {
+                android.graphics.Bitmap src;
+                try (InputStream in = getContentResolver().openInputStream(uri)) {
+                    android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+                    o.inSampleSize = 4;
+                    src = android.graphics.BitmapFactory.decodeStream(in, null, o);
+                }
+                if (src == null) throw new Exception("не картинка");
+                int side = Math.min(src.getWidth(), src.getHeight());
+                android.graphics.Bitmap sq = android.graphics.Bitmap.createBitmap(src, (src.getWidth() - side) / 2, (src.getHeight() - side) / 2, side, side);
+                android.graphics.Bitmap sm = android.graphics.Bitmap.createScaledBitmap(sq, 160, 160, true);
+                ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                sm.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, bo);
+                String b64 = android.util.Base64.encodeToString(bo.toByteArray(), android.util.Base64.NO_WRAP);
+                runOnUiThread(() -> {
+                    pendingAvatar = b64;
+                    showGroupLook();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this, "Не удалось открыть фото: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    /** Удалить группу у всех (только создатель). */
+    private void confirmDestroyGroup() {
+        String nm = chat.groupName();
+        new AlertDialog.Builder(this)
+                .setTitle("Удалить группу «" + nm + "» у всех?")
+                .setMessage("Переписка, карта группы и участники будут стёрты с сервера. У всех участников группа пропадёт. Отменить нельзя.")
+                .setPositiveButton("Удалить навсегда", (d, w) -> chat.destroy(() -> {
+                    closeSheet();
+                    membersOverlay.setMembers(chat.members());
+                    refreshGroupMap();
+                    Toast.makeText(this, "Группа «" + nm + "» удалена" + (chat.configured() ? " · открыта «" + chat.groupName() + "»" : ""), Toast.LENGTH_LONG).show();
+                }, err -> Toast.makeText(this, "Не удалено: " + err, Toast.LENGTH_LONG).show()))
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    /** Долгое нажатие на группу в «Мои группы». */
+    private void groupManage(ChatClient.Group g) {
+        List<String> items = new ArrayList<>();
+        items.add(g.active ? "Открыть чат" : "Перейти в группу");
+        items.add("Выйти из группы");
+        if (g.role.equals("owner")) items.add("Удалить группу у всех");
+        new AlertDialog.Builder(this)
+                .setTitle(g.name)
+                .setItems(items.toArray(new String[0]), (d, w) -> {
+                    if (!g.active) switchGroup(g);
+                    if (w == 0) { chatPeer = ""; openChat(); }
+                    else if (w == 1) chatSettings();
+                    else confirmDestroyGroup();
+                })
+                .show();
+    }
+
     // ---------- несколько групп ----------
 
     private static String roleLabel(String r) {
@@ -9122,17 +9483,10 @@ public class MapActivity extends Activity {
             bg.setColor(g.active ? 0xFF2A2326 : 0xFF1F232A);
             bg.setStroke((int) dp(g.active ? 1.5f : 1), g.active ? getColor(R.color.hud_accent) : getColor(R.color.hud_line));
             card.setBackground(bg);
-            TextView av = new TextView(this);
-            av.setText(MembersOverlay.initials(g.name));
-            av.setTextColor(Color.WHITE);
-            av.setTextSize(15);
-            av.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-            av.setGravity(android.view.Gravity.CENTER);
-            GradientDrawable ag = new GradientDrawable();
-            ag.setShape(GradientDrawable.OVAL);
-            ag.setColor(callColor(g.name + g.room));
-            av.setBackground(ag);
+            View av = avatarFrom(g.avatar, g.name + g.room, g.name, 44, 0);
             card.addView(av, new LinearLayout.LayoutParams((int) dp(44), (int) dp(44)));
+            final ChatClient.Group gg = g;
+            card.setOnLongClickListener(v -> { groupManage(gg); return true; });
             LinearLayout tx = new LinearLayout(this);
             tx.setOrientation(LinearLayout.VERTICAL);
             tx.setPadding((int) dp(12), 0, (int) dp(8), 0);
@@ -9169,7 +9523,7 @@ public class MapActivity extends Activity {
             sheetContent.addView(card, lp);
         }
         TextView t = new TextView(this);
-        t.setText("Сообщения приходят из открытой группы. Чтобы выйти из группы — откройте её и зайдите в настройки.");
+        t.setText("Сообщения приходят из открытой группы. Подержите палец на группе — выйти из неё или удалить (если вы создатель).");
         t.setTextColor(getColor(R.color.hud_text2));
         t.setTextSize(12);
         t.setPadding((int) dp(4), (int) dp(4), (int) dp(4), (int) dp(4));
@@ -9872,6 +10226,7 @@ public class MapActivity extends Activity {
         final List<TextView> tabViews = new ArrayList<>();
         String recent = prefs.getString("emojiRecent", "");
         final List<String[]> cats = new ArrayList<>();
+        if (chatPeer.isEmpty()) cats.add(new String[]{"⚑ Статус", "#status"}); // быстрые статусы — одним касанием
         if (!recent.isEmpty()) cats.add(new String[]{"Недавние", recent});
         cats.addAll(Arrays.asList(EMOJI));
         for (int i = 0; i < cats.size(); i++) {
@@ -9885,10 +10240,10 @@ public class MapActivity extends Activity {
                 fillEmojiGrid(grid, cats.get(ci)[1], input);
                 sc.scrollTo(0, 0);
                 for (int k = 0; k < tabViews.size(); k++) styleSeg(tabViews.get(k), k == ci);
+                prefs.edit().putString("emojiTab", cats.get(ci)[0]).apply();
             });
             tabViews.add(t);
             tabs.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-            styleSeg(t, i == 0);
         }
         GradientDrawable tg = new GradientDrawable();
         tg.setCornerRadius(dp(10));
@@ -9899,7 +10254,11 @@ public class MapActivity extends Activity {
         LinearLayout.LayoutParams scl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (int) dp(210));
         scl.topMargin = (int) dp(6);
         panel.addView(sc, scl);
-        fillEmojiGrid(grid, cats.get(0)[1], input);
+        int start = 0;
+        String lastTab = prefs.getString("emojiTab", "");
+        for (int i = 0; i < cats.size(); i++) if (cats.get(i)[0].equals(lastTab)) start = i;
+        for (int k = 0; k < tabViews.size(); k++) styleSeg(tabViews.get(k), k == start);
+        fillEmojiGrid(grid, cats.get(start)[1], input);
         LinearLayout gp = findViewById(R.id.genPanel);
         LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         pl.topMargin = (int) dp(8);
@@ -9910,6 +10269,10 @@ public class MapActivity extends Activity {
 
     private void fillEmojiGrid(LinearLayout grid, String list, EditText input) {
         grid.removeAllViews();
+        if (list.equals("#status")) {
+            fillStatusGrid(grid);
+            return;
+        }
         String[] em = list.trim().split("\\s+");
         int cols = 8;
         LinearLayout row = null;
