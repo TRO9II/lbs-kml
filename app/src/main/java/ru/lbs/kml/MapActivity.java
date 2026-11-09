@@ -1521,8 +1521,10 @@ public class MapActivity extends Activity {
         searchBox.setOnEditorActionListener((v, actionId, ev) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
                 String q = searchBox.getText().toString().trim();
+                CoordParse.Result cr = q.isEmpty() ? null : CoordParse.parse(q);
                 List<Integer> hit = places != null ? places.search(q, 1) : new ArrayList<>();
-                if (!hit.isEmpty()) showPlace(hit.get(0));
+                if (cr != null) goTo(cr.lat, cr.lon, "Координаты", String.format(Locale.US, "%.6f, %.6f", cr.lat, cr.lon), 17.0);
+                else if (!hit.isEmpty()) showPlace(hit.get(0));
                 else if (!q.isEmpty()) searchOnline(q);
                 return true;
             }
@@ -1579,7 +1581,7 @@ public class MapActivity extends Activity {
             final double clat = cr.lat, clon = cr.lon;
             addResultRow(String.format(Locale.US, "Перейти: %.6f, %.6f", clat, clon),
                     "СК-42: " + Sk42.format(clat, clon), v -> goTo(clat, clon, "Координаты",
-                            String.format(Locale.US, "%.6f, %.6f", clat, clon), 15.0));
+                            String.format(Locale.US, "%.6f, %.6f", clat, clon), 17.0));
         }
         if (places == null) {
             addResultRow("Загружаю список…", "", null);
@@ -1631,7 +1633,7 @@ public class MapActivity extends Activity {
     }
 
     private void showPlace(int i) {
-        goTo(places.lat[i], places.lon[i], places.name[i], places.subtitle(i), places.rank[i] <= 1 ? 12.5 : 14.0);
+        goTo(places.lat[i], places.lon[i], places.name[i], places.subtitle(i), places.rank[i] <= 1 ? 14.0 : 16.0);
     }
 
     private void goTo(double lat, double lon, String title, String sub, double zoom) {
@@ -1684,7 +1686,7 @@ public class MapActivity extends Activity {
                 for (String[] r : out) {
                     addResultRow(r[0], r[1], v -> {
                         try {
-                            goTo(Double.parseDouble(r[2]), Double.parseDouble(r[3]), r[0], r[1], 13.0);
+                            goTo(Double.parseDouble(r[2]), Double.parseDouble(r[3]), r[0], r[1], 16.0);
                         } catch (NumberFormatException ignored) {
                         }
                     });
@@ -6285,6 +6287,7 @@ public class MapActivity extends Activity {
             head.addView(back, new LinearLayout.LayoutParams((int) dp(36), (int) dp(40)));
         }
         head.addView(chatStatus, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        if (chatPeer.isEmpty()) head.addView(headIcon(R.drawable.ic_layers, 0, getColor(R.color.hud_text), "Мои группы", v -> showGroups()));
         head.addView(headIcon(R.drawable.ic_search, 0, getColor(R.color.hud_text), "Поиск по чату", v -> chatSearch("")));
         if (chatPeer.isEmpty()) {
             chatDmIcon = headIcon(R.drawable.ic_lock, dmUnreadTotal(), getColor(R.color.hud_text), "Личные сообщения", v -> showDialogs());
@@ -6777,7 +6780,7 @@ public class MapActivity extends Activity {
         sheet(more ? "Ещё одна группа" : "Чат группы");
         if (more) {
             TextView t = new TextView(this);
-            t.setText("Текущая группа «" + chat.groupName() + "» останется на телефоне — переключаться можно в настройках группы.");
+            t.setText("Текущая группа «" + chat.groupName() + "» останется на телефоне — переключаться в «Мои группы» (значок в шапке чата).");
             t.setTextColor(getColor(R.color.hud_text2));
             t.setTextSize(12.5f);
             t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(8));
@@ -7049,15 +7052,7 @@ public class MapActivity extends Activity {
         setBlock("ГРУППА · вы " + roleName, g1);
 
         LinearLayout g0 = layerBox();
-        List<ChatClient.Group> gs = chat.groups();
-        for (int i = 0; i < gs.size(); i++) {
-            ChatClient.Group gr = gs.get(i);
-            if (i > 0) layerDivider(g0);
-            layerLink(g0, gr.active ? R.drawable.ic_check : R.drawable.ic_chat, gr.name, gr.active ? "открыта" : "перейти",
-                    gr.active ? null : v -> switchGroup(gr));
-        }
-        layerDivider(g0);
-        layerLink(g0, R.drawable.ic_add, "Ещё группа", "создать или вступить", v -> chatSetup());
+        layerLink(g0, R.drawable.ic_layers, "Мои группы", Integer.toString(chat.groups().size()), v -> showGroups());
         setBlock("ГРУППЫ НА ТЕЛЕФОНЕ", g0);
 
         LinearLayout g2 = layerBox();
@@ -8168,6 +8163,98 @@ public class MapActivity extends Activity {
     }
 
     // ---------- несколько групп ----------
+
+    private static String roleLabel(String r) {
+        switch (r) {
+            case "owner": return "вы создатель";
+            case "admin": return "вы администратор";
+            case "member": return "участник";
+            case "pending": return "ждёт подтверждения";
+            default: return "";
+        }
+    }
+
+    private static String peopleCount(int n) {
+        int m10 = n % 10, m100 = n % 100;
+        String w = m10 == 1 && m100 != 11 ? "участник" : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? "участника" : "участников";
+        return n + " " + w;
+    }
+
+    /** Отдельный список групп на телефоне: нажатие — перейти. */
+    private void showGroups() {
+        chatOpen = false;
+        sheetFooter.setVisibility(View.GONE);
+        sheet("Мои группы");
+        List<ChatClient.Group> gs = chat.groups();
+        Map<String, Integer> same = new HashMap<>();
+        for (ChatClient.Group g : gs) same.put(g.name, same.containsKey(g.name) ? same.get(g.name) + 1 : 1);
+        for (ChatClient.Group g : gs) {
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.HORIZONTAL);
+            card.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            card.setPadding((int) dp(12), (int) dp(12), (int) dp(12), (int) dp(12));
+            GradientDrawable bg = new GradientDrawable();
+            bg.setCornerRadius(dp(16));
+            bg.setColor(g.active ? 0xFF2A2326 : 0xFF1F232A);
+            bg.setStroke((int) dp(g.active ? 1.5f : 1), g.active ? getColor(R.color.hud_accent) : getColor(R.color.hud_line));
+            card.setBackground(bg);
+            TextView av = new TextView(this);
+            av.setText(MembersOverlay.initials(g.name));
+            av.setTextColor(Color.WHITE);
+            av.setTextSize(15);
+            av.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            av.setGravity(android.view.Gravity.CENTER);
+            GradientDrawable ag = new GradientDrawable();
+            ag.setShape(GradientDrawable.OVAL);
+            ag.setColor(callColor(g.name + g.room));
+            av.setBackground(ag);
+            card.addView(av, new LinearLayout.LayoutParams((int) dp(44), (int) dp(44)));
+            LinearLayout tx = new LinearLayout(this);
+            tx.setOrientation(LinearLayout.VERTICAL);
+            tx.setPadding((int) dp(12), 0, (int) dp(8), 0);
+            TextView nm = new TextView(this);
+            boolean dup = same.get(g.name) > 1;
+            nm.setText(g.name + (dup ? "  ·  #" + g.room.substring(0, 4).toUpperCase(Locale.ROOT) : ""));
+            nm.setTextSize(16);
+            nm.setTextColor(getColor(R.color.hud_text));
+            nm.setSingleLine(true);
+            nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            tx.addView(nm);
+            TextView sub = new TextView(this);
+            String r = roleLabel(g.role);
+            sub.setText((r.isEmpty() ? "" : r + " · ") + peopleCount(Math.max(1, g.count)));
+            sub.setTextSize(12.5f);
+            sub.setTextColor(getColor(R.color.hud_text2));
+            tx.addView(sub);
+            card.addView(tx, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            if (g.active) {
+                TextView on = new TextView(this);
+                on.setText("открыта");
+                on.setTextSize(12);
+                on.setTextColor(getColor(R.color.hud_accent));
+                card.addView(on);
+            } else {
+                card.addView(hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18), new LinearLayout.LayoutParams((int) dp(20), (int) dp(20)));
+            }
+            card.setOnClickListener(v -> {
+                if (g.active) { chatPeer = ""; openChat(); }
+                else switchGroup(g);
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = (int) dp(8);
+            sheetContent.addView(card, lp);
+        }
+        TextView t = new TextView(this);
+        t.setText("Сообщения приходят из открытой группы. Чтобы выйти из группы — откройте её и зайдите в настройки.");
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setTextSize(12);
+        t.setPadding((int) dp(4), (int) dp(4), (int) dp(4), (int) dp(4));
+        sheetContent.addView(t);
+        actionRow(
+                vAction(R.drawable.ic_qr, "Вступить по QR", false, v -> { closeSheet(); scanQr(); }),
+                vAction(R.drawable.ic_add, "Создать", false, v -> createGroup()),
+                vAction(R.drawable.ic_back, "В чат", false, v -> { chatPeer = ""; openChat(); }));
+    }
 
     private void switchGroup(ChatClient.Group g) {
         if (prefs.getBoolean("shareLoc", false)) chat.sendLoc(0, 0, 0, Float.NaN, true); // в старой группе меня больше не видно

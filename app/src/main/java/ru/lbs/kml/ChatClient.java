@@ -737,8 +737,22 @@ final class ChatClient {
     // ---------- несколько групп ----------
 
     static final class Group {
-        String room = "", name = "";
+        String room = "", name = "", role = "";
+        int count;     // участников (по последним известным данным)
         boolean active;
+    }
+
+    private static int activeCount(String peopleJson) {
+        int n = 0;
+        try {
+            JSONArray a = new JSONArray(peopleJson);
+            for (int i = 0; i < a.length(); i++) {
+                String r = a.getJSONObject(i).optString("role");
+                if (r.equals("owner") || r.equals("admin") || r.equals("member")) n++;
+            }
+        } catch (Exception ignored) {
+        }
+        return n;
     }
 
     private static boolean slotKey(String k) {
@@ -760,6 +774,8 @@ final class ChatClient {
             Group g = new Group();
             g.room = room;
             g.name = groupName();
+            g.role = role;
+            g.count = activeCount(prefs.getString("c2People", "[]"));
             g.active = true;
             out.add(g);
         }
@@ -769,7 +785,14 @@ final class ChatClient {
             if (k.equals(room)) continue;
             Group g = new Group();
             g.room = k;
-            g.name = all.optJSONObject(k) == null ? "Группа" : all.optJSONObject(k).optString("name", "Группа");
+            JSONObject o = all.optJSONObject(k);
+            g.name = o == null ? "Группа" : o.optString("name", "Группа");
+            JSONObject pp = o == null ? null : o.optJSONObject("p");
+            if (pp != null) {
+                JSONArray r = pp.optJSONArray("c2Role"), pe = pp.optJSONArray("c2People");
+                if (r != null) g.role = r.optString(1);
+                if (pe != null) g.count = activeCount(pe.optString(1));
+            }
             out.add(g);
         }
         return out;
