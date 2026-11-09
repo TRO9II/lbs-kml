@@ -244,6 +244,22 @@
             android:textSize="10.5sp"
             android:visibility="gone" />
 
+        <TextView
+            android:id="@+id/vsChip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="6dp"
+            android:elevation="5dp"
+            android:fontFamily="sans-serif-medium"
+            android:paddingStart="12dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="6dp"
+            android:textColor="@android:color/white"
+            android:textSize="12.5sp"
+            android:visibility="gone" />
+
         <ScrollView
             android:id="@+id/resultsScroll"
             android:layout_width="match_parent"
@@ -474,6 +490,18 @@
             android:elevation="6dp"
             android:padding="11dp"
             android:src="@drawable/ic_track"
+            android:tint="@color/hud_text" />
+
+        <ImageView
+            android:id="@+id/btnNight"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_round_hud"
+            android:contentDescription="Ночной режим"
+            android:elevation="6dp"
+            android:padding="11dp"
+            android:src="@drawable/ic_moon"
             android:tint="@color/hud_text" />
 
         <LinearLayout

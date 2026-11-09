@@ -119,6 +119,7 @@ public class MapActivity extends Activity {
     private PlacesOverlay placesOverlay;
     private PointsOverlay pointsOverlay;
     private PathOverlay pathOverlay;
+    private GeoOverlay geoOverlay;
     private Places places;
 
     @Override
@@ -177,7 +178,7 @@ public class MapActivity extends Activity {
             // кнопки и карточки поверх карты
             int[] mapAt = new int[2], at = new int[2];
             mv.getLocationInWindow(mapAt);
-            for (int id : new int[]{R.id.rightCol, R.id.coordCard, R.id.btnSearch, R.id.searchPill, R.id.dock, R.id.targetCard, R.id.navPanel, R.id.offlineChip}) {
+            for (int id : new int[]{R.id.rightCol, R.id.coordCard, R.id.btnSearch, R.id.searchPill, R.id.dock, R.id.targetCard, R.id.navPanel, R.id.offlineChip, R.id.vsChip}) {
                 View v = findViewById(id);
                 if (v == null || !v.isShown() || v.getWidth() == 0) continue;
                 v.getLocationInWindow(at);
@@ -192,6 +193,8 @@ public class MapActivity extends Activity {
         map.getOverlays().add(placesOverlay);
         pathOverlay = new PathOverlay(d);
         map.getOverlays().add(pathOverlay);
+        geoOverlay = new GeoOverlay(d);
+        map.getOverlays().add(geoOverlay);
         groupPtsOverlay = new PointsOverlay(d);
         groupPtsOverlay.setGroup(true);
         map.getOverlays().add(groupPtsOverlay);
@@ -208,6 +211,7 @@ public class MapActivity extends Activity {
 
         userPoints = UserPoints.load(this);
         pointsOverlay.setPoints(userPoints);
+        refreshGeoMine();
         pointsOverlay.setListener((hits, e, mv) -> tapPoints(hits, groupPtsOverlay.hits(e, mv)));
         routes = Routes.load(this);
         pathOverlay.setSaved(allRoutes());
@@ -277,6 +281,19 @@ public class MapActivity extends Activity {
             return true;
         });
         findViewById(R.id.btnGrid).setOnClickListener(v -> toggleGrid());
+        findViewById(R.id.btnNight).setOnClickListener(v -> {
+            boolean on = !prefs.getBoolean("night", false);
+            setNight(on);
+            if (on) Toast.makeText(this, "Ночной режим · удерживайте луну — яркость", Toast.LENGTH_SHORT).show();
+        });
+        findViewById(R.id.btnNight).setOnLongClickListener(v -> {
+            int lvl = (prefs.getInt("nightLvl", 1) + 1) % 3;
+            prefs.edit().putInt("nightLvl", lvl).putBoolean("night", true).apply();
+            applyNight();
+            vibrate(20);
+            Toast.makeText(this, "Ночью: " + NIGHT_LVL[lvl].toLowerCase(new Locale("ru")), Toast.LENGTH_SHORT).show();
+            return true;
+        });
         findViewById(R.id.btnTrack).setOnClickListener(v -> {
             if (track == null) setTracking(true);
             else new AlertDialog.Builder(this)
@@ -1200,6 +1217,7 @@ public class MapActivity extends Activity {
         setBlock("НА КАРТЕ", ov);
 
         roadsCard();
+        nightCard();
 
         LinearLayout more = layerBox();
         switchRow(more, R.drawable.ic_rail, tx, "Железные дороги", null, OV_KEYS[1], false, this::applyOverlays);
@@ -1297,6 +1315,48 @@ public class MapActivity extends Activity {
             box.addView(seg, sl);
         }
         setBlock("ДОРОГИ", box);
+    }
+
+    /** Карточка «Ночь»: выключатель и яркость. */
+    private void nightCard() {
+        LinearLayout box = layerBox();
+        switchRow(box, R.drawable.ic_moon, 0xFFFF5252, "Ночной режим", "весь экран красный и тёмный", "night", false, () -> {
+            applyNight();
+            final ScrollView sc = findViewById(R.id.genScroll);
+            final int y = sc.getScrollY();
+            showLayers();
+            sc.post(() -> sc.scrollTo(0, y));
+        });
+        if (prefs.getBoolean("night", false)) {
+            LinearLayout seg = new LinearLayout(this);
+            seg.setOrientation(LinearLayout.HORIZONTAL);
+            seg.setPadding((int) dp(3), (int) dp(3), (int) dp(3), (int) dp(3));
+            GradientDrawable sg = new GradientDrawable();
+            sg.setCornerRadius(dp(10));
+            sg.setColor(0xFF15181D);
+            seg.setBackground(sg);
+            final List<TextView> bs = new ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                final int lv = i;
+                TextView b = new TextView(this);
+                b.setText(NIGHT_LVL[i]);
+                b.setTextSize(13);
+                b.setGravity(android.view.Gravity.CENTER);
+                b.setPadding(0, (int) dp(7), 0, (int) dp(7));
+                b.setOnClickListener(v -> {
+                    prefs.edit().putInt("nightLvl", lv).apply();
+                    applyNight();
+                    for (int k = 0; k < bs.size(); k++) styleSeg(bs.get(k), k == lv);
+                });
+                bs.add(b);
+                seg.addView(b, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+                styleSeg(b, i == prefs.getInt("nightLvl", 1));
+            }
+            LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            sl.setMargins((int) dp(50), 0, (int) dp(12), (int) dp(12));
+            box.addView(seg, sl);
+        }
+        setBlock("НОЧЬ", box);
     }
 
     private void styleSeg(TextView b, boolean on) {
@@ -2317,6 +2377,10 @@ public class MapActivity extends Activity {
                 toolTile(R.drawable.ic_flag, "Навести", tc, () -> { closeSheet(); setTarget(lat, lon, "Цель"); }),
                 toolTile(R.drawable.ic_nav, "Вести сюда", tc, () -> { closeSheet(); startNav(Collections.singletonList(new double[]{lat, lon}), 0, "Цель"); }),
                 toolTile(R.drawable.ic_area, "Зона", tc, () -> { closeSheet(); startTool(TOOL_AREA, null); toolAdd(lat, lon); }));
+        toolTiles(
+                toolTile(R.drawable.ic_eye, "Зона видимости", tc, () -> showViewshedSetup(lat, lon, "Это место")),
+                toolTile(R.drawable.ic_rings, "Круги", tc, () -> editGeo(quickPoint(lat, lon, "Центр", "target"), 1)),
+                toolTile(R.drawable.ic_sector, "Сектор", tc, () -> editGeo(quickPoint(lat, lon, "НП", "eye"), 0)));
         boolean grp = chat != null && chat.active();
         toolTiles(
                 toolTile(R.drawable.ic_compass, "Ориентир", tc, () -> { if (resMarks.size() >= 6) resMarks.clear(); addResMark("Ориентир " + (resMarks.size() + 1), lat, lon); }),
@@ -2343,6 +2407,7 @@ public class MapActivity extends Activity {
             Toast.makeText(this, "Не удалось сохранить точки", Toast.LENGTH_LONG).show();
         }
         pointsOverlay.setPoints(userPoints);
+        refreshGeoMine();
         map.invalidate();
     }
 
@@ -2484,6 +2549,12 @@ public class MapActivity extends Activity {
                         })
                         .setNegativeButton("Отмена", null)
                         .show()));
+        hSection("ОБСТАНОВКА");
+        boolean hasGeo = p.geo != null && !p.geo.isEmpty();
+        toolTiles(
+                toolTile(R.drawable.ic_sector, hasGeo ? "Сектор ✓" : "Сектор", tc, () -> editGeo(p, 0)),
+                toolTile(R.drawable.ic_rings, "Круги", tc, () -> editGeo(p, 1)),
+                toolTile(R.drawable.ic_eye, "Зона видимости", tc, () -> showViewshedSetup(p.lat, p.lon, nm)));
         if (grp) hChipRow(hChip("На общую карту группы", R.drawable.ic_my_location, false, v -> shareToGroupMap(objFromPoint(p))),
                 hChip("Файл KML", R.drawable.ic_download, false, v -> exportOnePoint(p)));
     }
@@ -3658,7 +3729,7 @@ public class MapActivity extends Activity {
             applyOffline();
             Toast.makeText(this, on ? "Без сети: только сохранённые карты и высоты" : "Сеть включена", Toast.LENGTH_SHORT).show();
         });
-        swNight.setOnCheckedChangeListener((b, on) -> { prefs.edit().putBoolean("night", on).apply(); applyNight(); });
+        swNight.setOnCheckedChangeListener((b, on) -> { if (on != prefs.getBoolean("night", false)) setNight(on); });
         swTrack.setOnCheckedChangeListener((b, on) -> setTracking(on));
         findViewById(R.id.tileOffline).setOnClickListener(v -> { openMenu(false); chooseDownload(); });
         findViewById(R.id.tileInfo).setOnClickListener(v -> { openMenu(false); showGuide(-1); });
@@ -4680,22 +4751,48 @@ public class MapActivity extends Activity {
         map.invalidate();
     }
 
+    private static final float[] NIGHT_BRIGHT = {0.02f, 0.08f, 0.22f};
+    private static final String[] NIGHT_LVL = {"Темно", "Средне", "Ярче"};
+
+    /**
+     * Ночной режим: весь экран (карта, кнопки, панели) — в красных тонах, яркость снижена.
+     * Красный свет меньше всего сбивает ночное зрение и хуже виден со стороны.
+     */
     private void applyNight() {
         boolean on = prefs.getBoolean("night", false);
-        findViewById(R.id.nightFilter).setVisibility(on ? View.VISIBLE : View.GONE);
-        android.graphics.ColorMatrix cm = null;
-        if (on) {
-            cm = new android.graphics.ColorMatrix(new float[]{
-                    0.40f, 0.40f, 0.12f, 0, 0,
-                    0.06f, 0.10f, 0.02f, 0, 0,
-                    0.02f, 0.04f, 0.02f, 0, 0,
-                    0, 0, 0, 1, 0});
+        boolean apply = on && !qrShown; // QR-код показываем как есть, иначе не считается
+        findViewById(R.id.nightFilter).setVisibility(View.GONE);
+        map.getOverlayManager().getTilesOverlay().setColorFilter(null);
+        View root = getWindow().getDecorView();
+        if (apply) {
+            android.graphics.Paint lp = new android.graphics.Paint();
+            lp.setColorFilter(new android.graphics.ColorMatrixColorFilter(new float[]{
+                    0.36f, 0.62f, 0.14f, 0, 0,
+                    0.02f, 0.04f, 0.01f, 0, 0,
+                    0, 0, 0, 0, 0,
+                    0, 0, 0, 1, 0}));
+            root.setLayerType(View.LAYER_TYPE_HARDWARE, lp);
+        } else {
+            root.setLayerType(View.LAYER_TYPE_NONE, null);
         }
-        map.getOverlayManager().getTilesOverlay().setColorFilter(cm == null ? null : new android.graphics.ColorMatrixColorFilter(cm));
-        android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
-        lp.screenBrightness = on ? 0.12f : android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
-        getWindow().setAttributes(lp);
+        android.view.WindowManager.LayoutParams wl = getWindow().getAttributes();
+        int lvl = Math.max(0, Math.min(2, prefs.getInt("nightLvl", 1)));
+        wl.screenBrightness = qrShown ? 1f : on ? NIGHT_BRIGHT[lvl] : android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+        getWindow().setAttributes(wl);
+        ImageView b = findViewById(R.id.btnNight);
+        if (b != null) {
+            b.setImageTintList(ColorStateList.valueOf(on ? Color.WHITE : getColor(R.color.hud_text)));
+            b.setBackgroundTintList(on ? ColorStateList.valueOf(0xFFB71C1C) : null);
+            b.setContentDescription(on ? "Выключить ночной режим" : "Ночной режим");
+        }
+        Switch sw = findViewById(R.id.swNight);
+        if (sw != null && sw.isChecked() != on) sw.setChecked(on);
         map.invalidate();
+    }
+
+    private void setNight(boolean on) {
+        prefs.edit().putBoolean("night", on).apply();
+        applyNight();
     }
 
     // ================= Защита ПИН-кодом =================
@@ -5589,8 +5686,8 @@ public class MapActivity extends Activity {
         android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
         lp.screenBrightness = 1f;
         getWindow().setAttributes(lp);
-        findViewById(R.id.nightFilter).setVisibility(View.GONE);
         qrShown = true;
+        applyNight();
     }
 
     private void scanQr() {
@@ -5741,9 +5838,22 @@ public class MapActivity extends Activity {
         toolTiles(
                 toolTile(R.drawable.ic_ruler, "Линейка", tx, () -> startTool(TOOL_RULER, null)),
                 toolTile(R.drawable.ic_area, "Площадь", tx, () -> startTool(TOOL_AREA, null)),
-                toolTile(R.drawable.ic_eye_los, "Видимость", tx, () -> {
+                toolTile(R.drawable.ic_eye_los, "Видно ли", tx, () -> {
                     startTool(TOOL_RULER, null);
                     Toast.makeText(this, "Поставьте 2 точки (откуда и куда смотреть), затем нажмите ⛰ «Профиль»", Toast.LENGTH_LONG).show();
+                }));
+        toolTiles(
+                toolTile(R.drawable.ic_eye, "Зона видимости", tx, () -> {
+                    GeoPoint c = (GeoPoint) map.getMapCenter();
+                    showViewshedSetup(c.getLatitude(), c.getLongitude(), "Центр экрана");
+                }),
+                toolTile(R.drawable.ic_rings, "Круги дальности", tx, () -> {
+                    GeoPoint c = (GeoPoint) map.getMapCenter();
+                    editGeo(quickPoint(c.getLatitude(), c.getLongitude(), "Центр", "target"), 1);
+                }),
+                toolTile(R.drawable.ic_sector, "Сектор", tx, () -> {
+                    GeoPoint c = (GeoPoint) map.getMapCenter();
+                    editGeo(quickPoint(c.getLatitude(), c.getLongitude(), "НП", "eye"), 0);
                 }));
         hSection("МАРШРУТЫ");
         toolTiles(
@@ -8099,6 +8209,7 @@ public class MapActivity extends Activity {
         if (chat == null || groupPtsOverlay == null) return;
         boolean show = prefs.getBoolean("showGroupMap", true) && chat.active();
         List<UserPoints.Point> pts = new ArrayList<>();
+        List<GeoOverlay.Item> geoItems = new ArrayList<>();
         groupRoutes.clear();
         if (show) {
             for (ChatClient.GObj g : chat.objects()) {
@@ -8112,7 +8223,10 @@ public class MapActivity extends Activity {
                     p.icon = g.icon;
                     p.lat = g.pts.get(0)[0];
                     p.lon = g.pts.get(0)[1];
+                    p.geo = g.extra;
                     pts.add(p);
+                    GeoOverlay.Item gi = GeoOverlay.parse(g.extra, p.lat, p.lon, p.color);
+                    if (gi != null) geoItems.add(gi);
                 } else {
                     Routes.Route r = new Routes.Route();
                     r.id = "g:" + g.id;
@@ -8125,6 +8239,7 @@ public class MapActivity extends Activity {
             }
         }
         groupPtsOverlay.setPoints(pts);
+        if (geoOverlay != null) geoOverlay.setGroup(geoItems);
         pathOverlay.setSaved(allRoutes());
         map.invalidate();
     }
@@ -8136,8 +8251,344 @@ public class MapActivity extends Activity {
         g.note = p.note == null ? "" : p.note;
         g.color = p.color;
         g.icon = p.icon == null ? "" : p.icon;
+        g.extra = p.geo == null ? "" : p.geo;
         g.pts.add(new double[]{p.lat, p.lon});
         return g;
+    }
+
+
+    // ================= Секторы, круги дальности, зона видимости =================
+
+    private void refreshGeoMine() {
+        if (geoOverlay == null) return;
+        List<GeoOverlay.Item> items = new ArrayList<>();
+        for (UserPoints.Point p : userPoints) {
+            GeoOverlay.Item it = GeoOverlay.parse(p.geo, p.lat, p.lon, p.color);
+            if (it != null) items.add(it);
+        }
+        geoOverlay.setMine(items);
+    }
+
+    /** Новая точка без лишних вопросов (для кругов и сектора «с места»). Сохраняется только по «Сохранить». */
+    private UserPoints.Point quickPoint(double lat, double lon, String name, String icon) {
+        UserPoints.Point p = new UserPoints.Point();
+        p.name = name;
+        p.note = "";
+        p.color = prefs.getInt("lastColor", UserPoints.COLORS[0]);
+        p.icon = icon;
+        p.lat = lat;
+        p.lon = lon;
+        return p; // id пустой — признак «ещё не сохранена»
+    }
+
+    private EditText numInput(String hint, String text) {
+        EditText e = hInput(hint, text);
+        e.setSingleLine(true);
+        e.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        e.setSelectAllOnFocus(true);
+        return e;
+    }
+
+    private LinearLayout labeled(String cap, View field) {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(cap);
+        t.setTextSize(11.5f);
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setPadding((int) dp(4), 0, 0, (int) dp(3));
+        col.addView(t);
+        col.addView(field);
+        return col;
+    }
+
+    private void row3(View... vs) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < vs.length; i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            if (i < vs.length - 1) lp.setMarginEnd((int) dp(8));
+            r.addView(vs[i], lp);
+        }
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rl.topMargin = (int) dp(4);
+        sheetContent.addView(r, rl);
+    }
+
+    /** Сектор обзора/огня и круги дальности у точки. focus: 0 — сектор, 1 — круги. */
+    private void editGeo(UserPoints.Point p, int focus) {
+        final boolean fresh = p.id == null || p.id.isEmpty();
+        sheet(fresh ? "Сектор и круги" : "Сектор и круги · " + p.name);
+        JSONObject o;
+        try {
+            o = p.geo == null || p.geo.isEmpty() ? new JSONObject() : new JSONObject(p.geo);
+        } catch (Exception e) {
+            o = new JSONObject();
+        }
+        final EditText name = fresh ? hInput("Название точки", p.name) : null;
+        if (name != null) {
+            name.setSingleLine(true);
+            sheetContent.addView(name);
+        }
+        // ---------- сектор ----------
+        hSection("СЕКТОР ОБЗОРА / ОГНЯ");
+        final EditText az = numInput("45 или 7-50", o.has("sa") ? fmtNum(o.optDouble("sa")) : "");
+        final EditText w = numInput("60", o.has("sw") ? fmtNum(o.optDouble("sw")) : "60");
+        final EditText r = numInput("1500", o.has("sr") ? fmtNum(o.optDouble("sr")) : "");
+        row3(labeled("Азимут, ° / д.у.", az), labeled("Ширина, °", w), labeled("Дальность, м", r));
+        // азимут по центру экрана: точка → центр карты
+        LinearLayout quick = hChipRow(
+                hChip("Азимут на центр экрана", R.drawable.ic_compass, false, v -> {
+                    GeoPoint c = (GeoPoint) map.getMapCenter();
+                    double[] inv = Geo.inverse(p.lat, p.lon, c.getLatitude(), c.getLongitude());
+                    if (inv[0] < 5) {
+                        Toast.makeText(this, "Сдвиньте карту: центр экрана — направление сектора", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    az.setText(fmtNum(Math.round(inv[1])));
+                    if (r.getText().toString().trim().isEmpty()) r.setText(fmtNum(Math.round(inv[0] / 10) * 10));
+                }));
+        LinearLayout widths = new LinearLayout(this);
+        for (int wv : new int[]{30, 60, 90, 120, 180, 360}) {
+            TextView c = hChip(wv == 360 ? "круг" : wv + "°", 0, false, v -> w.setText(Integer.toString(wv)));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(36), 1);
+            lp.setMarginEnd((int) dp(5));
+            widths.addView(c, lp);
+        }
+        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        wl.topMargin = (int) dp(6);
+        sheetContent.addView(widths, wl);
+        // ---------- круги ----------
+        hSection("КРУГИ ДАЛЬНОСТИ, КМ");
+        final EditText rg = numInput("1, 3, 5", o.optString("rg", focus == 1 ? "1, 3, 5" : ""));
+        sheetContent.addView(rg);
+        LinearLayout presets = new LinearLayout(this);
+        String[][] pr = {{"0,5 · 1 · 2", "0.5, 1, 2"}, {"1 · 3 · 5", "1, 3, 5"}, {"5 · 10 · 20", "5, 10, 20"}, {"нет", ""}};
+        for (String[] x : pr) {
+            TextView c = hChip(x[0], 0, false, v -> rg.setText(x[1]));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(36), 1);
+            lp.setMarginEnd((int) dp(5));
+            presets.addView(c, lp);
+        }
+        LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        pl.topMargin = (int) dp(6);
+        sheetContent.addView(presets, pl);
+        TextView hint = new TextView(this);
+        hint.setText("Азимут — истинный, в градусах или делениях угломера (7-50). Пустая дальность — сектора нет. "
+                + "Если точка уже на общей карте группы — отправьте её туда ещё раз, и группа увидит сектор и круги.");
+        hint.setTextSize(12);
+        hint.setTextColor(getColor(R.color.hud_text2));
+        hint.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        sheetContent.addView(hint);
+        (focus == 1 ? rg : az).requestFocus();
+
+        footer("Отмена", "Сохранить", v -> {
+            JSONObject g = new JSONObject();
+            try {
+                double a = Resection.parseAz(az.getText().toString());
+                double rr = parseNum(r.getText().toString());
+                double ww = parseNum(w.getText().toString());
+                if (!az.getText().toString().trim().isEmpty() && Double.isNaN(a)) {
+                    Toast.makeText(this, "Азимут не разобрать: 0–360° или 0-00…60-00", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (!Double.isNaN(a) && !Double.isNaN(rr) && rr > 0) {
+                    if (rr > 100000) rr = 100000;
+                    g.put("sa", Math.round(a * 10) / 10.0);
+                    g.put("sw", Double.isNaN(ww) || ww <= 0 ? 60 : Math.min(360, ww));
+                    g.put("sr", Math.round(rr));
+                }
+                double[] rings = GeoOverlay.ringsKm(rg.getText().toString());
+                if (rings.length > 0) {
+                    StringBuilder sb = new StringBuilder();
+                    for (double x : rings) sb.append(sb.length() == 0 ? "" : ", ").append(fmtNum(x / 1000));
+                    g.put("rg", sb.toString());
+                }
+            } catch (Exception ignored) {
+            }
+            if (g.length() == 0 && fresh) {
+                Toast.makeText(this, "Укажите сектор (азимут и дальность) или круги", Toast.LENGTH_LONG).show();
+                return;
+            }
+            p.geo = g.length() == 0 ? "" : g.toString();
+            if (fresh) {
+                String nm = name.getText().toString().trim();
+                p.name = nm.isEmpty() ? "Точка" : nm;
+                p.id = Long.toString(System.currentTimeMillis(), 36);
+                p.created = System.currentTimeMillis();
+                userPoints.add(p);
+            }
+            savePoints();
+            closeSheet();
+            Toast.makeText(this, g.length() == 0 ? "Сектор и круги убраны" : "Сохранено · «" + p.name + "»", Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    private static String fmtNum(double v) {
+        if (v == Math.rint(v)) return Long.toString((long) v);
+        return String.format(Locale.US, "%.2f", v).replaceAll("0+$", "").replace('.', ',');
+    }
+
+    private static double parseNum(String s) {
+        try {
+            s = s.trim().replace(',', '.').replace(" ", "");
+            return s.isEmpty() ? Double.NaN : Double.parseDouble(s);
+        } catch (Exception e) {
+            return Double.NaN;
+        }
+    }
+
+    private volatile int vsRun;
+
+    /** Зона прямой видимости: откуда смотрим, на какой высоте, на какое расстояние. */
+    private void showViewshedSetup(double lat, double lon, String title) {
+        sheet("Зона видимости");
+        TextView about = new TextView(this);
+        about.setText("Подсветит, куда видно с высоты над точкой «" + title + "» — по рельефу местности. "
+                + "Лес, посадки и постройки не учитываются: в реальности видно меньше.");
+        about.setTextSize(13);
+        about.setTextColor(getColor(R.color.hud_text2));
+        sheetContent.addView(about);
+        final double[] hv = {prefs.getFloat("vsH", 30)}, rv = {prefs.getFloat("vsR", 5000)}, tv = {prefs.getFloat("vsT", 2)};
+        hSection("ВЫСОТА ПОДЪЁМА НАД ЗЕМЛЁЙ");
+        final EditText hIn = numInput("30", fmtNum(hv[0]));
+        sheetContent.addView(hIn);
+        LinearLayout hp = new LinearLayout(this);
+        String[][] hs = {{"2 м", "2", "глаза"}, {"10", "10", "мачта"}, {"30", "30", "ретранс."}, {"100", "100", "дрон"}, {"300", "300", "дрон"}};
+        for (String[] x : hs) {
+            TextView c = hChip(x[0], 0, false, v -> hIn.setText(x[1]));
+            c.setContentDescription(x[0] + " " + x[2]);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(36), 1);
+            lp.setMarginEnd((int) dp(5));
+            hp.addView(c, lp);
+        }
+        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        hl.topMargin = (int) dp(6);
+        sheetContent.addView(hp, hl);
+
+        hSection("РАДИУС");
+        LinearLayout rr = new LinearLayout(this);
+        final List<TextView> rbs = new ArrayList<>();
+        final int[] radii = {2000, 5000, 10000, 15000};
+        for (int rad : radii) {
+            TextView b = new TextView(this);
+            b.setText(rad / 1000 + " км");
+            b.setTextSize(13.5f);
+            b.setGravity(android.view.Gravity.CENTER);
+            b.setPadding(0, (int) dp(8), 0, (int) dp(8));
+            b.setOnClickListener(v -> {
+                rv[0] = rad;
+                for (int k = 0; k < rbs.size(); k++) styleSegHud(rbs.get(k), radii[k] == rad);
+            });
+            rbs.add(b);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            lp.setMarginEnd((int) dp(5));
+            rr.addView(b, lp);
+            styleSegHud(b, rad == (int) rv[0]);
+        }
+        sheetContent.addView(rr);
+
+        hSection("ЧТО ИЩЕМ");
+        LinearLayout tr = new LinearLayout(this);
+        final List<TextView> tbs = new ArrayList<>();
+        final double[] tg = {0, 2, 4};
+        final String[] tl = {"Землю", "Человека", "Технику"};
+        for (int i = 0; i < tg.length; i++) {
+            final double tvv = tg[i];
+            TextView b = new TextView(this);
+            b.setText(tl[i]);
+            b.setTextSize(13.5f);
+            b.setGravity(android.view.Gravity.CENTER);
+            b.setPadding(0, (int) dp(8), 0, (int) dp(8));
+            b.setOnClickListener(v -> {
+                tv[0] = tvv;
+                for (int k = 0; k < tbs.size(); k++) styleSegHud(tbs.get(k), tg[k] == tvv);
+            });
+            tbs.add(b);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            lp.setMarginEnd((int) dp(5));
+            tr.addView(b, lp);
+            styleSegHud(b, tvv == tv[0]);
+        }
+        sheetContent.addView(tr);
+
+        final TextView status = new TextView(this);
+        status.setTextSize(13);
+        status.setTextColor(getColor(R.color.hud_text));
+        status.setPadding((int) dp(4), (int) dp(12), (int) dp(4), 0);
+        sheetContent.addView(status);
+
+        footer("Закрыть", "Рассчитать", v -> {
+            double h = parseNum(hIn.getText().toString());
+            if (Double.isNaN(h) || h < 0 || h > 3000) {
+                Toast.makeText(this, "Высота — от 0 до 3000 м", Toast.LENGTH_LONG).show();
+                return;
+            }
+            prefs.edit().putFloat("vsH", (float) h).putFloat("vsR", (float) rv[0]).putFloat("vsT", (float) tv[0]).apply();
+            v.setEnabled(false);
+            final int run = ++vsRun;
+            final double rad = rv[0], tgt = tv[0];
+            status.setText("Загружаю рельеф…");
+            new Thread(() -> {
+                ViewshedCalc.prefetch(this, lat, lon, rad);
+                runOnUiThread(() -> { if (run == vsRun) status.setText("Считаю… 0%"); });
+                GeoOverlay.Viewshed vs = ViewshedCalc.run(this, lat, lon, h, rad, tgt, pct -> {
+                    runOnUiThread(() -> { if (run == vsRun) status.setText("Считаю… " + pct + "%"); });
+                    return run == vsRun;
+                });
+                runOnUiThread(() -> {
+                    if (run != vsRun) return;
+                    v.setEnabled(true);
+                    if (vs == null) {
+                        status.setText("Нет данных о рельефе для этого места. Нужен интернет (один раз) — потом работает без сети.");
+                        return;
+                    }
+                    vs.title = title;
+                    geoOverlay.setViewshed(vs);
+                    showVsChip();
+                    closeSheet();
+                    zoomToBox(vs);
+                    map.invalidate();
+                });
+            }).start();
+        });
+    }
+
+    private void zoomToBox(GeoOverlay.Viewshed vs) {
+        try {
+            map.zoomToBoundingBox(new org.osmdroid.util.BoundingBox(vs.north, vs.east, vs.south, vs.west), true, (int) dp(40));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void showVsChip() {
+        TextView c = findViewById(R.id.vsChip);
+        GeoOverlay.Viewshed vs = geoOverlay.viewshed();
+        if (vs == null) {
+            c.setVisibility(View.GONE);
+            return;
+        }
+        c.setText("👁 Видно " + vs.visiblePct + "% · " + fmtNum(vs.height) + " м · " + fmtNum(vs.radius / 1000) + " км   ✕");
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(14));
+        g.setColor(0xE61F232A);
+        g.setStroke((int) dp(1), 0xFF00C853);
+        c.setBackground(g);
+        c.setVisibility(View.VISIBLE);
+        c.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("Зона видимости")
+                .setMessage("Зелёным — куда видно с " + fmtNum(vs.height) + " м над «" + vs.title + "», тёмным — не видно (за рельефом). "
+                        + "Видно " + vs.visiblePct + "% площади в радиусе " + fmtNum(vs.radius / 1000) + " км.\n\n"
+                        + "Лес и постройки не учтены. Точность рельефа ±10 м.")
+                .setPositiveButton("Убрать с карты", (d2, w2) -> {
+                    vsRun++;
+                    geoOverlay.setViewshed(null);
+                    showVsChip();
+                    map.invalidate();
+                })
+                .setNeutralButton("Показать", (d2, w2) -> zoomToBox(vs))
+                .setNegativeButton("Оставить", null)
+                .show());
     }
 
     private ChatClient.GObj objFromRoute(Routes.Route r) {
@@ -9492,7 +9943,16 @@ public class MapActivity extends Activity {
             {R.drawable.ic_route, "Маршруты и ведение", new String[]{
                     "Инструменты → «По прямым» или «По дорогам» — ставьте точки маршрута прицелом.",
                     "Готовый маршрут → «Вести». Ведёт по GPS, а без GPS — по шагам или по скорости, с предупреждением о поворотах.",
-                    "Линейка и «Видимость» — расстояние, азимут и профиль высот между точками."}},
+                    "Линейка и «Видно ли» — расстояние, азимут и профиль высот между точками."}},
+            {R.drawable.ic_sector, "Секторы, круги, зона видимости", new String[]{
+                    "Нажмите на точку → «Сектор»: азимут (градусы или 7-50), ширина и дальность — на карте появится сектор обзора или огня. «Азимут на центр экрана» — направьте карту и возьмите азимут одним касанием.",
+                    "«Круги» — кольца дальности вокруг точки: 1, 3, 5 км или свои числа через запятую.",
+                    "Отправьте точку «На общую карту группы» — свои увидят и сектор, и круги.",
+                    "«Зона видимости» — откуда смотрим и на какой высоте (глаза, мачта, ретранслятор, дрон). Зелёным — куда видно по рельефу, тёмным — нет. Лес и дома не учтены.",
+                    "Плашка «👁 Видно …%» сверху — нажмите, чтобы убрать зону с карты."}},
+            {R.drawable.ic_moon, "Ночной режим", new String[]{
+                    "Кнопка с луной справа — весь экран становится красным и тёмным: меньше слепит и хуже виден со стороны.",
+                    "Удерживайте луну — сменить яркость (темно / средне / ярче). То же — в «Слои» → «Ночь»."}},
             {R.drawable.ic_chat, "Группа и чат", new String[]{
                     "Кнопка чата → создать группу (нужен адрес сервера) или вступить по QR от администратора.",
                     "Новых участников подтверждает администратор: «Участники» → «Принять».",

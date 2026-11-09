@@ -44,6 +44,7 @@ final class UserPoints {
 
     static final class Point {
         String id, name, note, icon = "";
+        String geo = ""; // сектор и круги дальности: {"sa":азимут,"sw":ширина,"sr":дальность м,"rg":"1,3,5"}
         int color;
         double lat, lon;
         long created;
@@ -75,6 +76,7 @@ final class UserPoints {
                 p.lat = o.getDouble("lat");
                 p.lon = o.getDouble("lon");
                 p.created = o.optLong("created");
+                p.geo = o.optString("geo", "");
                 out.add(p);
             }
         } catch (Exception ignored) {
@@ -94,6 +96,7 @@ final class UserPoints {
             o.put("lat", p.lat);
             o.put("lon", p.lon);
             o.put("created", p.created);
+            if (p.geo != null && !p.geo.isEmpty()) o.put("geo", p.geo);
             arr.put(o);
         }
         File tmp = new File(c.getFilesDir(), "points.json.tmp");
