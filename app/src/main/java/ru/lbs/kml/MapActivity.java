@@ -1302,7 +1302,8 @@ public class MapActivity extends Activity {
         } catch (Exception ignored) {
         }
         sheet("О приложении");
-        hChipRow(hChip("Проверить обновления", R.drawable.ic_refresh, true, v -> checkUpdatesNow()));
+        hChipRow(hChip("Проверить обновления", R.drawable.ic_refresh, true, v -> checkUpdatesNow()),
+                hChip("Инструкция", R.drawable.ic_info, false, v -> showGuide(-1)));
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -2993,7 +2994,7 @@ public class MapActivity extends Activity {
         swNight.setOnCheckedChangeListener((b, on) -> { prefs.edit().putBoolean("night", on).apply(); applyNight(); });
         swTrack.setOnCheckedChangeListener((b, on) -> setTracking(on));
         findViewById(R.id.tileOffline).setOnClickListener(v -> { openMenu(false); chooseDownload(); });
-        findViewById(R.id.tileInfo).setOnClickListener(v -> { openMenu(false); showInfo(); });
+        findViewById(R.id.tileInfo).setOnClickListener(v -> { openMenu(false); showGuide(-1); });
         findViewById(R.id.tileAbout).setOnClickListener(v -> { openMenu(false); showAbout(); });
 
         Switch swAuto = findViewById(R.id.swAuto), swDiff = findViewById(R.id.swDiff), swGray = findViewById(R.id.swGray);
@@ -4931,7 +4932,8 @@ public class MapActivity extends Activity {
                 toolTile(R.drawable.ic_sun, "Солнце и Луна", tx, this::showSun));
         toolTiles(
                 toolTile(R.drawable.ic_qr, "Принять по QR", tx, this::scanQr),
-                toolTile(R.drawable.ic_import, "Импорт KML/GPX", tx, () -> pickFile(REQ_IMPORT)));
+                toolTile(R.drawable.ic_import, "Импорт KML/GPX", tx, () -> pickFile(REQ_IMPORT)),
+                toolTile(R.drawable.ic_info, "Инструкция", tx, () -> showGuide(-1)));
     }
 
     private View toolTile(int icon, String label, int tint, Runnable action) {
@@ -8267,6 +8269,121 @@ public class MapActivity extends Activity {
     }
 
 
+
+    // ================= Инструкция =================
+
+    private static final Object[][] GUIDE = {
+            {R.drawable.ic_layers, "Карта и слои", new String[]{
+                    "Кнопка «Слои» — подложка (спутник, рельеф, топо, схема), сетка СК-42, дороги, ЛБС.",
+                    "Красная линия — линия фронта (ЛБС). Обновить: меню → «ЛБС» → «Обновить».",
+                    "Поиск сверху: название села или координаты (СК-42, градусы, MGRS). Нажмите «Поиск» на клавиатуре — карта сразу перейдёт туда.",
+                    "Долгое нажатие на карту — координаты, высота и действия с этим местом.",
+                    "Без связи: меню → «Офлайн-карты» — заранее скачайте район."}},
+            {R.drawable.ic_place, "Точки", new String[]{
+                    "Наведите прицел (крестик в центре) и нажмите «＋» — появится точка.",
+                    "В точке: название, заметка, цвет, значок, голосовая заметка.",
+                    "«Навести» — стрелка и расстояние до точки. «Вести» — пошаговое ведение.",
+                    "«Текстом» и «QR-код» — передать точку другому; «На общую карту группы» — увидят все свои."}},
+            {R.drawable.ic_route, "Маршруты и ведение", new String[]{
+                    "Инструменты → «По прямым» или «По дорогам» — ставьте точки маршрута прицелом.",
+                    "Готовый маршрут → «Вести». Ведёт по GPS, а без GPS — по шагам или по скорости, с предупреждением о поворотах.",
+                    "Линейка и «Видимость» — расстояние, азимут и профиль высот между точками."}},
+            {R.drawable.ic_chat, "Группа и чат", new String[]{
+                    "Кнопка чата → создать группу (нужен адрес сервера) или вступить по QR от администратора.",
+                    "Новых участников подтверждает администратор: «Участники» → «Принять».",
+                    "Сообщение: смахните влево — ответить; долгое нажатие — реакция, изменить, удалить у всех.",
+                    "🔒 в шапке — личные сообщения: их видите только вы двое.",
+                    "Нет связи — сообщения ждут с пометкой 🕓 и уйдут сами.",
+                    "«Показывать меня на карте» — свои увидят вас; SOS — тревога всем со звуком.",
+                    "Несколько групп — значок «Мои группы» в шапке чата."}},
+            {R.drawable.ic_compass, "Где я — засечка без GPS", new String[]{
+                    "Найдите вокруг 2–3 заметных ориентира, которые есть и на карте: вышка, церковь, перекрёсток, мост. Лучше, чтобы они были в разных сторонах — идеально под прямым углом друг к другу.",
+                    "Инструменты → «Где я (засечка)».",
+                    "Двигайте карту так, чтобы прицел (крестик) встал точно на первый ориентир, и нажмите «Прицел карты». Или «Из точек», если ориентир уже сохранён.",
+                    "Откроется экран азимута. Положите телефон горизонтально, верхним краем точно на ориентир на местности, подождите пару секунд, чтобы цифры успокоились, и нажмите «Засечь компасом». Отойдите от машины и металла — они сбивают компас.",
+                    "Есть свой компас или буссоль? Введите азимут вручную: градусы (123) или деления угломера (20-50). Переключатель «Магнитный» оставьте включённым — склонение прибавится само.",
+                    "Повторите для второго и третьего ориентира. После двух появится «Вы здесь» с координатами; третий проверяет точность (±… м).",
+                    "Предупреждение «за спиной» или «линии расходятся» — перепроверьте азимут этого ориентира.",
+                    "«На карте» — показать место, «В точки» — сохранить, «В чат» — отправить своим."}},
+            {R.drawable.ic_download, "Печать района", new String[]{
+                    "Покажите на карте нужный район: масштаб, подложку, сетку, точки, маршруты — что видно, то и попадёт на лист.",
+                    "Инструменты → «Печать района» → название → PDF (для печати) или картинка (для мессенджера) → «Создать лист».",
+                    "Появится предпросмотр. Файл сохраняется в «Загрузки»; «Отправить» — сразу переслать.",
+                    "Портретный экран даёт лист A4 книжный. На листе — масштаб, север и координаты центра."}},
+            {R.drawable.ic_save, "Безопасность и резервная копия", new String[]{
+                    "Меню → «Резервная копия» — сохранить точки, маршруты и группы в файл; «Восстановить» — вернуть.",
+                    "Настройки → PIN-код и код экстренного удаления: при вводе этого кода всё стирается.",
+                    "Чат шифруется на телефоне. Сервер видит только зашифрованные данные."}},
+    };
+
+    /** Инструкция: короткие разделы, открываются по нажатию. open — какой раздел раскрыть (-1 — ни одного). */
+    private void showGuide(int open) {
+        sheet("Инструкция");
+        if (open < 0) hChipRow(hChip("О карте и легенда", R.drawable.ic_info, false, v -> showInfo()));
+        final List<View> bodies = new ArrayList<>();
+        for (int i = 0; i < GUIDE.length; i++) {
+            Object[] g = GUIDE[i];
+            LinearLayout card = layerBox();
+            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            cl.bottomMargin = (int) dp(8);
+            LinearLayout head = new LinearLayout(this);
+            head.setOrientation(LinearLayout.HORIZONTAL);
+            head.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            head.setPadding((int) dp(14), (int) dp(12), (int) dp(12), (int) dp(12));
+            head.addView(hIcon((int) g[0], getColor(R.color.hud_accent), 22), new LinearLayout.LayoutParams((int) dp(24), (int) dp(24)));
+            TextView t = new TextView(this);
+            t.setText((String) g[1]);
+            t.setTextSize(15.5f);
+            t.setTextColor(getColor(R.color.hud_text));
+            t.setPadding((int) dp(12), 0, 0, 0);
+            head.addView(t, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            final ImageView ch = hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18);
+            ch.setRotation(i == open ? 270 : 90);
+            head.addView(ch, new LinearLayout.LayoutParams((int) dp(20), (int) dp(20)));
+            card.addView(head);
+            LinearLayout body = new LinearLayout(this);
+            body.setOrientation(LinearLayout.VERTICAL);
+            body.setPadding((int) dp(14), 0, (int) dp(14), (int) dp(12));
+            String[] steps = (String[]) g[2];
+            for (int k = 0; k < steps.length; k++) {
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setPadding(0, (int) dp(5), 0, (int) dp(5));
+                TextView n = new TextView(this);
+                n.setText(Integer.toString(k + 1));
+                n.setTextSize(12);
+                n.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                n.setTextColor(Color.WHITE);
+                n.setGravity(android.view.Gravity.CENTER);
+                GradientDrawable ng = new GradientDrawable();
+                ng.setShape(GradientDrawable.OVAL);
+                ng.setColor(0xFF3A404A);
+                n.setBackground(ng);
+                LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams((int) dp(22), (int) dp(22));
+                nl.setMarginEnd((int) dp(10));
+                row.addView(n, nl);
+                TextView st = new TextView(this);
+                st.setText(steps[k]);
+                st.setTextSize(13.5f);
+                st.setLineSpacing(dp(2), 1f);
+                st.setTextColor(getColor(R.color.hud_text));
+                row.addView(st, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+                body.addView(row);
+            }
+            body.setVisibility(i == open ? View.VISIBLE : View.GONE);
+            bodies.add(body);
+            card.addView(body);
+            head.setOnClickListener(v -> {
+                boolean show = body.getVisibility() != View.VISIBLE;
+                body.setVisibility(show ? View.VISIBLE : View.GONE);
+                ch.setRotation(show ? 270 : 90);
+            });
+            sheetContent.addView(card, cl);
+        }
+        if (open == 4) hChipRow(hChip("К засечке", R.drawable.ic_compass, true, v -> showResection()));
+        else if (open == 5) hChipRow(hChip("К печати", R.drawable.ic_download, true, v -> showPrint()));
+    }
+
     // ================= Обратная засечка =================
 
     private final List<Resection.Mark> resMarks = new ArrayList<>();
@@ -8327,8 +8444,8 @@ public class MapActivity extends Activity {
         sheet("Где я · обратная засечка");
         if (resMarks.isEmpty()) {
             TextView t = new TextView(this);
-            t.setText("Без GPS: выберите 2–3 ориентира, которые видите на местности и на карте (вышка, перекрёсток, церковь), "
-                    + "и возьмите азимут на каждый — компасом телефона или своим. Чем ближе угол между ориентирами к 90°, тем точнее.");
+            t.setText("Найдёт ваше место без GPS. Нужны 2–3 ориентира, которые вы видите вокруг и можете найти на карте "
+                    + "(вышка, церковь, перекрёсток, отдельное дерево). Добавьте первый: наведите прицел карты на ориентир → «Прицел карты».");
             t.setTextColor(getColor(R.color.hud_text2));
             t.setTextSize(12.5f);
             t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
@@ -8353,6 +8470,7 @@ public class MapActivity extends Activity {
             hRow(num, m.name, Double.isNaN(m.az) ? "азимут не задан — нажмите" : String.format(Locale.US, "азимут %.1f° · %s", m.az, Resection.mils(m.az)),
                     del, v -> editResMark(k));
         }
+        hChipRow(hChip("Как пользоваться", R.drawable.ic_info, false, v -> showGuide(4)));
         hChipRow(hChip("Прицел карты", R.drawable.ic_crosshair_add, resMarks.isEmpty(), v -> {
                     GeoPoint c = (GeoPoint) map.getMapCenter();
                     addResMark("Ориентир " + (resMarks.size() + 1), c.getLatitude(), c.getLongitude());
@@ -8501,26 +8619,43 @@ public class MapActivity extends Activity {
         LinearLayout box = layerBox();
         setSeg(box, "Формат", new String[]{"PDF · A4", "Картинка PNG"}, new int[]{0, 1}, fmt[0], v -> { fmt[0] = v; prefs.edit().putInt("printFmt", v).apply(); });
         sheetContent.addView(box);
-        footer("Отмена", "Создать", v -> {
+        final LinearLayout out = new LinearLayout(this);
+        out.setOrientation(LinearLayout.VERTICAL);
+        sheetContent.addView(out);
+        footer("Закрыть", "Создать лист", v -> {
             String tt = title.getText().toString().trim();
             if (tt.isEmpty()) tt = "Район";
             prefs.edit().putString("printTitle", tt).apply();
             hideKeyboard();
-            closeSheet();
-            final String ft = tt;
-            map.postDelayed(() -> makePrint(ft, fmt[0] == 0), 350);
+            makePrint(tt, fmt[0] == 0, out);
         });
     }
 
-    private void makePrint(String title, boolean pdf) {
+    private void printStatus(LinearLayout out, String text, boolean err) {
+        out.removeAllViews();
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(13.5f);
+        t.setTextColor(err ? 0xFFFF6B60 : getColor(R.color.hud_text));
+        t.setPadding((int) dp(4), (int) dp(12), (int) dp(4), (int) dp(6));
+        out.addView(t);
+    }
+
+    private void makePrint(String title, boolean pdf, LinearLayout out) {
         int w = map.getWidth(), h = map.getHeight();
-        if (w <= 0 || h <= 0) return;
+        if (w <= 0 || h <= 0) {
+            printStatus(out, "Карта ещё не готова — попробуйте через секунду.", true);
+            return;
+        }
+        printStatus(out, "Готовлю лист…", false);
         final Bitmap shot;
         try {
             shot = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-            map.draw(new android.graphics.Canvas(shot));
+            android.graphics.Canvas sc = new android.graphics.Canvas(shot);
+            sc.drawColor(0xFFE8E4DC);
+            map.draw(sc);
         } catch (Throwable e) {
-            Toast.makeText(this, "Не хватило памяти для печати", Toast.LENGTH_LONG).show();
+            printStatus(out, "Не удалось снять карту: " + e, true);
             return;
         }
         // масштаб: сколько метров в одной точке экрана по горизонтали через центр
@@ -8528,7 +8663,6 @@ public class MapActivity extends Activity {
         final double mPerPx = Geo.inverse(a.getLatitude(), a.getLongitude(), b.getLatitude(), b.getLongitude())[0] / w;
         final GeoPoint c = (GeoPoint) map.getMapCenter();
         final float rot = map.getMapOrientation();
-        Toast.makeText(this, "Готовлю лист…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             try {
                 boolean land = w > h;
@@ -8536,6 +8670,8 @@ public class MapActivity extends Activity {
                 byte[] bytes;
                 String stamp = new SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(new Date());
                 String name = "Rubezh_" + title.replaceAll("[^\\p{L}\\p{N}]+", "_") + "_" + stamp + (pdf ? ".pdf" : ".png");
+                Bitmap prev = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888);
+                drawSheet(new android.graphics.Canvas(prev), pw, ph, shot, mPerPx, c, rot, title);
                 if (pdf) {
                     android.graphics.pdf.PdfDocument doc = new android.graphics.pdf.PdfDocument();
                     android.graphics.pdf.PdfDocument.Page page = doc.startPage(new android.graphics.pdf.PdfDocument.PageInfo.Builder(pw, ph, 1).create());
@@ -8547,31 +8683,64 @@ public class MapActivity extends Activity {
                     bytes = bo.toByteArray();
                 } else {
                     int k = 2;
-                    Bitmap out = Bitmap.createBitmap(pw * k, ph * k, Bitmap.Config.ARGB_8888);
-                    android.graphics.Canvas cv = new android.graphics.Canvas(out);
+                    Bitmap big = Bitmap.createBitmap(pw * k, ph * k, Bitmap.Config.ARGB_8888);
+                    android.graphics.Canvas cv = new android.graphics.Canvas(big);
                     cv.scale(k, k);
                     drawSheet(cv, pw, ph, shot, mPerPx, c, rot, title);
                     java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-                    out.compress(Bitmap.CompressFormat.PNG, 100, bo);
-                    out.recycle();
+                    big.compress(Bitmap.CompressFormat.PNG, 100, bo);
+                    big.recycle();
                     bytes = bo.toByteArray();
                 }
                 shot.recycle();
                 String mime = pdf ? "application/pdf" : "image/png";
                 Uri uri = LbsCore.saveToDownloads(getApplicationContext(), name, bytes, mime);
                 runOnUiThread(() -> {
-                    Toast.makeText(this, name + " сохранён в «Загрузки»", Toast.LENGTH_LONG).show();
-                    Intent i = new Intent(Intent.ACTION_SEND);
-                    i.setType(mime);
-                    i.putExtra(Intent.EXTRA_STREAM, uri);
-                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    try {
-                        startActivity(Intent.createChooser(i, "Отправить или распечатать"));
-                    } catch (Exception ignored) {
-                    }
+                    out.removeAllViews();
+                    ImageView iv = new ImageView(this);
+                    iv.setImageBitmap(prev);
+                    iv.setAdjustViewBounds(true);
+                    iv.setBackgroundColor(Color.WHITE);
+                    LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                    il.topMargin = (int) dp(10);
+                    out.addView(iv, il);
+                    TextView t = new TextView(this);
+                    t.setText("✓ Сохранено в «Загрузки»: " + name);
+                    t.setTextColor(0xFF81C784);
+                    t.setTextSize(12.5f);
+                    t.setPadding((int) dp(4), (int) dp(8), (int) dp(4), (int) dp(4));
+                    out.addView(t);
+                    LinearLayout keep = sheetContent;
+                    sheetContent = out;
+                    actionRow(
+                            vAction(R.drawable.ic_share, "Отправить", true, v -> {
+                                Intent i = new Intent(Intent.ACTION_SEND);
+                                i.setType(mime);
+                                i.putExtra(Intent.EXTRA_STREAM, uri);
+                                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                                try {
+                                    startActivity(Intent.createChooser(i, "Отправить лист"));
+                                } catch (Exception e) {
+                                    Toast.makeText(this, "Нет приложения для отправки", Toast.LENGTH_LONG).show();
+                                }
+                            }),
+                            vAction(R.drawable.ic_eye, "Открыть", false, v -> {
+                                Intent i = new Intent(Intent.ACTION_VIEW);
+                                i.setDataAndType(uri, mime);
+                                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                                try {
+                                    startActivity(i);
+                                } catch (Exception e) {
+                                    Toast.makeText(this, pdf ? "Нет приложения для PDF — выберите «Картинка PNG»" : "Нет приложения для картинок",
+                                            Toast.LENGTH_LONG).show();
+                                }
+                            }));
+                    sheetContent = keep;
+                    ScrollView sv = findViewById(R.id.genScroll);
+                    sv.post(() -> sv.smoothScrollTo(0, out.getTop()));
                 });
             } catch (Throwable e) {
-                runOnUiThread(() -> Toast.makeText(this, "Не удалось: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> printStatus(out, "Не удалось: " + e.getMessage(), true));
             }
         }).start();
     }

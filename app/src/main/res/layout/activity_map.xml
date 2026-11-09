@@ -1092,7 +1092,7 @@
                     android:id="@+id/tileInfo"
                     style="@style/SheetTile">
                     <ImageView android:layout_width="26dp" android:layout_height="26dp" android:src="@drawable/ic_info" android:tint="@color/hud_text" />
-                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:gravity="center" android:text="О карте" android:textColor="@color/hud_text" android:textSize="12sp" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:gravity="center" android:text="Справка" android:textColor="@color/hud_text" android:textSize="12sp" />
                 </LinearLayout>
                 <LinearLayout
                     android:id="@+id/tileAbout"
