@@ -122,6 +122,8 @@ public class MapActivity extends Activity {
     private PathOverlay pathOverlay;
     private GeoOverlay geoOverlay;
     private LayerOverlay layerOverlay;
+    private final RasterLayerOverlay rasterOverlay = new RasterLayerOverlay();
+    private final Map<String, PgdFile> pgdOpen = new HashMap<>();
     private List<UserLayers.Layer> userLayers = new ArrayList<>();
     private SketchOverlay sketch;
     private Places places;
@@ -174,6 +176,7 @@ public class MapActivity extends Activity {
             at.setText(t == null ? attrBase : attrBase + " · " + t);
         });
         map.getOverlays().add(roadsOverlay);
+        map.getOverlays().add(rasterOverlay);
         map.getOverlays().add(lbsFolder);
         map.getOverlays().add(cmpFolder);
         gridOverlay = new GridOverlay(d);
@@ -867,6 +870,7 @@ public class MapActivity extends Activity {
     private boolean sheetReplaced;
 
     private void sheet(String title) {
+        runSheetHook();
         sheetReplaced = true;
         setSheetFull(false);
         if (chatHeader != null) {
@@ -900,8 +904,22 @@ public class MapActivity extends Activity {
         }
     }
 
+    private Runnable sheetCloseHook;
+
+    /** Что сделать, когда текущая шторка закроется или сменится другой. */
+    private void sheetOnClose(Runnable r) {
+        sheetCloseHook = r;
+    }
+
+    private void runSheetHook() {
+        Runnable r = sheetCloseHook;
+        sheetCloseHook = null;
+        if (r != null) r.run();
+    }
+
     private void closeSheet() {
         View host = findViewById(R.id.genSheet), panel = findViewById(R.id.genPanel), scrim = findViewById(R.id.genScrim);
+        runSheetHook();
         if (host.getVisibility() != View.VISIBLE) return;
         hideKeyboard();
         if (qrShown) {
@@ -9579,10 +9597,11 @@ public class MapActivity extends Activity {
     private void loadUserLayers() {
         userLayers = UserLayers.list(this);
         layerOverlay.setLayers(userLayers);
+        refreshRaster();
         final List<UserLayers.Layer> ls = userLayers;
         new Thread(() -> {
             for (UserLayers.Layer l : ls) {
-                if (l.features != null) continue;
+                if (l.features != null || l.kind.equals("pgd")) continue;
                 List<UserLayers.Feature> f = UserLayers.read(this, l.id);
                 runOnUiThread(() -> {
                     l.features = f;
@@ -9590,6 +9609,130 @@ public class MapActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+
+    /** Растровые слои (.pgd): открыть файлы в фоне и отдать оверлею. */
+    private void refreshRaster() {
+        final List<UserLayers.Layer> ls = new ArrayList<>(userLayers);
+        new Thread(() -> {
+            List<RasterLayerOverlay.Item> items = new ArrayList<>();
+            for (UserLayers.Layer l : ls) {
+                if (!l.kind.equals("pgd")) continue;
+                PgdFile f;
+                synchronized (pgdOpen) {
+                    f = pgdOpen.get(l.id);
+                }
+                if (f == null) {
+                    try {
+                        f = new PgdFile(UserLayers.pgdFile(this, l.id));
+                        synchronized (pgdOpen) {
+                            pgdOpen.put(l.id, f);
+                        }
+                    } catch (Exception e) {
+                        continue;
+                    }
+                }
+                items.add(RasterLayerOverlay.item(l, f));
+            }
+            runOnUiThread(() -> {
+                rasterOverlay.set(items);
+                map.invalidate();
+            });
+        }).start();
+    }
+
+    /** Карта AlpineQuest (.pgd) копируется в папку приложения как есть и читается прямо оттуда. */
+    private void importPgd(Uri uri, String base) {
+        Toast.makeText(this, "Копирую карту… (крупный файл — до минуты)", Toast.LENGTH_LONG).show();
+        new Thread(() -> {
+            String id = Long.toString(System.currentTimeMillis(), 36);
+            java.io.File dst = UserLayers.pgdFile(this, id);
+            try {
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     java.io.OutputStream out = new java.io.FileOutputStream(dst)) {
+                    if (in == null) throw new Exception("файл не открылся");
+                    byte[] buf = new byte[1 << 16];
+                    int k;
+                    long total = 0;
+                    while ((k = in.read(buf)) > 0) {
+                        out.write(buf, 0, k);
+                        total += k;
+                        if (total > 1500L * 1024 * 1024) throw new Exception("файл больше 1,5 ГБ");
+                    }
+                }
+                PgdFile f = new PgdFile(dst);
+                synchronized (pgdOpen) {
+                    pgdOpen.put(id, f);
+                }
+                int tiles = 0;
+                for (PgdFile.Level lv : f.levels) tiles += lv.tiles.size();
+                final int tt = tiles;
+                runOnUiThread(() -> showPgdImport(id, base, f, tt, dst.length()));
+            } catch (Exception e) {
+                dst.delete();
+                runOnUiThread(() -> Toast.makeText(this, "Не удалось открыть карту PGD: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    private void showPgdImport(String id, String base, PgdFile f, int tiles, long bytes) {
+        sheet("Новый слой · карта");
+        final EditText name = hInput("Название слоя", base.replace('_', ' ').trim());
+        name.setSingleLine(true);
+        sheetContent.addView(name);
+        LinearLayout card = hCard();
+        addKV(card, "Картинка", f.width + " × " + f.height + " пикс.");
+        addKV(card, "Уровней / тайлов", f.levels.size() + " / " + tiles);
+        double w = Geo.inverse(f.lat[0], f.lon[0], f.lat[1], f.lon[1])[0], h = Geo.inverse(f.lat[0], f.lon[0], f.lat[3], f.lon[3])[0];
+        addKV(card, "Район", Geo.dist(w) + " × " + Geo.dist(h));
+        addKV(card, "Размер", String.format(Locale.US, "%.0f МБ", bytes / 1048576.0));
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(-1, -2);
+        cl.topMargin = (int) dp(10);
+        sheetContent.addView(card, cl);
+        TextView t = new TextView(this);
+        t.setText("Карта ляжет поверх подложки с прозрачностью, как в AlpineQuest. Хранится отдельным файлом в памяти телефона — само приложение не тяжелеет.");
+        t.setTextSize(12.5f);
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
+        sheetContent.addView(t);
+        final boolean[] added = {false};
+        footer("Отмена", "Добавить слой", v -> {
+            added[0] = true;
+            UserLayers.Layer l = new UserLayers.Layer();
+            l.id = id;
+            l.kind = "pgd";
+            String nm = name.getText().toString().trim();
+            l.name = nm.isEmpty() ? "Карта" : nm;
+            l.count = tiles;
+            for (int k = 0; k < 4; k++) {
+                l.n = Math.max(l.n, f.lat[k]); l.s = Math.min(l.s, f.lat[k]); l.e = Math.max(l.e, f.lon[k]); l.w = Math.min(l.w, f.lon[k]);
+            }
+            userLayers.add(l);
+            UserLayers.saveList(this, userLayers);
+            layerOverlay.setLayers(userLayers);
+            refreshRaster();
+            closeSheet();
+            zoomToLayer(l);
+            Toast.makeText(this, "Слой «" + l.name + "» добавлен", Toast.LENGTH_SHORT).show();
+        });
+        sheetOnClose(() -> {
+            if (added[0]) return;
+            synchronized (pgdOpen) {
+                PgdFile x = pgdOpen.remove(id);
+                if (x != null) x.close();
+            }
+            UserLayers.pgdFile(this, id).delete();
+        });
+    }
+
+    private boolean startsWithPgd(Uri uri) {
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            byte[] b = new byte[4];
+            return in != null && in.read(b) == 4 && b[0] == 'P' && b[1] == 'G' && b[2] == 'D' && b[3] == ':';
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private String uriName(Uri uri) {
@@ -9606,7 +9749,11 @@ public class MapActivity extends Activity {
 
     private void importLayer(Uri uri) {
         String file = uriName(uri);
-        String base = file.replaceAll("\\.(kml|kmz|gpx|xml)$", "").replaceAll("(?i)\\.(kml|kmz|gpx)$", "");
+        String base = file.replaceAll("(?i)\\.(kml|kmz|gpx|xml|pgd)$", "");
+        if (file.toLowerCase(Locale.US).endsWith(".pgd") || startsWithPgd(uri)) {
+            importPgd(uri, base);
+            return;
+        }
         Toast.makeText(this, "Читаю «" + file + "»…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             try {
@@ -9708,7 +9855,7 @@ public class MapActivity extends Activity {
             t.setEllipsize(android.text.TextUtils.TruncateAt.END);
             tx.addView(t);
             TextView st = new TextView(this);
-            st.setText(l.count + " объектов · нажмите — действия");
+            st.setText((l.kind.equals("pgd") ? "карта AlpineQuest · " + Math.round(l.opacity * 100) + "%" : l.count + " объектов") + " · нажмите — действия");
             st.setTextSize(11.5f);
             st.setTextColor(getColor(R.color.hud_text2));
             tx.addView(st);
@@ -9730,7 +9877,7 @@ public class MapActivity extends Activity {
             layerDivider(box);
         }
         TextView add = new TextView(this);
-        add.setText("＋  Загрузить слой — KML, KMZ, GPX");
+        add.setText("＋  Загрузить слой — PGD, KML, KMZ, GPX");
         add.setTextSize(14);
         add.setTextColor(getColor(R.color.hud_accent));
         add.setPadding((int) dp(14), (int) dp(12), (int) dp(14), (int) dp(12));
@@ -9738,7 +9885,7 @@ public class MapActivity extends Activity {
         box.addView(add);
         if (userLayers.isEmpty()) {
             TextView h = new TextView(this);
-            h.setText("Например, кодированные лесополосы и квадраты из AlpineQuest: там «Экспорт» → KML/KMZ.");
+            h.setText("Карты AlpineQuest (.pgd) — как есть; метки и линии — KML/KMZ/GPX («Экспорт» в AlpineQuest).");
             h.setTextSize(11.5f);
             h.setTextColor(getColor(R.color.hud_text2));
             h.setPadding((int) dp(14), 0, (int) dp(14), (int) dp(12));
@@ -9750,9 +9897,26 @@ public class MapActivity extends Activity {
     private void layerActions(UserLayers.Layer l) {
         sheet(l.name);
         LinearLayout card = hCard();
-        addKV(card, "Объектов", Integer.toString(l.count));
+        addKV(card, l.kind.equals("pgd") ? "Тайлов" : "Объектов", Integer.toString(l.count));
         if (l.n >= l.s) addKV(card, "Район", Geo.dist(Geo.inverse(l.n, l.w, l.s, l.e)[0]) + " по диагонали");
         sheetContent.addView(card);
+        if (l.kind.equals("pgd")) {
+            hSection("ПРОЗРАЧНОСТЬ");
+            LinearLayout op = new LinearLayout(this);
+            int[] vals = {100, 80, 60, 40};
+            for (int pc : vals) {
+                TextView b = hChip(pc + "%", 0, Math.round(l.opacity * 100) == pc, v -> {
+                    l.opacity = pc / 100f;
+                    UserLayers.saveList(this, userLayers);
+                    map.invalidate();
+                    layerActions(l);
+                });
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(36), 1);
+                lp.setMarginEnd((int) dp(5));
+                op.addView(b, lp);
+            }
+            sheetContent.addView(op);
+        }
         actionRow(
                 vAction(R.drawable.ic_place, "Показать", true, v -> { closeSheet(); l.visible = true; UserLayers.saveList(this, userLayers); zoomToLayer(l); map.invalidate(); }),
                 vAction(R.drawable.ic_sketch, "Название", false, v -> {
@@ -9770,13 +9934,18 @@ public class MapActivity extends Activity {
                             })
                             .setNegativeButton("Отмена", null).show();
                 }),
-                vAction(R.drawable.ic_search, "Найти", false, v -> layerSearch(l)),
+                l.kind.equals("pgd") ? null : vAction(R.drawable.ic_search, "Найти", false, v -> layerSearch(l)),
                 vAction(R.drawable.ic_delete, "Удалить", false, v -> new AlertDialog.Builder(this)
                         .setTitle("Удалить слой «" + l.name + "»?")
                         .setMessage("Файл слоя удалится из приложения. Ваши точки и маршруты не затронуты.")
                         .setPositiveButton("Удалить", (dd, w) -> {
+                            synchronized (pgdOpen) {
+                                PgdFile x = pgdOpen.remove(l.id);
+                                if (x != null) x.close();
+                            }
                             UserLayers.delete(this, l);
                             userLayers.remove(l);
+                            refreshRaster();
                             UserLayers.saveList(this, userLayers);
                             layerOverlay.setLayers(userLayers);
                             map.invalidate();
@@ -11247,7 +11416,8 @@ public class MapActivity extends Activity {
                     "«Кроки» — рисуйте пальцем прямо по карте: цвет, толщина, подписи, отмена. «Двигать» — сдвинуть карту, рисунок едет вместе с ней.",
                     "«Готово» → в чат группы, отправить в мессенджер или сохранить картинкой в «Загрузки». Рисунок остаётся на карте, пока его не сотрёте."}},
             {R.drawable.ic_layers, "Свои слои и сетка", new String[]{
-                    "«Слои» → «Мои слои» → «Загрузить слой». Подходят KML, KMZ и GPX — например, кодированные лесополосы и квадраты из AlpineQuest («Экспорт» → KML/KMZ).",
+                    "«Слои» → «Мои слои» → «Загрузить слой». Карты AlpineQuest (.pgd) ложатся как есть — например, кодированные лесополосы. Метки и линии — KML, KMZ, GPX.",
+                    "У карты-слоя можно менять прозрачность: нажмите на слой в списке.",
                     "Слой лежит отдельно от ваших точек: включайте, выключайте, переименовывайте, удаляйте. Названия — как в файле.",
                     "Нажмите на лесополосу или квадрат — название, длина, СК-42, квадрат и улитка; можно навести, сохранить в точки или отправить в чат.",
                     "«Найти» в слое — поиск лесополосы по названию.",

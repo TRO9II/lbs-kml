@@ -54,6 +54,8 @@ final class UserLayers {
 
     static final class Layer {
         String id, name;
+        String kind = "vec"; // vec — линии и точки, pgd — растровая карта AlpineQuest
+        float opacity = 1f;
         boolean visible = true;
         int count;
         List<Feature> features; // null — ещё не загружен с диска
@@ -75,9 +77,11 @@ final class UserLayers {
                 l.name = o.optString("name", "Слой");
                 l.visible = o.optBoolean("on", true);
                 l.count = o.optInt("count");
+                l.kind = o.optString("kind", "vec");
+                l.opacity = (float) o.optDouble("op", 1);
                 l.n = o.optDouble("n", -90); l.s = o.optDouble("s", 90);
                 l.e = o.optDouble("e", -180); l.w = o.optDouble("w", 180);
-                if (file(c, l.id).exists()) out.add(l);
+                if ((l.kind.equals("pgd") ? pgdFile(c, l.id) : file(c, l.id)).exists()) out.add(l);
             }
         } catch (Exception ignored) {
         }
@@ -89,6 +93,7 @@ final class UserLayers {
         try {
             for (Layer l : layers)
                 a.put(new JSONObject().put("id", l.id).put("name", l.name).put("on", l.visible).put("count", l.count)
+                        .put("kind", l.kind).put("op", l.opacity)
                         .put("n", l.n).put("s", l.s).put("e", l.e).put("w", l.w));
         } catch (Exception ignored) {
         }
@@ -101,8 +106,15 @@ final class UserLayers {
         return new File(d, id + ".bin");
     }
 
+    static File pgdFile(Context c, String id) {
+        File d = new File(c.getFilesDir(), "layers");
+        d.mkdirs();
+        return new File(d, id + ".pgd");
+    }
+
     static void delete(Context c, Layer l) {
         file(c, l.id).delete();
+        pgdFile(c, l.id).delete();
     }
 
     // ---------- двоичное хранение ----------
