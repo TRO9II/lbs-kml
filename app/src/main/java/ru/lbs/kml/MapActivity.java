@@ -6,6 +6,7 @@ import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
@@ -740,6 +741,7 @@ public class MapActivity extends Activity {
             chatHeader = null;
         }
         removeChatBar();
+        stopResCompass();
         hideEmoji();
         View host = findViewById(R.id.genSheet), panel = findViewById(R.id.genPanel), scrim = findViewById(R.id.genScrim);
         ((TextView) findViewById(R.id.genTitle)).setText(title);
@@ -768,6 +770,7 @@ public class MapActivity extends Activity {
         }
         stopRecording();
         stopPlaying();
+        stopResCompass();
         chatOpen = false;
         chatList = null;
         chatStatus = null;
@@ -4921,7 +4924,10 @@ public class MapActivity extends Activity {
                         () -> setTracking(track == null)));
         hSection("ПРОЧЕЕ");
         toolTiles(
-                toolTile(R.drawable.ic_sun, "Солнце и Луна", tx, this::showSun),
+                toolTile(R.drawable.ic_compass, "Где я (засечка)", tx, this::showResection),
+                toolTile(R.drawable.ic_download, "Печать района", tx, this::showPrint),
+                toolTile(R.drawable.ic_sun, "Солнце и Луна", tx, this::showSun));
+        toolTiles(
                 toolTile(R.drawable.ic_qr, "Принять по QR", tx, this::scanQr),
                 toolTile(R.drawable.ic_import, "Импорт KML/GPX", tx, () -> pickFile(REQ_IMPORT)));
     }
@@ -8158,6 +8164,388 @@ public class MapActivity extends Activity {
         chat.switchTo(g.room);
         Toast.makeText(this, "Открыта группа «" + chat.groupName() + "»", Toast.LENGTH_SHORT).show();
         openChat();
+    }
+
+
+    // ================= Обратная засечка =================
+
+    private final List<Resection.Mark> resMarks = new ArrayList<>();
+    private float resLiveAz = Float.NaN;
+    private TextView resLiveView;
+    private boolean resCompassOn;
+
+    private final android.hardware.SensorEventListener resCompass = new android.hardware.SensorEventListener() {
+        private final float[] rm = new float[9], or = new float[3];
+        private double sn, cs;
+        private boolean init;
+        private long at;
+
+        @Override
+        public void onSensorChanged(android.hardware.SensorEvent e) {
+            android.hardware.SensorManager.getRotationMatrixFromVector(rm, e.values);
+            android.hardware.SensorManager.getOrientation(rm, or);
+            double az = Math.toRadians(Math.toDegrees(or[0]) + resDecl());
+            if (!init) { sn = Math.sin(az); cs = Math.cos(az); init = true; }
+            sn += (Math.sin(az) - sn) * 0.12;
+            cs += (Math.cos(az) - cs) * 0.12;
+            resLiveAz = (float) Resection.norm(Math.toDegrees(Math.atan2(sn, cs)));
+            long t = System.currentTimeMillis();
+            if (resLiveView != null && t - at > 150) {
+                at = t;
+                resLiveView.setText(String.format(Locale.US, "%.0f°", resLiveAz) + "   " + Resection.mils(resLiveAz));
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(android.hardware.Sensor s, int a) {}
+    };
+
+    private float resDecl() {
+        GeoPoint c = (GeoPoint) map.getMapCenter();
+        return new android.hardware.GeomagneticField((float) c.getLatitude(), (float) c.getLongitude(), 0,
+                System.currentTimeMillis()).getDeclination();
+    }
+
+    private void stopResCompass() {
+        if (resCompassOn && sensors != null) sensors.unregisterListener(resCompass);
+        resCompassOn = false;
+        resLiveView = null;
+        resLiveAz = Float.NaN;
+    }
+
+    private void addResMark(String name, double lat, double lon) {
+        Resection.Mark m = new Resection.Mark();
+        m.name = name;
+        m.lat = lat;
+        m.lon = lon;
+        resMarks.add(m);
+        editResMark(resMarks.size() - 1);
+    }
+
+    /** Список ориентиров и результат. */
+    private void showResection() {
+        sheet("Где я · обратная засечка");
+        if (resMarks.isEmpty()) {
+            TextView t = new TextView(this);
+            t.setText("Без GPS: выберите 2–3 ориентира, которые видите на местности и на карте (вышка, перекрёсток, церковь), "
+                    + "и возьмите азимут на каждый — компасом телефона или своим. Чем ближе угол между ориентирами к 90°, тем точнее.");
+            t.setTextColor(getColor(R.color.hud_text2));
+            t.setTextSize(12.5f);
+            t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(6));
+            sheetContent.addView(t);
+        }
+        if (!resMarks.isEmpty()) hSection("ОРИЕНТИРЫ");
+        for (int i = 0; i < resMarks.size(); i++) {
+            final int k = i;
+            Resection.Mark m = resMarks.get(i);
+            TextView num = new TextView(this);
+            num.setText(Integer.toString(i + 1));
+            num.setTextColor(Color.WHITE);
+            num.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            num.setGravity(android.view.Gravity.CENTER);
+            GradientDrawable g = new GradientDrawable();
+            g.setShape(GradientDrawable.OVAL);
+            g.setColor(Double.isNaN(m.az) ? 0xFF555B66 : getColor(R.color.hud_accent));
+            num.setBackground(g);
+            num.setLayoutParams(new LinearLayout.LayoutParams((int) dp(28), (int) dp(28)));
+            ImageView del = hIconButton(R.drawable.ic_close, getColor(R.color.hud_text2), v -> { resMarks.remove(k); showResection(); });
+            del.setLayoutParams(new LinearLayout.LayoutParams((int) dp(36), (int) dp(36)));
+            hRow(num, m.name, Double.isNaN(m.az) ? "азимут не задан — нажмите" : String.format(Locale.US, "азимут %.1f° · %s", m.az, Resection.mils(m.az)),
+                    del, v -> editResMark(k));
+        }
+        hChipRow(hChip("Прицел карты", R.drawable.ic_crosshair_add, resMarks.isEmpty(), v -> {
+                    GeoPoint c = (GeoPoint) map.getMapCenter();
+                    addResMark("Ориентир " + (resMarks.size() + 1), c.getLatitude(), c.getLongitude());
+                }),
+                hChip("Из точек", R.drawable.ic_place, false, v -> pickResPoint()));
+        Resection.Result r = Resection.solve(resMarks);
+        if (r != null) {
+            hSection("ВЫ ЗДЕСЬ");
+            LinearLayout card = hCard();
+            addKV(card, "Точность", r.err > 0 ? "±" + Geo.dist(r.err * 2) : "по двум ориентирам — без проверки");
+            addKV(card, "Угол засечки", String.format(Locale.US, "%.0f°", r.minAngle) + (r.minAngle < 30 ? " — мал, неточно" : ""));
+            sheetContent.addView(card);
+            if (r.behind || r.minAngle < 20 || r.err > 300) {
+                TextView w = new TextView(this);
+                w.setText(r.behind ? "⚠ Один из ориентиров получился «за спиной» — проверьте его азимут."
+                        : r.minAngle < 20 ? "⚠ Ориентиры почти на одной линии — возьмите ещё один сбоку."
+                        : "⚠ Линии сильно расходятся — перепроверьте азимуты или добавьте ориентир.");
+                w.setTextColor(0xFFFFB74D);
+                w.setTextSize(12.5f);
+                w.setPadding((int) dp(4), (int) dp(6), (int) dp(4), (int) dp(2));
+                sheetContent.addView(w);
+            }
+            coordsCard(r.lat, r.lon);
+            final double la = r.lat, lo = r.lon;
+            actionRow(
+                    vAction(R.drawable.ic_place, "На карте", true, v -> {
+                        closeSheet();
+                        goTo(la, lo, "Я здесь (засечка)", "по " + resMarks.size() + " ориентирам", Math.max(15, map.getZoomLevelDouble()));
+                    }),
+                    vAction(R.drawable.ic_add, "В точки", false, v -> editPoint(null, la, lo, "Засечка")),
+                    chat.configured() && chat.active() ? vAction(R.drawable.ic_chat, "В чат", false, v -> { sendPoint("Я здесь (засечка)", la, lo); openChat(); }) : null,
+                    vAction(R.drawable.ic_delete, "Сначала", false, v -> { resMarks.clear(); showResection(); }));
+        } else if (resMarks.size() >= 2) {
+            TextView w = new TextView(this);
+            w.setText("Задайте азимут хотя бы на два ориентира.");
+            w.setTextColor(getColor(R.color.hud_text2));
+            w.setTextSize(12.5f);
+            w.setPadding((int) dp(4), (int) dp(8), 0, 0);
+            sheetContent.addView(w);
+        }
+    }
+
+    private void pickResPoint() {
+        sheet("Ориентир из точек");
+        boolean any = false;
+        for (UserPoints.Point p : userPoints) {
+            any = true;
+            ImageView pin = new ImageView(this);
+            pin.setImageBitmap(UserPoints.pin(p.color, getResources().getDisplayMetrics().density, p.icon));
+            hRow(pin, p.name, Sk42.format(p.lat, p.lon), null, v -> addResMark(p.name, p.lat, p.lon));
+        }
+        if (chat.configured()) for (ChatClient.GObj g : chat.objects()) {
+            if (!g.type.equals("pt") || g.pts.isEmpty()) continue;
+            any = true;
+            ImageView pin = new ImageView(this);
+            pin.setImageBitmap(UserPoints.pin(g.color, getResources().getDisplayMetrics().density, g.icon));
+            hRow(pin, g.name, "карта группы · " + Sk42.format(g.pts.get(0)[0], g.pts.get(0)[1]), null,
+                    v -> addResMark(g.name, g.pts.get(0)[0], g.pts.get(0)[1]));
+        }
+        if (!any) emptyState(R.drawable.ic_place, "Точек нет", "Наведите прицел карты на ориентир и выберите «Прицел карты».");
+        hChipRow(hChip("Назад", R.drawable.ic_back, false, v -> showResection()));
+    }
+
+    /** Азимут на ориентир: компасом телефона или вручную (градусы или деления угломера). */
+    private void editResMark(int i) {
+        Resection.Mark m = resMarks.get(i);
+        sheet("Азимут · " + m.name);
+        final EditText name = hInput("Название ориентира", m.name);
+        name.setSingleLine(true);
+        sheetContent.addView(name);
+        if (sensors == null) sensors = getSystemService(android.hardware.SensorManager.class);
+        android.hardware.Sensor rv = sensors == null ? null : sensors.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR);
+        if (rv != null) {
+            hSection("КОМПАС ТЕЛЕФОНА");
+            LinearLayout card = hCard();
+            TextView hint = new TextView(this);
+            hint.setText("Держите телефон горизонтально, верхним краем точно на ориентир. Подальше от металла и машины.");
+            hint.setTextColor(getColor(R.color.hud_text2));
+            hint.setTextSize(12);
+            card.addView(hint);
+            resLiveView = new TextView(this);
+            resLiveView.setText("…");
+            resLiveView.setTextSize(30);
+            resLiveView.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD);
+            resLiveView.setTextColor(getColor(R.color.hud_text));
+            resLiveView.setGravity(android.view.Gravity.CENTER);
+            resLiveView.setPadding(0, (int) dp(8), 0, (int) dp(8));
+            card.addView(resLiveView);
+            sheetContent.addView(card);
+            resCompassOn = true;
+            sensors.registerListener(resCompass, rv, android.hardware.SensorManager.SENSOR_DELAY_UI);
+            hChipRow(hChip("Засечь компасом", R.drawable.ic_compass, true, v -> {
+                if (Float.isNaN(resLiveAz)) return;
+                m.az = resLiveAz;
+                m.name = name.getText().toString().trim().isEmpty() ? m.name : name.getText().toString().trim();
+                vibrate(40);
+                hideKeyboard();
+                showResection();
+            }));
+        }
+        hSection("ИЛИ ВРУЧНУЮ");
+        final EditText az = hInput("Азимут: 45 или 7-50 (деления)", Double.isNaN(m.az) ? "" : String.format(Locale.US, "%.1f", m.az));
+        az.setSingleLine(true);
+        az.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        sheetContent.addView(az);
+        final float decl = resDecl();
+        final boolean[] mag = {prefs.getBoolean("resMag", true)};
+        LinearLayout box = layerBox();
+        setSwitch(box, String.format(Locale.US, "Магнитный (прибавлю склонение %+.1f°)", decl), mag[0], on -> {
+            mag[0] = on;
+            prefs.edit().putBoolean("resMag", on).apply();
+        });
+        sheetContent.addView(box);
+        footer("Назад", "Сохранить", v -> {
+            String n = name.getText().toString().trim();
+            if (!n.isEmpty()) m.name = n;
+            String a = az.getText().toString().trim();
+            if (!a.isEmpty()) {
+                double d = Resection.parseAz(a);
+                if (Double.isNaN(d)) {
+                    Toast.makeText(this, "Не понял азимут: «45», «123.5» или «20-50»", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                m.az = Resection.norm(d + (mag[0] ? decl : 0));
+            }
+            hideKeyboard();
+            showResection();
+        });
+    }
+
+    // ================= Печать района =================
+
+    private void showPrint() {
+        sheet("Печать района");
+        TextView t = new TextView(this);
+        t.setText("На лист попадёт то, что сейчас видно на карте: подложка, сетка, ЛБС, точки и маршруты. "
+                + "Добавлю название, дату, координаты центра, масштаб и стрелку на север.");
+        t.setTextColor(getColor(R.color.hud_text2));
+        t.setTextSize(12.5f);
+        t.setPadding((int) dp(4), 0, (int) dp(4), (int) dp(8));
+        sheetContent.addView(t);
+        final EditText title = hInput("Название листа", prefs.getString("printTitle", "Район"));
+        title.setSingleLine(true);
+        sheetContent.addView(title);
+        final int[] fmt = {prefs.getInt("printFmt", 0)};
+        LinearLayout box = layerBox();
+        setSeg(box, "Формат", new String[]{"PDF · A4", "Картинка PNG"}, new int[]{0, 1}, fmt[0], v -> { fmt[0] = v; prefs.edit().putInt("printFmt", v).apply(); });
+        sheetContent.addView(box);
+        footer("Отмена", "Создать", v -> {
+            String tt = title.getText().toString().trim();
+            if (tt.isEmpty()) tt = "Район";
+            prefs.edit().putString("printTitle", tt).apply();
+            hideKeyboard();
+            closeSheet();
+            final String ft = tt;
+            map.postDelayed(() -> makePrint(ft, fmt[0] == 0), 350);
+        });
+    }
+
+    private void makePrint(String title, boolean pdf) {
+        int w = map.getWidth(), h = map.getHeight();
+        if (w <= 0 || h <= 0) return;
+        final Bitmap shot;
+        try {
+            shot = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            map.draw(new android.graphics.Canvas(shot));
+        } catch (Throwable e) {
+            Toast.makeText(this, "Не хватило памяти для печати", Toast.LENGTH_LONG).show();
+            return;
+        }
+        // масштаб: сколько метров в одной точке экрана по горизонтали через центр
+        org.osmdroid.api.IGeoPoint a = map.getProjection().fromPixels(0, h / 2), b = map.getProjection().fromPixels(w, h / 2);
+        final double mPerPx = Geo.inverse(a.getLatitude(), a.getLongitude(), b.getLatitude(), b.getLongitude())[0] / w;
+        final GeoPoint c = (GeoPoint) map.getMapCenter();
+        final float rot = map.getMapOrientation();
+        Toast.makeText(this, "Готовлю лист…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                boolean land = w > h;
+                int pw = land ? 842 : 595, ph = land ? 595 : 842; // A4 в пунктах
+                byte[] bytes;
+                String stamp = new SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(new Date());
+                String name = "Rubezh_" + title.replaceAll("[^\\p{L}\\p{N}]+", "_") + "_" + stamp + (pdf ? ".pdf" : ".png");
+                if (pdf) {
+                    android.graphics.pdf.PdfDocument doc = new android.graphics.pdf.PdfDocument();
+                    android.graphics.pdf.PdfDocument.Page page = doc.startPage(new android.graphics.pdf.PdfDocument.PageInfo.Builder(pw, ph, 1).create());
+                    drawSheet(page.getCanvas(), pw, ph, shot, mPerPx, c, rot, title);
+                    doc.finishPage(page);
+                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                    doc.writeTo(bo);
+                    doc.close();
+                    bytes = bo.toByteArray();
+                } else {
+                    int k = 2;
+                    Bitmap out = Bitmap.createBitmap(pw * k, ph * k, Bitmap.Config.ARGB_8888);
+                    android.graphics.Canvas cv = new android.graphics.Canvas(out);
+                    cv.scale(k, k);
+                    drawSheet(cv, pw, ph, shot, mPerPx, c, rot, title);
+                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                    out.compress(Bitmap.CompressFormat.PNG, 100, bo);
+                    out.recycle();
+                    bytes = bo.toByteArray();
+                }
+                shot.recycle();
+                String mime = pdf ? "application/pdf" : "image/png";
+                Uri uri = LbsCore.saveToDownloads(getApplicationContext(), name, bytes, mime);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, name + " сохранён в «Загрузки»", Toast.LENGTH_LONG).show();
+                    Intent i = new Intent(Intent.ACTION_SEND);
+                    i.setType(mime);
+                    i.putExtra(Intent.EXTRA_STREAM, uri);
+                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    try {
+                        startActivity(Intent.createChooser(i, "Отправить или распечатать"));
+                    } catch (Exception ignored) {
+                    }
+                });
+            } catch (Throwable e) {
+                runOnUiThread(() -> Toast.makeText(this, "Не удалось: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    /** Лист: шапка, карта в рамке, масштаб, север. Единицы — пункты A4. */
+    private static void drawSheet(android.graphics.Canvas cv, int pw, int ph, Bitmap shot, double mPerPx, GeoPoint c, float rot, String title) {
+        cv.drawColor(Color.WHITE);
+        android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        float m = 24, head = 44, foot = 40;
+        p.setColor(0xFF111111);
+        p.setTextSize(15);
+        p.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        cv.drawText(title, m, m + 14, p);
+        p.setTypeface(android.graphics.Typeface.DEFAULT);
+        p.setTextSize(8.5f);
+        p.setColor(0xFF444444);
+        String date = new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.US).format(new Date());
+        cv.drawText("Центр: " + Sk42.format(c.getLatitude(), c.getLongitude()) + "   ·   "
+                + String.format(Locale.US, "%.5f, %.5f", c.getLatitude(), c.getLongitude()), m, m + 30, p);
+        p.setTextAlign(android.graphics.Paint.Align.RIGHT);
+        cv.drawText(date, pw - m, m + 14, p);
+        p.setTextAlign(android.graphics.Paint.Align.LEFT);
+        // карта — вписать с сохранением пропорций
+        float aw = pw - 2 * m, ah = ph - 2 * m - head - foot;
+        float s = Math.min(aw / shot.getWidth(), ah / shot.getHeight());
+        float dw = shot.getWidth() * s, dh = shot.getHeight() * s;
+        float x0 = m + (aw - dw) / 2, y0 = m + head + (ah - dh) / 2;
+        android.graphics.Paint bp = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG | android.graphics.Paint.ANTI_ALIAS_FLAG);
+        cv.drawBitmap(shot, null, new android.graphics.RectF(x0, y0, x0 + dw, y0 + dh), bp);
+        p.setStyle(android.graphics.Paint.Style.STROKE);
+        p.setStrokeWidth(0.8f);
+        p.setColor(0xFF111111);
+        cv.drawRect(x0, y0, x0 + dw, y0 + dh, p);
+        p.setStyle(android.graphics.Paint.Style.FILL);
+        // масштаб
+        double mPerPt = mPerPx / s;
+        long scale = Math.round(mPerPt / 0.000352778);
+        double mag = Math.pow(10, Math.max(0, Math.floor(Math.log10(Math.max(1, scale))) - 1));
+        long ns = Math.round(scale / mag) * (long) mag; // две значащие цифры
+        double target = dw / 3 * mPerPt, len = 1;
+        for (double k : new double[]{1, 2, 5}) for (double e = 1; e <= 1e6; e *= 10) if (k * e <= target) len = Math.max(len, k * e);
+        float bar = (float) (len / mPerPt), by = y0 + dh + 18, bx = x0;
+        p.setColor(0xFF111111);
+        cv.drawRect(bx, by, bx + bar / 2, by + 4, p);
+        p.setStyle(android.graphics.Paint.Style.STROKE);
+        cv.drawRect(bx, by, bx + bar, by + 4, p);
+        p.setStyle(android.graphics.Paint.Style.FILL);
+        p.setTextSize(8.5f);
+        cv.drawText("0", bx - 2, by + 14, p);
+        cv.drawText(len >= 1000 ? (len / 1000 == Math.floor(len / 1000) ? String.format(Locale.US, "%.0f км", len / 1000) : String.format(Locale.US, "%.1f км", len / 1000))
+                : String.format(Locale.US, "%.0f м", len), bx + bar - 8, by + 14, p);
+        cv.drawText("≈ 1:" + String.format(Locale.US, "%,d", ns).replace(',', ' '), bx + bar + 18, by + 6, p);
+        // север
+        float nx = x0 + dw - 16, ny = y0 + dh + 20;
+        cv.save();
+        cv.rotate(rot, nx, ny);
+        android.graphics.Path ar = new android.graphics.Path();
+        ar.moveTo(nx, ny - 13);
+        ar.lineTo(nx - 6, ny + 6);
+        ar.lineTo(nx, ny + 2);
+        ar.lineTo(nx + 6, ny + 6);
+        ar.close();
+        p.setColor(0xFFC62828);
+        cv.drawPath(ar, p);
+        cv.restore();
+        p.setColor(0xFF111111);
+        p.setTextSize(8);
+        p.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        cv.drawText("С", nx - 22, ny + 4, p);
+        p.setTypeface(android.graphics.Typeface.DEFAULT);
+        p.setColor(0xFF888888);
+        p.setTextSize(7);
+        p.setTextAlign(android.graphics.Paint.Align.RIGHT);
+        cv.drawText("Рубеж · сетка СК-42", pw - m, ph - m + 6, p);
     }
 
     // ================= Прочитано =================
