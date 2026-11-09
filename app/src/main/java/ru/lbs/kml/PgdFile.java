@@ -30,6 +30,8 @@ final class PgdFile {
     final List<Level> levels = new ArrayList<>(); // от мелкого к крупному
     double[] lon = new double[4], lat = new double[4]; // углы: левый верх, правый верх, правый низ, левый низ
     int width, height;
+    /** Проективная привязка AlpineQuest: пиксель полной картинки → Меркатор (X, −Y). null — нет, берём углы. */
+    double[] hom;
     private final RandomAccessFile raf;
     private final long size;
 
@@ -57,6 +59,7 @@ final class PgdFile {
             levels.add(l);
         }
         if (levels.isEmpty() || width <= 0 || height <= 0) throw new Exception("не найдены тайлы или размеры картинки");
+        hom = homography(head, cb);
         levels.sort((a, b) -> Integer.compare(a.cols, b.cols));
     }
 
@@ -75,6 +78,26 @@ final class PgdFile {
             lon[k] = Double.parseDouble(c[0]);
             lat[k] = Double.parseDouble(c[1]);
         }
+    }
+
+    /** Матрица 3×3 после «EPSG:NONE» у самого крупного уровня (в файле она есть у каждого уровня). */
+    private double[] homography(byte[] h, byte[] cb) {
+        int last = -1;
+        for (int i = indexOf(h, cb, 0); i >= 0; i = indexOf(h, cb, i + 6)) last = i;
+        if (last < 0) return null;
+        int e = indexOf(h, "EPSG:NONE".getBytes(StandardCharsets.US_ASCII), last);
+        if (e < 0 || e + 13 + 72 > h.length) return null;
+        double[] m = new double[9];
+        int p = e + 9 + 4;
+        for (int k = 0; k < 9; k++) {
+            m[k] = Double.longBitsToDouble(u64(h, p + 8 * k));
+            if (Double.isNaN(m[k]) || Double.isInfinite(m[k])) return null;
+        }
+        if (Math.abs(m[8] - 1) > 1e-6) return null;
+        // проверка: угол (0,0) должен попасть в первую точку привязки (с точностью ~1 км)
+        double x = m[2] / m[8], lonc = Math.toDegrees(x / 6378137.0);
+        if (Math.abs(lonc - lon[0]) > 0.02) return null;
+        return m;
     }
 
     /** Целое свойство «имя» → значение: после имени идёт тип (−2 — число) и 8 байт значения. */

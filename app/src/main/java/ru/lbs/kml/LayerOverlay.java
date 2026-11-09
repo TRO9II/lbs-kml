@@ -73,7 +73,18 @@ public class LayerOverlay extends Overlay {
         halo.setTextSize(ts);
         halo.setStrokeWidth(Math.max(2.5f * d, ts * 0.24f));
         placed.clear();
-        // сначала геометрия всех слоёв, потом подписи — чтобы буквы были поверх линий
+        for (UserLayers.Layer one : layers) {
+            if (!one.visible || one.features == null) continue;
+            boolean fade = one.opacity < 0.99f;
+            int sc = fade ? c.saveLayerAlpha(null, Math.round(255 * Math.max(0.1f, one.opacity))) : -1;
+            drawLayers(c, java.util.Collections.singletonList(one), n, s, e, w, z, pj, orient, labels, ts);
+            if (fade) c.restoreToCount(sc);
+        }
+    }
+
+    private void drawLayers(Canvas c, List<UserLayers.Layer> layers, double n, double s, double e, double w, double z,
+                            Projection pj, float orient, boolean labels, float ts) {
+        // сначала геометрия, потом подписи — чтобы буквы были поверх линий
         for (UserLayers.Layer l : layers) {
             if (!l.visible || l.features == null || l.n < s || l.s > n || l.e < w || l.w > e) continue;
             for (UserLayers.Feature f : l.features) {

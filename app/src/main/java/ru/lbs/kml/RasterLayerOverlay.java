@@ -32,6 +32,7 @@ public class RasterLayerOverlay extends Overlay {
         UserLayers.Layer layer;
         PgdFile pgd;
         double[] mx = new double[4], my = new double[4]; // углы в метрах Меркатора
+        double[] h, hi; // проективная привязка и обратная к ней (если есть в файле)
     }
 
     private final List<Item> items = new ArrayList<>();
@@ -67,6 +68,17 @@ public class RasterLayerOverlay extends Overlay {
             it.mx[i] = mercX(f.lon[i]);
             it.my[i] = mercY(f.lat[i]);
         }
+        if (f.hom != null) {
+            it.h = f.hom;
+            it.hi = inv3(f.hom);
+            // углы — по той же матрице, чтобы рамка совпадала с картинкой
+            double[][] px = {{0, 0}, {f.width, 0}, {f.width, f.height}, {0, f.height}};
+            for (int i = 0; i < 4; i++) {
+                double[] q = hom(it.h, px[i][0], px[i][1]);
+                it.mx[i] = q[0];
+                it.my[i] = q[1];
+            }
+        }
         return it;
     }
 
@@ -86,8 +98,30 @@ public class RasterLayerOverlay extends Overlay {
         return Math.toDegrees(2 * Math.atan(Math.exp(y / 6378137.0)) - Math.PI / 2);
     }
 
-    /** Точка картинки (u, v ∈ 0..1) → метры Меркатора: билинейно по четырём углам. */
+    /** Пиксель → Меркатор по матрице AlpineQuest (у неё ось Y направлена вниз). */
+    private static double[] hom(double[] m, double x, double y) {
+        double w = m[6] * x + m[7] * y + m[8];
+        return new double[]{(m[0] * x + m[1] * y + m[2]) / w, -(m[3] * x + m[4] * y + m[5]) / w};
+    }
+
+    private static double[] inv3(double[] m) {
+        double a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5], g = m[6], h = m[7], i = m[8];
+        double A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+        double det = a * A + b * B + c * C;
+        if (Math.abs(det) < 1e-18) return null;
+        return new double[]{A / det, -(b * i - c * h) / det, (b * f - c * e) / det,
+                B / det, (a * i - c * g) / det, -(a * f - c * d) / det,
+                C / det, -(a * h - b * g) / det, (a * e - b * d) / det};
+    }
+
+    /** Точка картинки (u, v ∈ 0..1) → метры Меркатора: по матрице привязки, а без неё — билинейно по углам. */
     private static void at(Item it, double u, double v, double[] out) {
+        if (it.h != null) {
+            double[] q = hom(it.h, u * it.pgd.width, v * it.pgd.height);
+            out[0] = q[0];
+            out[1] = q[1];
+            return;
+        }
         double a = (1 - u) * (1 - v), b = u * (1 - v), c = u * v, d = (1 - u) * v;
         out[0] = a * it.mx[0] + b * it.mx[1] + c * it.mx[2] + d * it.mx[3];
         out[1] = a * it.my[0] + b * it.my[1] + c * it.my[2] + d * it.my[3];
@@ -167,6 +201,12 @@ public class RasterLayerOverlay extends Overlay {
 
     /** Метры Меркатора → доля картинки (u, v): обратная билинейная, несколько шагов Ньютона. */
     private static boolean invert(Item it, double x, double y, double[] uv) {
+        if (it.hi != null) {
+            double[] q = hom(it.hi, x, -y); // обратная матрица ждёт (X, −Y); hom() снова меняет знак
+            uv[0] = q[0] / it.pgd.width;
+            uv[1] = -q[1] / it.pgd.height;
+            return !Double.isNaN(uv[0]) && !Double.isNaN(uv[1]);
+        }
         double u = 0.5, v = 0.5;
         double[] p = new double[2];
         for (int i = 0; i < 12; i++) {

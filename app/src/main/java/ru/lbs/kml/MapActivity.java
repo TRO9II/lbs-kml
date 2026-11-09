@@ -9900,23 +9900,31 @@ public class MapActivity extends Activity {
         addKV(card, l.kind.equals("pgd") ? "Тайлов" : "Объектов", Integer.toString(l.count));
         if (l.n >= l.s) addKV(card, "Район", Geo.dist(Geo.inverse(l.n, l.w, l.s, l.e)[0]) + " по диагонали");
         sheetContent.addView(card);
-        if (l.kind.equals("pgd")) {
-            hSection("ПРОЗРАЧНОСТЬ");
-            LinearLayout op = new LinearLayout(this);
-            int[] vals = {100, 80, 60, 40};
-            for (int pc : vals) {
-                TextView b = hChip(pc + "%", 0, Math.round(l.opacity * 100) == pc, v -> {
-                    l.opacity = pc / 100f;
-                    UserLayers.saveList(this, userLayers);
-                    map.invalidate();
-                    layerActions(l);
-                });
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, (int) dp(36), 1);
-                lp.setMarginEnd((int) dp(5));
-                op.addView(b, lp);
+        hSection("ВИДИМОСТЬ СЛОЯ");
+        LinearLayout op = new LinearLayout(this);
+        op.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        final TextView pv = new TextView(this);
+        pv.setText(Math.round(l.opacity * 100) + "%");
+        pv.setTextColor(getColor(R.color.hud_text));
+        pv.setTextSize(14);
+        pv.setMinWidth((int) dp(48));
+        android.widget.SeekBar sb = new android.widget.SeekBar(this);
+        sb.setMax(90);
+        sb.setProgress(Math.round(l.opacity * 100) - 10);
+        sb.setProgressTintList(ColorStateList.valueOf(getColor(R.color.hud_accent)));
+        sb.setThumbTintList(ColorStateList.valueOf(getColor(R.color.hud_accent)));
+        sb.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(android.widget.SeekBar b, int pr, boolean user) {
+                l.opacity = (pr + 10) / 100f;
+                pv.setText((pr + 10) + "%");
+                map.invalidate();
             }
-            sheetContent.addView(op);
-        }
+            @Override public void onStartTrackingTouch(android.widget.SeekBar b) {}
+            @Override public void onStopTrackingTouch(android.widget.SeekBar b) { UserLayers.saveList(MapActivity.this, userLayers); }
+        });
+        op.addView(sb, new LinearLayout.LayoutParams(0, (int) dp(40), 1));
+        op.addView(pv);
+        sheetContent.addView(op);
         actionRow(
                 vAction(R.drawable.ic_place, "Показать", true, v -> { closeSheet(); l.visible = true; UserLayers.saveList(this, userLayers); zoomToLayer(l); map.invalidate(); }),
                 vAction(R.drawable.ic_sketch, "Название", false, v -> {
