@@ -47,8 +47,12 @@
         if (N < 3) return;
         var m = r.map(function (p) {
           var x = p[0], y = p[1];
-          if (nearG(O, x, y, S, fi)) return false; // общая граница с соседним оккупированным полигоном
           return nearG(G, x, y, T, -1) || (N > 300 && x >= 33.3 && x <= 35.4 && y > 46.75 && y < 47.6);
+        });
+        // общий край с соседним оккупированным полигоном — не фронт (обе вершины и середина рядом с ним)
+        var shared = r.map(function (p, i) {
+          var q = r[(i + 1) % N];
+          return nearG(O, p[0], p[1], S, fi) && nearG(O, q[0], q[1], S, fi) && nearG(O, (p[0] + q[0]) / 2, (p[1] + q[1]) / 2, S, fi);
         });
         var m2 = m.slice();
         for (var i = 0; i < N; i++) {
@@ -58,14 +62,24 @@
             if (j <= 5) for (var k = 1; k < j; k++) m2[(i + k) % N] = true;
           }
         }
-        if (m2.every(function (v) { return v; })) { lines.push(r.concat([r[0]])); return; }
-        var s = m2.indexOf(false), cur = [];
+        var ok = function (i) { return m2[i] && m2[(i + 1) % N] && !shared[i]; }; // ребро i → i+1 идёт по фронту
+        var all = true;
+        for (var i2 = 0; i2 < N; i2++) if (!ok(i2)) { all = false; break; }
+        if (all) { lines.push(r.concat([r[0]])); return; }
+        var s0 = 0;
+        while (ok(s0)) s0++;
+        var cur = [];
         for (var k2 = 1; k2 <= N; k2++) {
-          var idx = (s + k2) % N;
-          if (m2[idx]) cur.push(r[idx]);
-          else { if (cur.length >= 3) lines.push(cur); cur = []; }
+          var e = (s0 + k2) % N; // ребро e → e+1
+          if (ok(e)) {
+            if (!cur.length) cur.push(r[e]);
+            cur.push(r[(e + 1) % N]);
+          } else {
+            if (cur.length >= 2) lines.push(cur);
+            cur = [];
+          }
         }
-        if (cur.length >= 3) lines.push(cur);
+        if (cur.length >= 2) lines.push(cur);
       });
     });
     return lines;

@@ -79,7 +79,7 @@ final class LbsCore {
     static boolean optDiff(Context c) { return prefs(c).getBoolean("optDiff", true); }
 
     /** Версия способа выделения линии из данных DeepStateMap; при смене прежний снимок для сравнения не годится. */
-    static final int ALGO = 2;
+    static final int ALGO = 3;
 
     static Result buildAndSave(Context c, String data) throws Exception {
         KmlBuilder.Parsed p = KmlBuilder.parse(data);

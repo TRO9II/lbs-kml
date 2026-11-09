@@ -259,7 +259,7 @@ public class MapActivity extends Activity {
         groupPtsOverlay.setListener((hits, e, mv) -> tapPoints(new ArrayList<>(), hits));
         if (prefs.getBoolean("locOn", false) && hasLocPerm()) startLocation(false);
         maybeShowWhatsNew();
-        if (prefs.getInt("lbsAlgo", 1) < 2 && !offline() && LbsCore.mapFile(this).exists())
+        if (prefs.getInt("lbsAlgo", 1) < LbsCore.ALGO && !offline() && LbsCore.mapFile(this).exists())
             map.postDelayed(this::startLbsUpdate, 4000); // линия считается по-новому — пересчитать сразу
         map.postDelayed(() -> checkUpdatesOnStart(), 2500);
         if (savedInstanceState == null) handleViewIntent(getIntent());
