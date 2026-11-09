@@ -78,9 +78,17 @@ final class LbsCore {
     static boolean optGray(Context c) { return prefs(c).getBoolean("optGray", true); }
     static boolean optDiff(Context c) { return prefs(c).getBoolean("optDiff", true); }
 
+    /** Версия способа выделения линии из данных DeepStateMap; при смене прежний снимок для сравнения не годится. */
+    static final int ALGO = 2;
+
     static Result buildAndSave(Context c, String data) throws Exception {
         KmlBuilder.Parsed p = KmlBuilder.parse(data);
         if (p.lines.isEmpty()) throw new Exception("пустая ЛБС");
+        if (prefs(c).getInt("lbsAlgo", 1) < ALGO) {
+            new File(c.getFilesDir(), "cur.txt").delete();
+            new File(c.getFilesDir(), "base.txt").delete();
+            prefs(c).edit().putInt("lbsAlgo", ALGO).apply();
+        }
 
         List<double[][]> base = updateHistory(c, p);
         List<double[][]> added = Collections.emptyList(), removed = Collections.emptyList();

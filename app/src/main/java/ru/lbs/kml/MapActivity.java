@@ -259,6 +259,8 @@ public class MapActivity extends Activity {
         groupPtsOverlay.setListener((hits, e, mv) -> tapPoints(new ArrayList<>(), hits));
         if (prefs.getBoolean("locOn", false) && hasLocPerm()) startLocation(false);
         maybeShowWhatsNew();
+        if (prefs.getInt("lbsAlgo", 1) < 2 && !offline() && LbsCore.mapFile(this).exists())
+            map.postDelayed(this::startLbsUpdate, 4000); // линия считается по-новому — пересчитать сразу
         map.postDelayed(() -> checkUpdatesOnStart(), 2500);
         if (savedInstanceState == null) handleViewIntent(getIntent());
         if (savedInstanceState == null) map.post(() -> handleGroupIntent(getIntent()));
@@ -9316,7 +9318,7 @@ public class MapActivity extends Activity {
         cmpStatus.setTextSize(13);
         cmpStatus.setTextColor(getColor(R.color.hud_text2));
         cmpStatus.setPadding((int) dp(4), (int) dp(10), (int) dp(4), 0);
-        cmpStatus.setText("Старая линия — голубой пунктир, новая — красная, где сдвинулась — янтарным. "
+        cmpStatus.setText("Красная — линия на дату «Стало». Где она сдвинулась: янтарная — новое положение, голубой пунктир — где была. "
                 + "Список участков с расстоянием сдвига — на плашке сверху.");
         sheetContent.addView(cmpStatus);
         if (cmpFolder.getItems().size() > 0)
@@ -9447,6 +9449,7 @@ public class MapActivity extends Activity {
             new Thread(() -> {
                 KmlBuilder.Parsed po = KmlBuilder.parse(oldS), pn = KmlBuilder.parse(newS);
                 List<double[][]> moved = KmlBuilder.diff(pn.lines, po.lines, KmlBuilder.DIFF_KM);
+                List<double[][]> was = KmlBuilder.diff(po.lines, pn.lines, KmlBuilder.DIFF_KM);
                 double[] shift = KmlBuilder.maxShiftKm(moved, po.lines);
                 runOnUiThread(() -> {
                     cmpStage = 0;
@@ -9455,23 +9458,25 @@ public class MapActivity extends Activity {
                         cmpFail("в одном из снимков не нашлась линия");
                         return;
                     }
-                    showCompare(po.lines, pn.lines, moved, shift);
+                    showCompare(was, pn.lines, moved, shift);
                 });
             }).start();
         });
     }
 
-    private void showCompare(List<double[][]> oldL, List<double[][]> newL, List<double[][]> moved, double[] shift) {
+    /** was — участки старой линии, которых больше нет; moved — участки новой линии, которых не было. */
+    private void showCompare(List<double[][]> was, List<double[][]> newL, List<double[][]> moved, double[] shift) {
         cmpFolder.getItems().clear();
-        for (double[][] l : oldL) {
-            Polyline pl = line(l, Color.argb(235, 120, 200, 255), 2.4f);
-            pl.getOutlinePaint().setPathEffect(new android.graphics.DashPathEffect(new float[]{dp(7), dp(5)}, 0));
-            cmpFolder.add(pl);
-        }
         for (double[][] l : newL) cmpFolder.add(line(l, Color.argb(200, 25, 0, 0), 5f));
         for (double[][] l : newL) cmpFolder.add(line(l, Color.rgb(255, 45, 45), 2.8f));
         for (double[][] l : moved) cmpFolder.add(line(l, Color.argb(200, 40, 25, 0), 7f));
         for (double[][] l : moved) cmpFolder.add(line(l, Color.rgb(255, 196, 0), 4.5f));
+        for (double[][] l : was) cmpFolder.add(line(l, Color.argb(200, 0, 20, 40), 4.6f));
+        for (double[][] l : was) {
+            Polyline pl = line(l, Color.rgb(120, 200, 255), 2.6f);
+            pl.getOutlinePaint().setPathEffect(new android.graphics.DashPathEffect(new float[]{dp(7), dp(5)}, 0));
+            cmpFolder.add(pl);
+        }
         lbsFolder.setEnabled(false);
         cmpParts = moved;
         cmpShift = shift;
@@ -9492,7 +9497,7 @@ public class MapActivity extends Activity {
         c.setOnClickListener(v -> showCompareList());
         closeSheet();
         map.invalidate();
-        Toast.makeText(this, "Готово: голубой пунктир — было, красная — стало, янтарь — сдвиг", Toast.LENGTH_LONG).show();
+        Toast.makeText(this, "Красная — линия сейчас. Где сдвинулась: янтарная — новое положение, голубой пунктир — где была", Toast.LENGTH_LONG).show();
     }
 
     private static String km(double v) {
