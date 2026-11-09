@@ -191,7 +191,7 @@ public class MapActivity extends Activity {
 
         userPoints = UserPoints.load(this);
         pointsOverlay.setPoints(userPoints);
-        pointsOverlay.setListener(this::onPointTap);
+        pointsOverlay.setListener((hits, e, mv) -> tapPoints(hits, groupPtsOverlay.hits(e, mv)));
         routes = Routes.load(this);
         pathOverlay.setSaved(allRoutes());
         restoreTarget();
@@ -228,10 +228,7 @@ public class MapActivity extends Activity {
         setupLock();
         setupChat();
         refreshGroupMap();
-        groupPtsOverlay.setListener(p -> {
-            ChatClient.GObj g = chat.object(p.id);
-            if (g != null) groupObjSheet(g);
-        });
+        groupPtsOverlay.setListener((hits, e, mv) -> tapPoints(new ArrayList<>(), hits));
         if (prefs.getBoolean("locOn", false) && hasLocPerm()) startLocation(false);
         checkUpdates();
         maybeShowWhatsNew();
@@ -728,7 +725,7 @@ public class MapActivity extends Activity {
         panel.setLayoutParams(pl);
         LinearLayout.LayoutParams sl = (LinearLayout.LayoutParams) sc.getLayoutParams();
         sl.height = full ? 0 : LinearLayout.LayoutParams.WRAP_CONTENT;
-        sl.weight = full ? 1 : 0;
+        sl.weight = 1; // и в обычном окне: длинное содержимое сжимается, кнопки внизу не обрезаются
         sc.setLayoutParams(sl);
     }
 
@@ -751,6 +748,13 @@ public class MapActivity extends Activity {
         sheetFooter.removeAllViews();
         sheetFooter.setVisibility(View.GONE);
         findViewById(R.id.genScroll).scrollTo(0, 0);
+        // если окно как раз закрывается (closeSheet → sheet), отменяем закрытие, иначе новое окно исчезнет
+        panel.animate().cancel();
+        scrim.animate().cancel();
+        if (host.getVisibility() == View.VISIBLE && (panel.getTranslationY() != 0 || scrim.getAlpha() < 1f)) {
+            panel.animate().translationY(0).setDuration(160).start();
+            scrim.animate().alpha(1f).setDuration(160).start();
+        }
         if (host.getVisibility() != View.VISIBLE) {
             host.setVisibility(View.VISIBLE);
             panel.setTranslationY(dp(600));
@@ -1985,7 +1989,96 @@ public class MapActivity extends Activity {
             });
             return;
         }
-        editPoint(p, p.lat, p.lon, null);
+        showPointInfo(p);
+    }
+
+    /** Нажатие на метки. Если под пальцем несколько (лежат друг на друге) — спросить, какую. */
+    private void tapPoints(List<UserPoints.Point> mine, List<UserPoints.Point> grp) {
+        if (tool != TOOL_NONE) {
+            UserPoints.Point p = !mine.isEmpty() ? mine.get(0) : grp.get(0);
+            toolAdd(p.lat, p.lon);
+            return;
+        }
+        if (mine.size() + grp.size() == 1) {
+            if (!mine.isEmpty()) onPointTap(mine.get(0));
+            else openGroupPoint(grp.get(0));
+            return;
+        }
+        sheet("Здесь несколько точек");
+        float den = getResources().getDisplayMetrics().density;
+        for (UserPoints.Point p : mine) {
+            ImageView pin = new ImageView(this);
+            pin.setImageBitmap(UserPoints.pin(p.color, den, p.icon));
+            boolean extra = p == pointsOverlay.getExtra();
+            hRow(pin, p.name.isEmpty() ? "Точка" : p.name, extra ? "найдено поиском" : "моя точка" + (p.note == null || p.note.isEmpty() ? "" : " · " + p.note),
+                    hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18), v -> onPointTap(p));
+        }
+        for (UserPoints.Point p : grp) {
+            ImageView pin = new ImageView(this);
+            pin.setImageBitmap(UserPoints.pin(p.color, den, p.icon));
+            hRow(pin, p.name.isEmpty() ? "Точка" : p.name, "карта группы",
+                    hIcon(R.drawable.ic_chevron, getColor(R.color.hud_text2), 18), v -> openGroupPoint(p));
+        }
+    }
+
+    private void openGroupPoint(UserPoints.Point p) {
+        ChatClient.GObj g = chat.object(p.id);
+        if (g != null) groupObjSheet(g);
+    }
+
+    /** Карточка сохранённой точки: сведения и действия. Изменить — отдельной кнопкой. */
+    private void showPointInfo(UserPoints.Point p) {
+        sheet(p.name.isEmpty() ? "Точка" : p.name);
+        float den = getResources().getDisplayMetrics().density;
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        ImageView pin = new ImageView(this);
+        pin.setImageBitmap(UserPoints.pin(p.color, den * 1.3f, p.icon));
+        top.addView(pin, new LinearLayout.LayoutParams((int) dp(40), (int) dp(44)));
+        LinearLayout tx = new LinearLayout(this);
+        tx.setOrientation(LinearLayout.VERTICAL);
+        tx.setPadding((int) dp(12), 0, 0, 0);
+        android.location.Location me = myLoc == null ? null : myLoc.getLocation();
+        TextView d = new TextView(this);
+        if (me != null) {
+            double[] mi = Geo.inverse(me.getLatitude(), me.getLongitude(), p.lat, p.lon);
+            d.setText("от вас " + Geo.dist(mi[0]) + " · азимут " + String.format(Locale.US, "%.0f°", mi[1])
+                    + " · " + Geo.mils(Geo.gridBearing(me.getLatitude(), me.getLongitude(), p.lat, p.lon)));
+        } else d.setText("расстояние появится, когда включите «Где я» (GPS)");
+        d.setTextSize(13);
+        d.setTextColor(getColor(R.color.hud_text));
+        tx.addView(d);
+        if (p.note != null && !p.note.isEmpty()) {
+            TextView n = new TextView(this);
+            n.setText(p.note);
+            n.setTextSize(13);
+            n.setTextColor(getColor(R.color.hud_text2));
+            n.setPadding(0, (int) dp(3), 0, 0);
+            tx.addView(n);
+        }
+        top.addView(tx, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        top.setPadding(0, 0, 0, (int) dp(6));
+        sheetContent.addView(top);
+        coordsCard(p.lat, p.lon);
+        String nm = p.name.isEmpty() ? "Точка" : p.name;
+        actionRow(
+                vAction(R.drawable.ic_nav, "Вести", true, v -> { closeSheet(); startNav(Collections.singletonList(new double[]{p.lat, p.lon}), 0, nm); }),
+                vAction(R.drawable.ic_flag, "Навести", false, v -> { closeSheet(); setTarget(p.lat, p.lon, nm); }),
+                vAction(R.drawable.ic_label, "Изменить", false, v -> editPoint(p, p.lat, p.lon, null)),
+                vAction(R.drawable.ic_share, "Отправить", false, v -> sharePointText(nm, p.lat, p.lon)),
+                vAction(R.drawable.ic_delete, "Удалить", false, v -> new AlertDialog.Builder(this)
+                        .setTitle("Удалить «" + nm + "»?")
+                        .setPositiveButton("Удалить", (d2, w2) -> {
+                            userPoints.remove(p);
+                            voiceFile(p.id).delete();
+                            savePoints();
+                            closeSheet();
+                        })
+                        .setNegativeButton("Отмена", null)
+                        .show()));
+        if (chat != null && chat.active())
+            hChipRow(hChip("В чат группы", R.drawable.ic_chat, false, v -> { sendPoint(nm, p.lat, p.lon); openChat(); }));
     }
 
     /** Карточка координат (нажатие — скопировать). */

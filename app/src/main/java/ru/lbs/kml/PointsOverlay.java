@@ -20,7 +20,8 @@ import java.util.List;
 public class PointsOverlay extends Overlay {
 
     interface OnPointTap {
-        void onTap(UserPoints.Point p);
+        /** hits — все метки под пальцем, ближняя первой. */
+        void onTap(List<UserPoints.Point> hits, MotionEvent e, MapView mv);
     }
 
     private final float density;
@@ -100,18 +101,19 @@ public class PointsOverlay extends Overlay {
     @Override
     public boolean onSingleTapConfirmed(MotionEvent e, MapView mv) {
         if (listener == null) return false;
-        UserPoints.Point hit = hitTest(e, mv);
-        if (hit == null) return false;
-        listener.onTap(hit);
+        List<UserPoints.Point> hits = hits(e, mv);
+        if (hits.isEmpty()) return false;
+        listener.onTap(hits, e, mv);
         return true;
     }
 
-    private UserPoints.Point hitTest(MotionEvent e, MapView mv) {
+    /** Все метки под пальцем (метки, лежащие друг на друге, тоже), ближняя первой. */
+    List<UserPoints.Point> hits(MotionEvent e, MapView mv) {
         Projection pj = mv.getProjection();
         float orient = mv.getMapOrientation();
         float w = 30 * density, h = 30 * density, slop = 10 * density;
-        UserPoints.Point best = null;
-        float bestD = Float.MAX_VALUE;
+        final java.util.Map<UserPoints.Point, Float> dist = new java.util.IdentityHashMap<>();
+        List<UserPoints.Point> out = new ArrayList<>();
         List<UserPoints.Point> all = new ArrayList<>(points);
         if (extra != null) all.add(extra);
         for (UserPoints.Point p : all) {
@@ -121,10 +123,11 @@ public class PointsOverlay extends Overlay {
             // метка круглая, центр — в самой точке
             float dx = e.getX() - sp.x, dy = e.getY() - sp.y;
             if (Math.abs(dx) <= w / 2 + slop && Math.abs(dy) <= h / 2 + slop) {
-                float d = dx * dx + dy * dy;
-                if (d < bestD) { bestD = d; best = p; }
+                dist.put(p, dx * dx + dy * dy);
+                out.add(p);
             }
         }
-        return best;
+        java.util.Collections.sort(out, (a, b) -> Float.compare(dist.get(a), dist.get(b)));
+        return out;
     }
 }
