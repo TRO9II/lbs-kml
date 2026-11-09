@@ -170,8 +170,22 @@ public class MapActivity extends Activity {
         gridOverlay = new GridOverlay(d);
         map.getOverlays().add(gridOverlay);
         placesOverlay = new PlacesOverlay(d);
-        findViewById(R.id.rightCol).addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or2, ob) ->
-                placesOverlay.setExclude(new android.graphics.RectF(l - dp(6), t - dp(6), r + dp(6), b + dp(6))));
+        placesOverlay.setObstacles((mv, out) -> {
+            // кнопки и карточки поверх карты
+            int[] base = new int[2], at = new int[2];
+            mv.getLocationInWindow(base);
+            for (int id : new int[]{R.id.rightCol, R.id.coordCard, R.id.btnSearch, R.id.searchPill, R.id.dock, R.id.targetCard, R.id.navPanel, R.id.offlineChip}) {
+                View v = findViewById(id);
+                if (v == null || !v.isShown() || v.getWidth() == 0) continue;
+                v.getLocationInWindow(at);
+                float l = at[0] - base[0], t = at[1] - base[1];
+                out.add(new android.graphics.RectF(l - dp(4), t - dp(4), l + v.getWidth() + dp(4), t + v.getHeight() + dp(4)));
+            }
+            // ваши точки, точки группы и участники — их подписи главнее
+            pointsOverlay.boxes(mv, out);
+            groupPtsOverlay.boxes(mv, out);
+            membersOverlay.boxes(mv, out);
+        });
         map.getOverlays().add(placesOverlay);
         pathOverlay = new PathOverlay(d);
         map.getOverlays().add(pathOverlay);

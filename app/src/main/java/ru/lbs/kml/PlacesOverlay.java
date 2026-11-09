@@ -107,12 +107,24 @@ public class PlacesOverlay extends Overlay {
         return out;
     }
 
-    private android.graphics.RectF exclude;
     private final Point sp = new Point();
 
-    /** Область экрана с кнопками — подписи туда не заходят (переносятся влево или не рисуются). */
-    void setExclude(android.graphics.RectF r) {
-        exclude = r;
+    /** Что ещё есть на экране (кнопки, точки, участники) — подписи сёл туда не заходят. */
+    interface Obstacles {
+        void collect(MapView mv, java.util.List<android.graphics.RectF> out);
+    }
+
+    private Obstacles obstacles;
+    private final java.util.ArrayList<android.graphics.RectF> obs = new java.util.ArrayList<>();
+    private final android.graphics.RectF lr = new android.graphics.RectF();
+
+    void setObstacles(Obstacles o) {
+        obstacles = o;
+    }
+
+    private boolean blocked(android.graphics.RectF r) {
+        for (int i = 0; i < obs.size(); i++) if (android.graphics.RectF.intersects(obs.get(i), r)) return true;
+        return false;
     }
 
     @Override
@@ -136,8 +148,11 @@ public class PlacesOverlay extends Overlay {
             chosen.put(level, sel);
         }
 
+        obs.clear();
+        if (obstacles != null) obstacles.collect(mv, obs);
         double n = bb.getLatNorth(), s = bb.getLatSouth(), e = bb.getLonEast(), w = bb.getLonWest();
         float orient = mv.getMapOrientation();
+        float W = mv.getWidth(), H = mv.getHeight();
         Places p = places;
         for (int k : sel) {
             double la = p.lat[k], lo = p.lon[k];
@@ -152,24 +167,31 @@ public class PlacesOverlay extends Overlay {
             fill.setTypeface(tf);
             halo.setTypeface(tf);
             float dotR = (r == 0 ? 3.2f : r == 1 ? 2.8f : 2f) * density;
+            float tw = fill.measureText(p.name[k]);
+            if (orient != 0f) pj.rotateAndScalePoint(pt.x, pt.y, sp); else sp.set(pt.x, pt.y);
+            // точка под кнопкой или под меткой — не рисуем вовсе
+            lr.set(sp.x - dotR - density, sp.y - dotR - density, sp.x + dotR + density, sp.y + dotR + density);
+            if (blocked(lr)) continue;
+            float gap = dotR + 4 * density, top = sp.y - size * 0.8f, bot = sp.y + size * 0.4f;
+            // справа, а если мешает (кнопка, метка, край экрана) — слева; некуда — без подписи
+            int side = 0;
+            lr.set(sp.x + gap - 2 * density, top, sp.x + gap + tw + 2 * density, bot);
+            if (lr.right <= W && !blocked(lr)) side = 1;
+            else {
+                lr.set(sp.x - gap - tw - 2 * density, top, sp.x - gap + 2 * density, bot);
+                if (lr.left >= 0 && !blocked(lr)) side = -1;
+            }
             c.save();
             if (orient != 0f) c.rotate(-orient, pt.x, pt.y); // подпись всегда ровно
             c.drawCircle(pt.x, pt.y, dotR + 1.1f * density, halo);
             c.drawCircle(pt.x, pt.y, dotR, dot);
-            float tw = fill.measureText(p.name[k]);
-            if (orient != 0f) pj.rotateAndScalePoint(pt.x, pt.y, sp); else sp.set(pt.x, pt.y);
-            boolean left = false;
-            if (exclude != null) {
-                if (exclude.contains(sp.x, sp.y)) { c.restore(); continue; }
-                float rx0 = sp.x + dotR + 4 * density;
-                boolean hitR = android.graphics.RectF.intersects(exclude, new android.graphics.RectF(rx0, sp.y - size, rx0 + tw, sp.y + size * 0.4f));
-                left = hitR || rx0 + tw > mv.getWidth();
-            } else {
-                left = sp.x + dotR + 4 * density + tw > mv.getWidth();
+            if (side != 0 && sp.y > 0 && sp.y < H) {
+                float tx = side < 0 ? pt.x - gap - tw : pt.x + gap, ty = pt.y + size * 0.35f;
+                c.drawText(p.name[k], tx, ty, halo);
+                c.drawText(p.name[k], tx, ty, fill);
+                // занятое место — для следующих подписей (крупные сёла рисуются первыми)
+                obs.add(new android.graphics.RectF(side < 0 ? sp.x - gap - tw : sp.x + gap, top, side < 0 ? sp.x - gap : sp.x + gap + tw, bot));
             }
-            float tx = left ? pt.x - dotR - 4 * density - tw : pt.x + dotR + 4 * density, ty = pt.y + size * 0.35f;
-            c.drawText(p.name[k], tx, ty, halo);
-            c.drawText(p.name[k], tx, ty, fill);
             c.restore();
         }
     }

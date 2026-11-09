@@ -56,6 +56,23 @@ public class MembersOverlay extends Overlay {
         tailPaint.setPathEffect(new android.graphics.DashPathEffect(new float[]{6 * density, 5 * density}, 0));
     }
 
+    private final Point sp3 = new Point();
+
+    /** Где на экране кружки участников с подписями. */
+    void boxes(MapView mv, List<android.graphics.RectF> out) {
+        if (!isEnabled()) return;
+        org.osmdroid.views.Projection pj = mv.getProjection();
+        float orient = mv.getMapOrientation();
+        for (ChatClient.Member m : members) {
+            org.osmdroid.util.GeoPoint g = new org.osmdroid.util.GeoPoint(m.lat, m.lon);
+            Point q = pj.toPixels(g, null);
+            if (orient != 0f) pj.rotateAndScalePoint(q.x, q.y, sp3); else sp3.set(q.x, q.y);
+            String t = (m.name.isEmpty() ? "?" : m.name) + " · " + age(m.recv);
+            float tw = label.measureText(t);
+            out.add(new android.graphics.RectF(sp3.x - 14 * d, sp3.y - 20 * d, sp3.x + 11 * d + 10 * d + tw + 6 * d, sp3.y + 14 * d));
+        }
+    }
+
     void setMembers(List<ChatClient.Member> m) {
         members = m;
     }

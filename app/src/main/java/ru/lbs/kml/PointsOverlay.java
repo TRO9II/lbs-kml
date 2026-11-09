@@ -72,6 +72,26 @@ public class PointsOverlay extends Overlay {
         listener = l;
     }
 
+    private final Point sp2 = new Point();
+
+    /** Где на экране метки с подписями — чтобы названия сёл их не закрывали. */
+    void boxes(MapView mv, List<android.graphics.RectF> out) {
+        if (!isEnabled()) return;
+        Projection pj = mv.getProjection();
+        float orient = mv.getMapOrientation();
+        List<UserPoints.Point> all = new ArrayList<>(points);
+        if (extra != null) all.add(extra);
+        for (UserPoints.Point p : all) {
+            gp.setCoords(p.lat, p.lon);
+            pj.toPixels(gp, pt);
+            if (orient != 0f) pj.rotateAndScalePoint(pt.x, pt.y, sp2); else sp2.set(pt.x, pt.y);
+            Bitmap b = UserPoints.pin(p.color, density, p.icon);
+            float hw = b.getWidth() / 2f, hh = b.getHeight() / 2f;
+            float tw = p.name == null || p.name.isEmpty() ? 0 : text.measureText(p.name) + 3 * density;
+            out.add(new android.graphics.RectF(sp2.x - hw - 2 * density, sp2.y - hh - 2 * density, sp2.x + hw + tw + 2 * density, sp2.y + hh + 2 * density));
+        }
+    }
+
     @Override
     public void draw(Canvas c, MapView mv, boolean shadow) {
         if (shadow) return;
