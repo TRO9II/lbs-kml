@@ -1,0 +1,14 @@
+name: Ping server
+on:
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for i in 1 2 3; do
+            curl -sS -m 15 -o - -w "\nHTTP %{http_code} за %{time_total} с\n" http://5.129.224.136:8080/api/ping || echo "нет ответа"
+            sleep 5
+          done
+          nc -vz -w 10 5.129.224.136 8080 || true
+          nc -vz -w 10 5.129.224.136 22 || true
