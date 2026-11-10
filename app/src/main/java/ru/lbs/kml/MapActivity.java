@@ -4634,7 +4634,7 @@ public class MapActivity extends Activity {
             speedView.setElevation(dp(8));
             speedView.setVisibility(View.GONE);
             speedView.setOnClickListener(x -> Toast.makeText(this, "Скорость по GPS. Отключить: Меню → «Скорость на карте»", Toast.LENGTH_SHORT).show());
-            android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(-2, -2, android.view.Gravity.BOTTOM | android.view.Gravity.START);
+            android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(-2, -2, android.view.Gravity.TOP | android.view.Gravity.END);
             ((ViewGroup) findViewById(android.R.id.content)).addView(speedView, lp);
         }
         if (v >= 8) {
@@ -4654,11 +4654,12 @@ public class MapActivity extends Activity {
             t.setSpan(new android.text.style.AbsoluteSizeSpan(13, true), k, t.length(), 0);
             speedView.setText(t);
             android.widget.FrameLayout.LayoutParams lp = (android.widget.FrameLayout.LayoutParams) speedView.getLayoutParams();
-            View bar = findViewById(R.id.bottomBar);
-            int bottom = (bar != null && bar.getHeight() > 0 ? ((View) speedView.getParent()).getHeight() - bar.getTop() : (int) dp(120)) + (int) dp(10);
-            if (lp.bottomMargin != bottom || lp.leftMargin != (int) dp(12)) {
-                lp.bottomMargin = bottom;
-                lp.leftMargin = (int) dp(12);
+            // сверху справа, под кнопкой поиска
+            View top = findViewById(R.id.topBar);
+            int y = (top != null && top.getHeight() > 0 ? top.getBottom() : (int) dp(110)) + (int) dp(8);
+            if (lp.topMargin != y || lp.rightMargin != (int) dp(14)) {
+                lp.topMargin = y;
+                lp.rightMargin = (int) dp(14);
                 speedView.setLayoutParams(lp);
             }
         }
