@@ -47,6 +47,7 @@ public class TrackService extends Service {
     private PowerManager.WakeLock wake;
     private double lastLat = Double.NaN, lastLon, dist;
     private int count;
+    private double speed; // км/ч
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private final LocationListener ll = new LocationListener() {
@@ -146,6 +147,14 @@ public class TrackService extends Service {
     }
 
     private void point(Location l) {
+        if (l.hasSpeed()) {
+            boolean was = speed >= 8;
+            speed = l.getSpeed() * 3.6;
+            if (was != (speed >= 8)) {
+                NotificationManager nm = getSystemService(NotificationManager.class);
+                if (nm != null) nm.notify(ID, notif());
+            }
+        }
         if (l.getAccuracy() > 40) return;
         double la = l.getLatitude(), lo = l.getLongitude();
         if (!Double.isNaN(lastLat)) {
@@ -162,7 +171,7 @@ public class TrackService extends Service {
         }
         Listener li = listener;
         if (li != null) main.post(() -> li.onPoint(la, lo));
-        if (count % 5 == 0) {
+        if (count % 5 == 0 || speed >= 8) {
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) nm.notify(ID, notif());
         }
@@ -176,7 +185,7 @@ public class TrackService extends Service {
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CH) : new Notification.Builder(this);
         return b.setSmallIcon(R.drawable.ic_track)
                 .setContentTitle("Рубеж · идёт запись трека")
-                .setContentText(Geo.dist(dist) + " · точек: " + count)
+                .setContentText((speed >= 8 ? Math.round(speed) + " км/ч · " : "") + Geo.dist(dist) + " · точек: " + count)
                 .setContentIntent(pi)
                 .addAction(new Notification.Action.Builder(null, "Остановить", stop).build())
                 .setOngoing(true)

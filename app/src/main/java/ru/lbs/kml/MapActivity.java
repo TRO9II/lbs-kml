@@ -3817,6 +3817,12 @@ public class MapActivity extends Activity {
             Toast.makeText(this, on ? "Без сети: только сохранённые карты и высоты" : "Сеть включена", Toast.LENGTH_SHORT).show();
         });
         swNight.setOnCheckedChangeListener((b, on) -> { if (on != prefs.getBoolean("night", false)) setNight(on); });
+        Switch swSpeed = findViewById(R.id.swSpeed);
+        swSpeed.setChecked(prefs.getBoolean("showSpeed", true));
+        swSpeed.setOnCheckedChangeListener((b, on) -> {
+            prefs.edit().putBoolean("showSpeed", on).apply();
+            if (!on && speedView != null) speedView.setVisibility(View.GONE);
+        });
         swTrack.setOnCheckedChangeListener((b, on) -> setTracking(on));
         findViewById(R.id.tileOffline).setOnClickListener(v -> { openMenu(false); chooseDownload(); });
         findViewById(R.id.tileInfo).setOnClickListener(v -> { openMenu(false); showGuide(-1); });
@@ -4599,8 +4605,69 @@ public class MapActivity extends Activity {
         findViewById(R.id.btnMyLoc).setBackgroundResource(locOn && follow ? R.drawable.bg_round_blue : R.drawable.bg_round_hud);
     }
 
+    private TextView speedView;
+    private android.location.Location prevFix;
+    private long fastSince, slowSince;
+
+    /** Скорость крупно в углу — появляется, когда едете (от ~8 км/ч), и прячется после остановки. */
+    private void updateSpeed(android.location.Location l) {
+        double v = -1; // км/ч
+        if (l.hasSpeed()) v = l.getSpeed() * 3.6;
+        else if (prevFix != null && l.getTime() > prevFix.getTime()) {
+            double d = Geo.inverse(prevFix.getLatitude(), prevFix.getLongitude(), l.getLatitude(), l.getLongitude())[0];
+            v = d / ((l.getTime() - prevFix.getTime()) / 1000.0) * 3.6;
+        }
+        prevFix = l;
+        if (v < 0 || !prefs.getBoolean("showSpeed", true)) return;
+        long now = System.currentTimeMillis();
+        if (speedView == null) {
+            speedView = new TextView(this);
+            speedView.setTextColor(Color.WHITE);
+            speedView.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD));
+            speedView.setGravity(android.view.Gravity.CENTER);
+            speedView.setPadding((int) dp(14), (int) dp(6), (int) dp(14), (int) dp(6));
+            GradientDrawable g = new GradientDrawable();
+            g.setCornerRadius(dp(16));
+            g.setColor(0xE6141820);
+            g.setStroke((int) dp(1), getColor(R.color.hud_line));
+            speedView.setBackground(g);
+            speedView.setElevation(dp(8));
+            speedView.setVisibility(View.GONE);
+            speedView.setOnClickListener(x -> Toast.makeText(this, "Скорость по GPS. Отключить: Меню → «Скорость на карте»", Toast.LENGTH_SHORT).show());
+            android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(-2, -2, android.view.Gravity.BOTTOM | android.view.Gravity.START);
+            ((ViewGroup) findViewById(android.R.id.content)).addView(speedView, lp);
+        }
+        if (v >= 8) {
+            slowSince = 0;
+            if (fastSince == 0) fastSince = now;
+        } else {
+            fastSince = 0;
+            if (slowSince == 0) slowSince = now;
+        }
+        boolean show = speedView.getVisibility() == View.VISIBLE;
+        if (!show && fastSince > 0 && now - fastSince > 3000) show = true;   // не мигать от скачков GPS
+        if (show && slowSince > 0 && now - slowSince > 15000) show = false;  // стоим 15 с — убрать
+        if (show) {
+            android.text.SpannableString t = new android.text.SpannableString(Math.round(v) + " км/ч");
+            int k = Long.toString(Math.round(v)).length();
+            t.setSpan(new android.text.style.AbsoluteSizeSpan(30, true), 0, k, 0);
+            t.setSpan(new android.text.style.AbsoluteSizeSpan(13, true), k, t.length(), 0);
+            speedView.setText(t);
+            android.widget.FrameLayout.LayoutParams lp = (android.widget.FrameLayout.LayoutParams) speedView.getLayoutParams();
+            View bar = findViewById(R.id.bottomBar);
+            int bottom = (bar != null && bar.getHeight() > 0 ? ((View) speedView.getParent()).getHeight() - bar.getTop() : (int) dp(120)) + (int) dp(10);
+            if (lp.bottomMargin != bottom || lp.leftMargin != (int) dp(12)) {
+                lp.bottomMargin = bottom;
+                lp.leftMargin = (int) dp(12);
+                speedView.setLayoutParams(lp);
+            }
+        }
+        speedView.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
     private void onLocation(android.location.Location l) {
         myLoc.setLocation(l);
+        updateSpeed(l);
         if (follow) map.getController().animateTo(new GeoPoint(l.getLatitude(), l.getLongitude()));
         if (track != null && !TrackService.running) appendTrack(l); // служба не поднялась — пишем сами
         if (navOn()) updateNav(l);

@@ -1091,6 +1091,15 @@
                     android:textColor="@color/hud_text"
                     android:textSize="14sp" />
                 <Switch
+                    android:id="@+id/swSpeed"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="6dp"
+                    android:text="Скорость на карте (когда едете)"
+                    android:textColor="@color/hud_text"
+                    android:textSize="14sp" />
+                <Switch
                     android:id="@+id/swTrack"
                     android:visibility="gone"
                     android:layout_width="match_parent"
