@@ -4407,6 +4407,70 @@ public class MapActivity extends Activity {
         }
         android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
         if (nm != null) nm.cancel(2002);
+        resumeTrack();
+    }
+
+    /** Трек пишет служба; здесь — подхватить запись после возврата в приложение. */
+    private void resumeTrack() {
+        boolean active = prefs.getBoolean("trackActive", false);
+        if (track == null && active) {
+            String id = prefs.getString("trackId", "");
+            for (Routes.Route r : routes) if (r.id.equals(id)) track = r;
+            if (track == null) {
+                prefs.edit().putBoolean("trackActive", false).apply();
+                TrackService.stop(this);
+            } else {
+                if (!locOn) startLocation(false);
+                findViewById(R.id.trackDot).setVisibility(View.VISIBLE);
+                styleTrackBtn(true);
+                if (!TrackService.running) TrackService.start(this);
+            }
+        }
+        if (track != null) {
+            syncTrack();
+            if (!active) setTracking(false); // остановили из уведомления
+        }
+        TrackService.listener = (la, lo) -> {
+            if (track == null) return;
+            track.pts.add(new double[]{la, lo});
+            if (track.pts.size() % 5 == 0) saveRoutes();
+            else pathOverlay.setSaved(allRoutes());
+            map.invalidate();
+        };
+    }
+
+    private void syncTrack() {
+        if (track == null) return;
+        List<double[]> pts = TrackService.points(this);
+        if (pts.size() >= track.pts.size()) {
+            track.pts.clear();
+            track.pts.addAll(pts);
+            saveRoutes();
+        }
+    }
+
+    /** MIUI/HyperOS и другие прошивки усыпляют фоновые приложения — один раз попросить снять ограничение. */
+    private void askBatteryOnce() {
+        android.os.PowerManager pm = getSystemService(android.os.PowerManager.class);
+        if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName()) || prefs.getBoolean("askedBattery", false)) return;
+        prefs.edit().putBoolean("askedBattery", true).apply();
+        new AlertDialog.Builder(this)
+                .setTitle("Чтобы трек писался с выключенным экраном")
+                .setMessage("Разрешите Рубежу работать без ограничений батареи. На Xiaomi ещё: Настройки → Приложения → Рубеж → "
+                        + "Контроль активности → «Нет ограничений», и включите «Автозапуск».")
+                .setPositiveButton("Разрешить", (d, w) -> {
+                    try {
+                        startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:" + getPackageName())));
+                    } catch (Exception e) {
+                        try {
+                            startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                        } catch (Exception ignored) {
+                        }
+                    }
+                })
+                .setNegativeButton("Позже", null)
+                .show();
     }
 
     /** Карта на экране (для фонового сервиса: не дублировать уведомления). */
@@ -4426,6 +4490,7 @@ public class MapActivity extends Activity {
         visible = false;
         if (sensors != null) sensors.unregisterListener(compassListener);
         if (sensors != null) sensors.unregisterListener(navSensor);
+        TrackService.listener = null;
         if (map != null) {
             GeoPoint c = (GeoPoint) map.getMapCenter();
             prefs.edit().putString("viewLat", Double.toString(c.getLatitude()))
@@ -4442,7 +4507,7 @@ public class MapActivity extends Activity {
         if (lbsWeb != null) lbsWeb.destroy();
         if (dlTask != null) dlTask.cancel(true);
         if (locMgr != null) locMgr.removeUpdates(locListener);
-        if (track != null) setTracking(false);
+        if (track != null) syncTrack(); // запись продолжает служба
         if (sensors != null) {
             sensors.unregisterListener(navSensor);
             sensors.unregisterListener(stepListener);
@@ -4537,7 +4602,7 @@ public class MapActivity extends Activity {
     private void onLocation(android.location.Location l) {
         myLoc.setLocation(l);
         if (follow) map.getController().animateTo(new GeoPoint(l.getLatitude(), l.getLongitude()));
-        if (track != null) appendTrack(l);
+        if (track != null && !TrackService.running) appendTrack(l); // служба не поднялась — пишем сами
         if (navOn()) updateNav(l);
         if (guideOn()) guideLocation(l);
         maybeShare(l);
@@ -4562,11 +4627,18 @@ public class MapActivity extends Activity {
             track.color = 0xFFFF4081;
             routes.add(track);
             saveRoutes();
+            TrackService.file(this).delete();
+            prefs.edit().putBoolean("trackActive", true).putString("trackId", track.id).apply();
+            TrackService.start(this);
+            askBatteryOnce();
             findViewById(R.id.trackDot).setVisibility(View.VISIBLE);
             styleTrackBtn(true);
             Toast.makeText(this, "Запись трека началась. Остановить — та же красная кнопка", Toast.LENGTH_LONG).show();
         } else {
+            prefs.edit().putBoolean("trackActive", false).apply();
+            TrackService.stop(this);
             if (track != null) {
+                syncTrack();
                 if (track.pts.size() < 2) {
                     routes.remove(track);
                     Toast.makeText(this, "Трек слишком короткий — не сохранён", Toast.LENGTH_SHORT).show();
