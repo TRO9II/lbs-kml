@@ -131,11 +131,19 @@
         <item name="android:tint">@color/hud_text</item>
     </style>
     <style name="DockLabel">
-        <item name="android:layout_width">wrap_content</item>
-        <item name="android:layout_height">wrap_content</item>
+        <!-- одна строка при любом размере шрифта в системе: при нехватке места буквы мельчают -->
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">15dp</item>
         <item name="android:layout_marginTop">2dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:includeFontPadding">false</item>
         <item name="android:textColor">@color/hud_text2</item>
         <item name="android:textSize">10sp</item>
+        <item name="android:autoSizeTextType">uniform</item>
+        <item name="android:autoSizeMinTextSize">7sp</item>
+        <item name="android:autoSizeMaxTextSize">11sp</item>
+        <item name="android:autoSizeStepGranularity">0.5sp</item>
     </style>
     <style name="ToolBtn">
         <item name="android:layout_width">0dp</item>
