@@ -214,7 +214,12 @@ public class PathOverlay extends Overlay {
         }
         // готовый маршрут: маленькие узлы, заметные только начало и конец
         float node = 2.3f * density;
+        // у трека и длинных маршрутов точек сотни — узлы слились бы в «бусы», рисуем только редкие
+        float minGap = 16 * density, lx = xs[0], ly = ys[0];
         for (int i = 1; i < n - 1; i++) {
+            if (n > 60 || Math.hypot(xs[i] - lx, ys[i] - ly) < minGap) continue;
+            lx = xs[i];
+            ly = ys[i];
             c.drawCircle(xs[i], ys[i], node + 1.2f * density, dark());
             vFill.setColor(Color.WHITE);
             c.drawCircle(xs[i], ys[i], node, vFill);
